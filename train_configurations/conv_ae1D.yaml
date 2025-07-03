@@ -1,0 +1,62 @@
+# Optimization
+tune_config:
+      epochs: tune.choice([200])
+      lr: tune.choice([0.0009, 0.0003, 0.001])
+      batch_size: tune.choice([100, 500])
+      seq_in_length: tune.choice([40])
+      dilation: tune.choice([1])
+      #filter_num: tune.choice([12, 24, 36, 42, 64, 100, 110, 128]) 16 channels with flattened
+      #filter_num: tune.choice([12, 24, 36, 42, 64, 100, 110, 120]) #16 channels
+      filter_num: tune.choice([110, 120])
+      #filter_num: tune.choice([12, 24, 28]) #4 channels
+      n_layers: tune.choice([1, 2])
+      lr_patience: tune.choice([5, 10])
+      #kernel_size: tune.choice([3, 5, 7, 9, 11])
+      kernel_size: tune.choice([7, 9])
+      increasing: tune.choice([0])
+      flattened: tune.choice([0])
+      latent_dim: tune.choice([100, 160, 320, 256, 400, 512]) #64 (4,16) 160 (4, 40); 640 (16, 40); 256 (16,16)
+      pool: tune.choice([1, 0])
+      activation: tune.choice(['Elu', 'Relu'])
+
+# Dataset
+dataset:
+  name: 'sentinel'
+  sequential: False
+  sample_rate: "4s"
+  scaled: False
+  scale: False
+  clean: True
+  perc_overlap: 0
+  random_split: False #split randomly train and val: attention if per_overlap != 0
+  shuffle_train: True #shuffle the idx of the train
+  feats: 'all'
+  columns: ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
+             'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
+            'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
+            'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
+  #columns: ['RW3_motcurr','RW3_therm',
+  #          'RW3_speed', 'RW3_cmd_volt']
+  dataset_subset: 12000000
+  columns_subset: 0
+  target: None
+  predict: False
+  forecast_all: False
+  train_val_split: 0.8
+
+# Model
+model:
+  name: 'conv_ae1D'
+
+resources:
+  gpu_trial: 1
+  cpu_trial: 12
+
+opt:
+  fine_tuning: False
+  tune_report: 'val_loss'
+  k_fold_cv: 0
+  metrics: ['train_loss', 'val_loss']
+  order_by: 'val_loss'
+  num_workers: 12
+

@@ -1,0 +1,44 @@
+# Optimization
+tune_config:
+      intermediate_dim: tune.choice([20, 40, 50])
+      latent_dim: tune.choice([2, 3, 4])
+      weight_KL_loss: tune.choice([0.4, 0.6, 0.8])
+      epochs: tune.choice([100])
+      lr: tune.choice([0.003, 0.001, 0.0009])
+      act_fun: tune.choice(['relu', 'elu'])
+      batch_size: tune.choice([200, 400, 600, 1000])
+      #l1: 'tune.sample_from(lambda _: 2 ** np.random.randint(2, 9))'
+      #l2: 'tune.sample_from(lambda _: 2 ** np.random.randint(2, 9))'
+      #lr: 'tune.loguniform(1e-4, 1e-1)'
+
+# Dataset
+dataset:
+  name: 'sentinel'
+  sequential: False
+  sample_rate: "4s"
+  scale: True
+  clean: True
+  feats: 'all'
+  columns: ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr', 'RW1_therm',
+          'RW2_therm', 'RW3_therm', 'RW4_therm', 'RW1_speed', 'RW2_speed',
+          'RW3_speed', 'RW4_speed', 'RW1_cmd_volt', 'RW2_cmd_volt',
+          'RW3_cmd_volt', 'RW4_cmd_volt']
+  dataset_subset: 1000
+  columns_subset: 0
+  target: None
+
+# Model
+model:
+  name: 'vae_vanilla'
+
+resources:
+  gpu_trial: 0.25
+  cpu_trial: 4
+
+opt:
+  fine_tuning: False
+  tune_report: 'val_loss'
+  k_fold_cv: 5
+  metrics: ['train_loss', 'val_loss', 'val_acc', 'val_f1', 'test_acc', 'test_f1']
+  order_by: 'val_f1'
+  num_workers: 0

@@ -1,0 +1,50 @@
+# Optimization
+tune_config:
+      #intermediate_dim: tune.choice([20, 40, 50])
+      epochs: tune.choice([200, 300])
+      lr: tune.choice([0.003, 0.001, 0.0009, 0.0003, 0.0001, 0.00001])
+      lr_patience: tune.choice([3, 5, 7, 10])
+      act: tune.choice(['Relu', 'Elu', 'Selu', 'LRelu'])
+      batch_size: tune.choice([10, 20, 40])
+      patch_size: tune.choice([3, 5, 7])
+      num_filter: tune.choice([10, 20, 40, 60, 100])
+      filter_size: tune.choice([3])
+      #l1: 'tune.sample_from(lambda _: 2 ** np.random.randint(2, 9))'
+      #l2: 'tune.sample_from(lambda _: 2 ** np.random.randint(2, 9))'
+      #lr: 'tune.loguniform(1e-4, 1e-1)'
+
+# Dataset
+dataset:
+  name: 'albania_supervised'
+  sequential: False
+  in_channel: 288
+  coords_path: "/data/hyper/albania/mosaic/merged_3_patches.pkl" #Take relative path
+  test_coords_path: "/data/hyper/albania/mosaic/merged_3_patches.pkl"
+  train_split: 0.70
+  from_dictionary: True
+  patch_size: 5
+
+# Model
+model:
+  name: 'cnn3d'
+  dilation: 1
+  class_number: 1 # switchig to crossentropu use 2 n_ckasse that it means 2 output neurons >>> crossenetropy loss (not binary) with Softmax out of the box
+  act: 'Relu'
+  num_filter: 30
+  filter_size: 3
+
+resources:
+  gpu_trial: 0.25
+  cpu_trial: 4
+
+opt:
+  fine_tuning: False
+  tune_report: 'val_loss'
+  k_fold_cv: 5
+  metrics: ['train_loss', 'val_loss', 'val_acc', 'val_f1', 'test_acc', 'test_f1']
+  order_by: 'val_f1'
+  num_workers: 0
+  epochs: 20
+  lr: 0.001
+  lr_patience: 3
+  batch_size: 20

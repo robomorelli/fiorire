@@ -1,0 +1,31 @@
+# Optimization
+tune_config:
+      intermediate_dim: tune.choice([20, 40, 50])
+      code_dim: tune.choice([10, 20])
+      epochs: tune.choice([100])
+      lr: tune.choice([0.003, 0.001, 0.0009])
+      batch_size: tune.choice([200, 400, 600, 1000])
+      #l1: 'tune.sample_from(lambda _: 2 ** np.random.randint(2, 9))'
+      #l2: 'tune.sample_from(lambda _: 2 ** np.random.randint(2, 9))'
+      #lr: 'tune.loguniform(1e-4, 1e-1)'
+
+# Dataset
+dataset:
+  name: 'nls_kdd'
+  sequential: False
+
+# Model
+model:
+  name: 'ae'
+
+resources:
+  gpu_trial: 0.25
+  cpu_trial: 4
+
+opt:
+  fine_tuning: False
+  tune_report: 'val_loss'
+  k_fold_cv: 5
+  metrics: ['train_loss', 'val_loss', 'val_acc', 'val_f1', 'test_acc', 'test_f1']
+  order_by: 'val_f1'
+  num_workers: 0

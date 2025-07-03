@@ -1,0 +1,51 @@
+# Optimization
+tune_config:
+      #intermediate_dim: tune.choice([1, 2, 5, 10, 20])
+      epochs: tune.choice([200])
+      lr: tune.choice([0.0006, 0.0003, 0.001])
+      batch_size: tune.choice([100, 500])
+      seq_in_length: tune.choice([16])
+      embedding_dim: tune.choice([10, 16, 20, 32, 40, 48])
+      n_layers_cell_1: tune.choice([1,2,3])
+      n_layers_cell_2: tune.choice([1,2])
+      lr_patience: tune.choice([5, 10])
+
+# Dataset
+dataset:
+  name: 'sentinel'
+  sequential: False
+  sample_rate: "4s"
+  scaled: True
+  clean: True
+  shuffle: False #shuffle applied on the row of dataset
+  feats: 'all'
+  columns: ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
+             'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
+            'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
+            'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
+  #columns: [
+  #          'RW3_motcurr', 'RW3_therm', 'RW3_speed', 'RW3_cmd_volt',
+  #          ]
+  dataset_subset: 10000000
+  columns_subset: 0
+  target: None
+  predict: False
+  forecast_all: True
+  train_val_split: 0.8
+
+# Model
+model:
+  name: 'lstm'
+
+resources:
+  gpu_trial: 1
+  cpu_trial: 12
+
+opt:
+  fine_tuning: False
+  tune_report: 'val_loss'
+  k_fold_cv: 0
+  metrics: ['train_loss', 'val_loss']
+  order_by: 'val_loss'
+  num_workers: 12
+
