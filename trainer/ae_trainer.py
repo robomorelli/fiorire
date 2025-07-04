@@ -1,7 +1,7 @@
 import torch.nn
 from ray import tune
-from trainer.utils import get_model
-from trainer.utils import get_dataset
+from utils.load_model import get_model
+from utils.load_dataset import get_dataset
 from omegaconf import OmegaConf
 from config import *
 from models.utils.losses import *

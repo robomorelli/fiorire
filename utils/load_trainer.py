@@ -2,7 +2,6 @@
 from torch.utils.data import DataLoader
 from trainer.vae_trainer import trainVae
 from trainer.ae_trainer import trainAe
-from trainer.cnn3d_trainer import trainCNN3D
 from trainer.lstm_ae_trainer import trainLSTMAE
 from trainer.lstm_trainer import trainLSTM
 from trainer.lstm_vae_trainer import trainLSTMVAE

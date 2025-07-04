@@ -27,18 +27,6 @@ def prep_sentinel(df, cfg, columns, columns_subset,
         print('the data is not going to be scaled')
         dfNorm = pd.DataFrame(x, columns=df.columns)
 
-    #if not sampler:
-
-    #    X_train, X_test, y_train, y_test = train_test_split(dfNorm, dfNorm, \
-    #                                                        train_size=train_val_split \
-    #                                                       , shuffle=False)
-    #    df_train = pd.DataFrame(X_train, columns=df.columns)
-    #    df_test = pd.DataFrame(X_test, columns=df.columns)
-
-    #    return df_train, df_test, dfNorm
-
-    #else:
-
     np.random.seed(101)
     step = cfg.dataset.sequence_length - int(cfg.dataset.sequence_length * perc_overlap)
     print('step', step)
@@ -68,28 +56,3 @@ def prep_sentinel(df, cfg, columns, columns_subset,
     val_sampler = SubsetRandomSampler(val_idx)
 
     return train_sampler, val_sampler, dfNorm
-
-
-    # Other way to scale
-    # Other way to scale
-    # Other way to scale
-    #X_train, X_test, y_train, y_test = train_test_split(df, df, train_size=train_val_split,
-    #                                                    shuffle=shuffle)
-
-    #df_train = pd.DataFrame(X_train, columns=df.columns)
-    #df_test = pd.DataFrame(X_test, columns=df.columns)
-
-
-    #if scaled:
-    #    scaler = StandardScaler()
-    #    x_scaledT = scaler.fit_transform(df_train)
-    #    x_scaledV = scaler.transform(df_test)
-    #    df_train = pd.DataFrame(x_scaledT, columns=df.columns)
-    #    df_test = pd.DataFrame(x_scaledV, columns=df.columns)
-
-    # Other way to scale
-    # Other way to scale
-    # Other way to scale
-
-    #
-

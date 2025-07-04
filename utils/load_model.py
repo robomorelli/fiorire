@@ -5,7 +5,7 @@ from models.lstm import LSTM
 from models.conv_ae import CONV_AE
 from models.conv_ae1D import CONV_AE1D
 from models.lstm_vae import LSTM_VAE
-from models.cnn3d import CNN3D
+
 
 def get_model(cfg, **kwargs):
     """

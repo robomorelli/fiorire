@@ -38,11 +38,10 @@ def main(args):
     analysis = tune.run(trainer,
                         scheduler=sched,
                         resources_per_trial=resources_per_trial,
-                        num_samples=4,
+                        num_samples=8,
                         checkpoint_at_end=True, #otherwise it fails on multinode?
                         local_dir="~/ray_results",
-                        name="{}/4_wheels_system_{}_conv_ae1D_sl_40_12M_unscaled_unscaled_overlap_0".format(cfg.model.name,date.replace('/', '-')),
-
+                        name="{}/test".format(cfg.model.name,date.replace('/', '-')),
                         config=config)
 
     print("Best config is:", analysis.get_best_config(metric="val_loss", mode="min"))
@@ -53,10 +52,10 @@ if __name__ == "__main__":
     # use the arg parse to call this script from sh script that run the cluster
     # remember to ray start --head on the node you have itneractively
     parser = argparse.ArgumentParser()
-    parser.add_argument("--address", default = '192.168.43.136:6379', help="adress of master")
+    parser.add_argument("--address", default = '10.141.1.28:6379', help="adress of master")
     parser.add_argument("--password", help="password to connect to master")
     #parser.add_argument("--config_path", default='./train_configurations/', help="echo the string you use here")
-    parser.add_argument("--config_file", default='lstm_ae', help="the model you want to hpo")
+    parser.add_argument("--config_file", default='conv_ae1D', help="the model you want to hpo")
     args = parser.parse_args()
 
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"

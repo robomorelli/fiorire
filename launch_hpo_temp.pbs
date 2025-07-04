@@ -1,0 +1,12 @@
+#!/bin/bash
+#PBS -N fiorire
+#PBS -o fiorire.log
+#PBS -e ray_hpo.err
+#PBS -q gpu
+#PBS -k oe
+#PBS -m e
+#PBS -M roberto.morelli.ext@leonardocompany.com
+#PBS -l select=1:ngpus=1:ncpus=16,walltime=72:00:00
+#PBS -v num_nodes=1,num_gpus=1,num_cpus=16,model_name=conv_ae1D
+
+bash /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/launch_hpo.sh

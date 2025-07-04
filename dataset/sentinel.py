@@ -16,6 +16,8 @@ class Dataset_seq(Dataset):
         self.transform = transform
         #TODO raise error if prediction == true but target is not defined
         if self.prediction and not self.forecast:
+            if target is None:
+                raise Exception(' you should define a target for the prediction mode')
             self.df_data = df.drop(target, axis=1)
             self.targets = df[target]
         elif self.forecast:
