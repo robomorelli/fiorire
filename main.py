@@ -5,6 +5,8 @@ from omegaconf import OmegaConf
 from config import *
 from utils.load_trainer import get_trainer
 from datetime import datetime
+#from ray.tune.integration.wandb import WandbLoggerCallback
+from ray.air.integrations.wandb import WandbLoggerCallback
 
 def main(args):
     now = datetime.now()
@@ -38,11 +40,19 @@ def main(args):
     analysis = tune.run(trainer,
                         scheduler=sched,
                         resources_per_trial=resources_per_trial,
-                        num_samples=8,
+                        num_samples=1,
                         checkpoint_at_end=True, #otherwise it fails on multinode?
                         local_dir="~/ray_results",
                         name="{}/test".format(cfg.model.name,date.replace('/', '-')),
-                        config=config)
+                        config=config,
+                        callbacks = [
+                            WandbLoggerCallback(
+                                project="fiorire",
+                                entity="robmorelli",  # optional
+                                log_config=True  # logs the config used in each trial
+                            )
+                        ]
+    )
 
     print("Best config is:", analysis.get_best_config(metric="val_loss", mode="min"))
 

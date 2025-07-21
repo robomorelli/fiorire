@@ -19,8 +19,6 @@ def get_trainer(cfg, **kwargs):
         return trainVae
     if cfg.model.name == "ae":
         return trainAe
-    if cfg.model.name == "cnn3d":
-        return trainCNN3D
     if cfg.model.name == "lstm_ae":
         return trainLSTMAE
     if cfg.model.name == "lstm":
