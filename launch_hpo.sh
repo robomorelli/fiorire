@@ -2,25 +2,28 @@
 
 # Load required modules
 module load openmpi
-module load proxy/proxy_16
+module load proxy/proxy_20
 
 cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
 
 # Read from environment (passed via PBS -v)
-NUM_NODES=${num_nodes:-1}
-NUM_GPUS=${num_gpus:-1}
-NUM_CPUS=${num_cpus:-12}
-MODEL_NAME=${model_name:-conv_ae1D}
-NUM_SAMPLES=${num_samples:-100}
-WANDB_KEY=${wandb_key:-56b6f7f0b13c4d89207e51c28ceb90c24201eab5}
+NUM_NODES=${num_nodes}
+NUM_GPUS=${num_gpus}
+NUM_CPUS=${num_cpus}
+# Python defaults
+CONFIG_FILE=${model_name}
+NUM_SAMPLES=${num_samples}
+ENTITY=${entity}
+WANDB_KEY=${wandb_key}
 
-echo "Job configuration:"
+echo "python configuration:"
 echo " - Nodes: $NUM_NODES"
 echo " - GPUs per node: $NUM_GPUS"
 echo " - CPUs per node: $NUM_CPUS"
-echo " - Model: $MODEL_NAME"
-echo " - Num Samples: $NUM_SAMPLES"
-echo " - WANDB_KEY: $WANDB_KEY"
+echo " - Model: ${CONFIG_FILE:-default from Python}"
+echo " - Num Samples: ${NUM_SAMPLES:-default from Python}"
+echo " - ENTITY: ${ENTITY:-default from Python}"
+echo " - WANDB_KEY: ${WANDB_KEY:-default from Python}"
 
 # Discover node list
 NODES=($(sort -u $PBS_NODEFILE))
@@ -43,8 +46,8 @@ echo "[MASTER] Starting Ray head on $MASTER_NODE ($MASTER_IP)"
 ssh $MASTER_NODE "
   source ~/.bashrc
   conda activate fiorire
-  module load proxy/proxy_16
-  eval $(python /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/set_gpus_env.py --n $NUM_GPUS)
+  module load proxy/proxy_20
+  eval \$(python /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/set_gpus_env.py --n $NUM_GPUS)
   ray start --head --node-ip-address=$MASTER_IP --port=$REDIS_PORT --redis-password=$REDIS_PASSWORD
 " &
 
@@ -56,9 +59,9 @@ for WORKER in "${WORKER_NODES[@]}"; do
   ssh $WORKER "
     source ~/.bashrc
     conda activate fiorire
-    module load proxy/proxy_16
+    module load proxy/proxy_20
     WORKER_IP=\$(hostname -I | awk '{print \$1}')
-    eval $(python /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/set_gpus_env.py --n $NUM_GPUS)
+    eval \$(python /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/set_gpus_env.py --n $NUM_GPUS)
     ray start --address=$REDIS_ADDRESS --redis-password=$REDIS_PASSWORD --node-ip-address=\$WORKER_IP
   " &
 done
@@ -71,14 +74,41 @@ echo "[MASTER] Running main.py on $MASTER_NODE"
 ssh $MASTER_NODE "
   source ~/.bashrc
   conda activate fiorire
-  module load proxy/proxy_16
+  module load proxy/proxy_20
   cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
-  python $MODEL_CONFIG_PATH \
-    --address $REDIS_ADDRESS \
-    --password $REDIS_PASSWORD \
-    --config_file $MODEL_NAME \
-    --num_samples $NUM_SAMPLES \
-    --wandb_key $WANDB_KEY
-"
 
-#export WANDB_API_KEY=56b6f7f0b13c4d89207e51c28ceb90c24201eab5
+  CMD=\"python $MODEL_CONFIG_PATH --address $REDIS_ADDRESS --password $REDIS_PASSWORD\"
+
+  echo '[MASTER] Argument origin:'
+  if [[ -n \"$CONFIG_FILE\" ]]; then
+    CMD+=\" --config_file $CONFIG_FILE\"
+    echo ' - config_file: from shell script (CLI override)'
+  else
+    echo ' - config_file: using default from Python'
+  fi
+
+  if [[ -n \"$NUM_SAMPLES\" ]]; then
+    CMD+=\" --num_samples $NUM_SAMPLES\"
+    echo ' - num_samples: from shell script (CLI override)'
+  else
+    echo ' - num_samples: using default from Python'
+  fi
+
+  if [[ -n \"$WANDB_KEY\" ]]; then
+    CMD+=\" --wandb_key $WANDB_KEY\"
+    echo ' - wandb_key: from shell script (CLI override)'
+  else
+    echo ' - wandb_key: using default from Python'
+  fi
+
+  if [[ -n \"$ENTITY\" ]]; then
+    CMD+=\" --entity $ENTITY\"
+    echo ' - entity: from shell script (CLI override)'
+  else
+    echo ' - entity: using default from Python'
+  fi
+
+  echo \"[MASTER] Final command:\"
+  echo \$CMD
+  eval \$CMD
+"
