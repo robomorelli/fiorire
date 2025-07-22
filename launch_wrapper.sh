@@ -8,6 +8,7 @@ NUM_GPUS=-1
 NUM_CPUS=-12
 MODEL_NAME=-"conv_ae1D"
 NUM_SAMPLES=-100
+WANDB_KEY=-"56b6f7f0b13c4d89207e51c28ceb90c24201eab5"
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
@@ -34,6 +35,10 @@ while [[ $# -gt 0 ]]; do
       NUM_SAMPLES="$value"
       shift 2
       ;;
+    wandb_key)
+      WANDB_KEY="$value"
+      shift 2
+      ;;
     *)
       echo "Unknown option: $key"
       exit 1
@@ -54,7 +59,7 @@ cat > "$PBS_JOB" <<EOF
 #PBS -m e
 #PBS -M roberto.morelli.ext@leonardocompany.com
 #PBS -l select=${NUM_NODES}:ngpus=${NUM_GPUS}:ncpus=${NUM_CPUS},walltime=72:00:00
-#PBS -v num_nodes=${NUM_NODES},num_gpus=${NUM_GPUS},num_cpus=${NUM_CPUS},model_name=${MODEL_NAME},num_samples=${NUM_SAMPLES}
+#PBS -v num_nodes=${NUM_NODES},num_gpus=${NUM_GPUS},num_cpus=${NUM_CPUS},model_name=${MODEL_NAME},num_samples=${NUM_SAMPLES},wandb_key=${WANDB_KEY}
 
 bash /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/launch_hpo.sh
 EOF
@@ -65,5 +70,6 @@ echo "- GPUs per node: $NUM_GPUS"
 echo "- CPUs per node: $NUM_CPUS"
 echo "- Model: $MODEL_NAME"
 echo "- Num Samples: $NUM_SAMPLES"
+echo "- WANDB KEY: $WANDB_KEY"
 
 qsub "$PBS_JOB"

@@ -50,7 +50,7 @@ def main(args):
                                 project="fiorire_hpc",
                                 entity="robmorelli",  # optional
                                 log_config=True,  # logs the config used in each trial
-                                api_key="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
+                                api_key=args.wandb_key,
                                 upload_checkpoints = True
                             )
                         ]
@@ -69,6 +69,7 @@ if __name__ == "__main__":
     #parser.add_argument("--config_path", default='./train_configurations/', help="echo the string you use here")
     parser.add_argument("--config_file", default='conv_ae1D', help="the model you want to hpo")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
+    parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
     args = parser.parse_args()
 
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"

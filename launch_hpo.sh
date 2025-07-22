@@ -2,7 +2,7 @@
 
 # Load required modules
 module load openmpi
-module load proxy/proxy_20
+module load proxy/proxy_16
 
 cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
 
@@ -12,6 +12,7 @@ NUM_GPUS=${num_gpus:-1}
 NUM_CPUS=${num_cpus:-12}
 MODEL_NAME=${model_name:-conv_ae1D}
 NUM_SAMPLES=${num_samples:-100}
+WANDB_KEY=${wandb_key:-56b6f7f0b13c4d89207e51c28ceb90c24201eab5}
 
 echo "Job configuration:"
 echo " - Nodes: $NUM_NODES"
@@ -19,6 +20,7 @@ echo " - GPUs per node: $NUM_GPUS"
 echo " - CPUs per node: $NUM_CPUS"
 echo " - Model: $MODEL_NAME"
 echo " - Num Samples: $NUM_SAMPLES"
+echo " - WANDB_KEY: $WANDB_KEY"
 
 # Discover node list
 NODES=($(sort -u $PBS_NODEFILE))
@@ -41,11 +43,7 @@ echo "[MASTER] Starting Ray head on $MASTER_NODE ($MASTER_IP)"
 ssh $MASTER_NODE "
   source ~/.bashrc
   conda activate fiorire
-  module load proxy/proxy_20
-  echo $NUM_GPUS
-  echo $NUM_GPUS
-  echo $NUM_GPUS
-  echo $NUM_GPUS
+  module load proxy/proxy_16
   eval $(python /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/set_gpus_env.py --n $NUM_GPUS)
   ray start --head --node-ip-address=$MASTER_IP --port=$REDIS_PORT --redis-password=$REDIS_PASSWORD
 " &
@@ -58,12 +56,8 @@ for WORKER in "${WORKER_NODES[@]}"; do
   ssh $WORKER "
     source ~/.bashrc
     conda activate fiorire
-    module load proxy/proxy_20
+    module load proxy/proxy_16
     WORKER_IP=\$(hostname -I | awk '{print \$1}')
-    echo $NUM_GPUS
-    echo $NUM_GPUS
-    echo $NUM_GPUS
-    echo $NUM_GPUS
     eval $(python /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/set_gpus_env.py --n $NUM_GPUS)
     ray start --address=$REDIS_ADDRESS --redis-password=$REDIS_PASSWORD --node-ip-address=\$WORKER_IP
   " &
@@ -77,11 +71,14 @@ echo "[MASTER] Running main.py on $MASTER_NODE"
 ssh $MASTER_NODE "
   source ~/.bashrc
   conda activate fiorire
-  module load proxy/proxy_20
+  module load proxy/proxy_16
   cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
   python $MODEL_CONFIG_PATH \
     --address $REDIS_ADDRESS \
     --password $REDIS_PASSWORD \
     --config_file $MODEL_NAME \
-    --num_samples $NUM_SAMPLES
+    --num_samples $NUM_SAMPLES \
+    --wandb_key $WANDB_KEY
 "
+
+#export WANDB_API_KEY=56b6f7f0b13c4d89207e51c28ceb90c24201eab5
