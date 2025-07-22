@@ -37,6 +37,19 @@ def main(args):
 
     sched = ASHAScheduler(metric=cfg.opt.tune_report, mode="min", max_t = 10 ** 18,
                                                         grace_period=50)
+    if args.wandb:
+        callbacks = [
+                            WandbLoggerCallback(
+                                project=args.project_name,
+                                entity=args.entity,  # optional
+                                log_config=True,  # logs the config used in each trial
+                                api_key=args.wandb_key,
+                                upload_checkpoints = True
+                            )
+                        ]
+    else:
+        callbacks = []
+
     analysis = tune.run(trainer,
                         scheduler=sched,
                         resources_per_trial=resources_per_trial,
@@ -45,15 +58,7 @@ def main(args):
                         local_dir="~/ray_results",
                         name="{}/test".format(cfg.model.name,date.replace('/', '-')),
                         config=config,
-                        callbacks = [
-                            WandbLoggerCallback(
-                                project="fiorire_hpc",
-                                entity=args.entity,  # optional
-                                log_config=True,  # logs the config used in each trial
-                                api_key=args.wandb_key,
-                                upload_checkpoints = True
-                            )
-                        ]
+                        callbacks=callbacks
     )
 
     print("Best config is:", analysis.get_best_config(metric="val_loss", mode="min"))
@@ -69,6 +74,8 @@ if __name__ == "__main__":
     #parser.add_argument("--config_path", default='./train_configurations/', help="echo the string you use here")
     parser.add_argument("--config_file", default='conv_ae1D', help="the model you want to hpo")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
+    parser.add_argument("--wandb", default=1, help="the model you want to hpo")
+    parser.add_argument("--project_name", default='fiorire_hpc_hpo', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
     args = parser.parse_args()

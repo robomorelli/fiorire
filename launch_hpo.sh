@@ -15,6 +15,8 @@ CONFIG_FILE=${model_name}
 NUM_SAMPLES=${num_samples}
 ENTITY=${entity}
 WANDB_KEY=${wandb_key}
+PROJECT_NAME=${project_name}
+WANDB=${wandb}
 
 echo "python configuration:"
 echo " - Nodes: $NUM_NODES"
@@ -24,6 +26,8 @@ echo " - Model: ${CONFIG_FILE:-default from Python}"
 echo " - Num Samples: ${NUM_SAMPLES:-default from Python}"
 echo " - ENTITY: ${ENTITY:-default from Python}"
 echo " - WANDB_KEY: ${WANDB_KEY:-default from Python}"
+echo " - PROJECT_NAME: ${PROJECT_NAME:-default from Python}"
+echo " - WANDB: ${WANDB:-default from Python}"
 
 # Discover node list
 NODES=($(sort -u $PBS_NODEFILE))
@@ -106,6 +110,20 @@ ssh $MASTER_NODE "
     echo ' - entity: from shell script (CLI override)'
   else
     echo ' - entity: using default from Python'
+  fi
+
+  if [[ -n \"$WANDB\" ]]; then
+    CMD+=\" --wandb $WANDB\"
+    echo ' - wandb: from shell script (CLI override)'
+  else
+    echo ' - wandb: using default from Python'
+  fi
+
+  if [[ -n \"$PROJECT_NAME\" ]]; then
+    CMD+=\" --project_name $PROJECT_NAME\"
+    echo ' - project_name: from shell script (CLI override)'
+  else
+    echo ' - project_name: using default from Python'
   fi
 
   echo \"[MASTER] Final command:\"

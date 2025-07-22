@@ -10,7 +10,9 @@ NUM_CPUS=${NUM_CPUS:-12}
 CONFIG_FILE=""
 NUM_SAMPLES=""
 ENTITY=""
+WANDB=""
 WANDB_KEY=""
+PROJECT_NAME=""
 #WANDB_KEY=-"56b6f7f0b13c4d89207e51c28ceb90c24201eab5"
 
 # Parse named arguments
@@ -40,6 +42,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     entity)
       ENTITY="$value"
+      shift 2
+      ;;
+    wandb)
+      WANDB="$value"
+      shift 2
+      ;;
+    project_name)
+      PROJECT_NAME="$value"
       shift 2
       ;;
     wandb_key)
@@ -76,6 +86,12 @@ fi
 if [[ -n "$WANDB_KEY" ]]; then
   PBS_ENV_VARS+="wandb_key=${WANDB_KEY},"
 fi
+if [[ -n "$WANDB" ]]; then
+  PBS_ENV_VARS+="wandb=${WANDB},"
+fi
+if [[ -n "$PROJECT_NAME" ]]; then
+  PBS_ENV_VARS+="project_name=${PROJECT_NAME},"
+fi
 
 # Remove trailing comma
 PBS_ENV_VARS=${PBS_ENV_VARS%,}
@@ -109,6 +125,8 @@ echo "- Model: ${MODEL_NAME:-default value from Python}"
 echo "- Num Samples: ${NUM_SAMPLES:-default value from Python}"
 echo "- WANDB KEY: ${WANDB_KEY:-default value from Python}"
 echo "- ENTITY: ${ENTITY:-default value from Python}"
+echo "- WANDB: ${WANDB:-default value from Python}"
+echo "- PROJECT_NAME: ${PROJECT_NAME:-default value from Python}"
 
 
 qsub "$PBS_JOB"

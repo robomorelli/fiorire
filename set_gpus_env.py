@@ -39,7 +39,13 @@ def initialize_devices(n=1, max_utilization=30, max_used_memory=30):
             print(f"export CUDA_VISIBLE_DEVICES={gpu_visible}")
 
         else:
-            raise ValueError('Impossible to set free gpus')
+            gpu_visible = ''
+            for i in range(n):
+                gpu_visible += str(i) + ','
+            gpu_visible = gpu_visible[:-1]
+            os.environ["CUDA_VISIBLE_DEVICES"] = gpu_visible
+            print(f"export CUDA_VISIBLE_DEVICES={gpu_visible}")
+            raise ValueError('Impossible to set free gpus - rollback to greedy method')
 
     return None
 
