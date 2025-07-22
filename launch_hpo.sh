@@ -4,17 +4,21 @@
 module load openmpi
 module load proxy/proxy_20
 
+cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
+
 # Read from environment (passed via PBS -v)
 NUM_NODES=${num_nodes:-1}
 NUM_GPUS=${num_gpus:-1}
 NUM_CPUS=${num_cpus:-12}
-MODEL_NAME=${model_name:-default_model}
+MODEL_NAME=${model_name:-conv_ae1D}
+NUM_SAMPLES=${num_samples:-100}
 
 echo "Job configuration:"
 echo " - Nodes: $NUM_NODES"
 echo " - GPUs per node: $NUM_GPUS"
 echo " - CPUs per node: $NUM_CPUS"
 echo " - Model: $MODEL_NAME"
+echo " - Num Samples: $NUM_SAMPLES"
 
 # Discover node list
 NODES=($(sort -u $PBS_NODEFILE))
@@ -36,8 +40,13 @@ REDIS_PASSWORD="5241590000000000"
 echo "[MASTER] Starting Ray head on $MASTER_NODE ($MASTER_IP)"
 ssh $MASTER_NODE "
   source ~/.bashrc
-  conda activate ray
-  eval $(python set_gpus_env.py --n $NUM_GPUS)
+  conda activate fiorire
+  module load proxy/proxy_20
+  echo $NUM_GPUS
+  echo $NUM_GPUS
+  echo $NUM_GPUS
+  echo $NUM_GPUS
+  eval $(python /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/set_gpus_env.py --n $NUM_GPUS)
   ray start --head --node-ip-address=$MASTER_IP --port=$REDIS_PORT --redis-password=$REDIS_PASSWORD
 " &
 
@@ -48,9 +57,14 @@ for WORKER in "${WORKER_NODES[@]}"; do
   echo "[WORKER] Starting Ray worker on $WORKER"
   ssh $WORKER "
     source ~/.bashrc
-    conda activate ray
+    conda activate fiorire
+    module load proxy/proxy_20
     WORKER_IP=\$(hostname -I | awk '{print \$1}')
-    eval $(python set_gpus_env.py --n $NUM_GPUS)
+    echo $NUM_GPUS
+    echo $NUM_GPUS
+    echo $NUM_GPUS
+    echo $NUM_GPUS
+    eval $(python /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/set_gpus_env.py --n $NUM_GPUS)
     ray start --address=$REDIS_ADDRESS --redis-password=$REDIS_PASSWORD --node-ip-address=\$WORKER_IP
   " &
 done
@@ -58,13 +72,16 @@ done
 wait
 
 # Run Ray Tune training
-MODEL_CONFIG_PATH="/davinci-1/home/morellir/artificial_intelligence/repos/fiorire/main.py"
+MODEL_CONFIG_PATH="main.py"
 echo "[MASTER] Running main.py on $MASTER_NODE"
 ssh $MASTER_NODE "
   source ~/.bashrc
-  conda activate ray
+  conda activate fiorire
+  module load proxy/proxy_20
+  cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
   python $MODEL_CONFIG_PATH \
     --address $REDIS_ADDRESS \
     --password $REDIS_PASSWORD \
-    --config_file $MODEL_NAME
+    --config_file $MODEL_NAME \
+    --num_samples $NUM_SAMPLES
 "

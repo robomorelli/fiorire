@@ -54,6 +54,3 @@ def get_model(cfg, **kwargs):
         print(model)
         return model
 
-    elif cfg.model.name == "cnn3d":
-        model = CNN3D(cfg, **kwargs)
-        return model
