@@ -25,10 +25,8 @@ class trainCONVAE1D(tune.Trainable):
         self.pool = config['pool']
         self.dilation = config['dilation']
 
-        if 'increasing' in list(config.keys()):
-            self.increasing = config['increasing']
-        else:
-            self.increasing = False
+
+        self.increasing = config['increasing'] if 'increasing' in list(config.keys()) else False
 
         if 'flattened' in list(config.keys()):
             self.flattened = config['flattened']

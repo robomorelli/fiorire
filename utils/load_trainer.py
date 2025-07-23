@@ -15,17 +15,17 @@ def get_trainer(cfg, **kwargs):
     :param transform: transform to be applied to the dataset
     :return: dataset train, dataset test
     """
-    if cfg.model.name == "vae":
-        return trainVae
-    if cfg.model.name == "ae":
-        return trainAe
-    if cfg.model.name == "lstm_ae":
-        return trainLSTMAE
-    if cfg.model.name == "lstm":
-        return trainLSTM
-    if cfg.model.name == "conv_ae":
-        return trainCONVAE
+    #if cfg.model.name == "vae":
+    #    return trainVae
+    #if cfg.model.name == "ae":
+    #    return trainAe
+    #if cfg.model.name == "lstm_ae":
+    #    return trainLSTMAE
+    #if cfg.model.name == "lstm":
+    #    return trainLSTM
+    #if cfg.model.name == "conv_ae":
+    #    return trainCONVAE
     if cfg.model.name == "conv_ae1D":
         return trainCONVAE1D
-    if cfg.model.name == "lstm_vae":
-        return trainLSTMVAE
+    #if cfg.model.name == "lstm_vae":
+    #    return trainLSTMVAE

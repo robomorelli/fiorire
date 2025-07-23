@@ -1,7 +1,5 @@
 import pandas as pd
-from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-import os
 from torch.utils.data import SubsetRandomSampler
 import numpy as np
 
@@ -11,6 +9,7 @@ def prep_sentinel(df, cfg, columns, columns_subset,
 
     if columns_subset:
         columns = columns[:columns_subset]
+
     dataRaw = df[columns].dropna()
 
     if dataset_subset:

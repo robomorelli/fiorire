@@ -4,14 +4,8 @@ from dataset.sentinel import Dataset_seq
 import torch
 from torchvision.transforms import transforms as T
 from torchvision.transforms import Lambda
-from torch.utils.data import DataLoader,ConcatDataset
-from sklearn.model_selection import KFold
-import pickle
-import numpy as np
+from torch.utils.data import DataLoader
 import pandas as pd
-import pickle5
-from omegaconf import OmegaConf
-import multiprocessing as mp
 
 from config import *
 
@@ -76,7 +70,6 @@ def get_dataset(cfg, **kwargs):
                                     out_window=cfg.dataset.out_window, prediction=False,
                                    forecast_all = cfg.dataset.forecast_all, transform=transform)
         valloader = DataLoader(dataset=test_dataset, batch_size=kwargs['batch_size'], shuffle=False)
-
         '''
 
         train_sampler, val_sampler, df = prep_sentinel(df, cfg, cfg.dataset.columns, columns_subset=cfg.dataset.columns_subset,
