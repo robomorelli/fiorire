@@ -30,14 +30,10 @@ def get_dataset(cfg, **kwargs):
         else:
             transform = None
 
-        sample_rate = cfg.dataset.sample_rate
-        feats = cfg.dataset.feats
-        clean = cfg.dataset.clean
         scaled = cfg.dataset.scaled
         columns_subset = cfg.dataset.columns_subset
         dataset_subset = cfg.dataset.dataset_subset
         train_val_split = cfg.dataset.train_val_split
-        forecast_all = cfg.dataset.forecast_all
         sampling_rate = cfg.dataset.sample_rate
         scale = cfg.dataset.scale
         random_split = cfg.dataset.random_split

@@ -25,23 +25,12 @@ class trainCONVAE1D(tune.Trainable):
         self.pool = config['pool']
         self.dilation = config['dilation']
 
-
         self.increasing = config['increasing'] if 'increasing' in list(config.keys()) else False
+        self.flattened = config['flattened'] if 'flattened' in list(config.keys()) else False
+        self.latent_dim = config['latent_dim'] if 'latent_dim' in list(config.keys()) else 60
 
-        if 'flattened' in list(config.keys()):
-            self.flattened = config['flattened']
-        else:
-            self.flattened = True
-
-        if 'latent_dim' in list(config.keys()):
-            self.latent_dim = config['latent_dim']
-        else:
-            self.latent_dim = 60
-
-        #self.pool_dict = {'True':True, 'False': False}
-        #self.pool = self.pool_dict[self.pool]
         if not self.pool:
-            self.stride=2
+            self.stride = 2
         self.predict = 0
 
         # to write on cfg to have later on load dataset
@@ -52,6 +41,7 @@ class trainCONVAE1D(tune.Trainable):
 
         self.act_dict = {'Relu': nn.ReLU(), 'Elu': nn.ELU(), 'Selu': nn.SELU(),'LRelu': nn.LeakyReLU()}
         self.activation = self.act_dict[self.activation]
+
         self.trainloader, self.valloader, n_features, scaled, scale, columns_subset,\
         dataset_subset, train_val_split, dataset, data_path = get_dataset(self.cfg, batch_size=self.batch_size
                                                                           , sequence_length=config['seq_in_length'])
