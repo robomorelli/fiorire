@@ -18,7 +18,7 @@ tune_config:
 # Dataset
 dataset:
   name: 'fiorire'
-  data_path: '/home/rob/Documents/repo/fiorire/data/fiorire/sentinel/dataset_4s/all_2016-2018_clean_4s.pkl'
+  data_path: '/davinci-1/home/morellir/artificial_intelligence/repos/fiorire/data/fiorire/sentinel/dataset_4s/all_2016-2018_clean_4s.pkl'
   perc_overlap: 0
   chunks_num: 10
   sequence_length: 16

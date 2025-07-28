@@ -78,7 +78,7 @@ if __name__ == "__main__":
     parser.add_argument("--password", help="password to connect to master")
     #parser.add_argument("--config_path", default='./train_configurations/', help="echo the string you use here")
     parser.add_argument("--config_file", default='conv_ae1D', help="the model you want to hpo")
-    parser.add_argument("--num_samples", default=1, help="the model you want to hpo")
+    parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
     parser.add_argument("--wandb", default=1, help="the model you want to hpo")
     parser.add_argument("--project_name", default='fiorire_zbook_hpo', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
