@@ -173,7 +173,7 @@ class trainCONVAE1D(tune.Trainable):
                 'cfg': self.cfg,
                 'scaler_params': self.scaler_params,
                 'parameters_number': self.parameters_number,
-                'param_conf': self.param_conf
+                'param_conf': self.parameters_number
             }, f"{checkpoint_dir}/model.pt")
         return os.path.join(checkpoint_dir, "model.pt")
 
