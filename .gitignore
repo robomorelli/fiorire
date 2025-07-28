@@ -7,7 +7,7 @@ data/
 dataloader/
 # C extensions
 *.so
-
+train_configurations/*
 # Distribution / packaging
 .Python
 build/
