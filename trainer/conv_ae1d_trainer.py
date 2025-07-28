@@ -43,7 +43,7 @@ class trainCONVAE1D(tune.Trainable):
         dataset_config = {
             #'scaler': trial_config['scaler'],
             'feats': self.cfg.dataset.feats if isinstance(self.cfg.dataset.feats, (list, ListConfig))
-             else all_feats_dict[self.cfg.dataset.name] if  self.cfg.dataset.feats == 'all'
+             else all_feats_dict[self.cfg.dataset.name] if self.cfg.dataset.feats == 'all'
              else [],
             'dataset_subset': self.cfg.dataset.dataset_subset,
             'train_val_split': self.cfg.dataset.train_val_split,
@@ -84,6 +84,7 @@ class trainCONVAE1D(tune.Trainable):
 
         # Store parameter count for logging
         self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        self.parameters_number = self.cfg.model.parameter_count
 
     def step(self):
         self.current_ip()
