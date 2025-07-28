@@ -3,94 +3,87 @@ from utils.load_model import get_model
 from utils.load_dataset import get_dataset
 from omegaconf import OmegaConf
 from tqdm import tqdm
-from torch import nn
+from omegaconf import ListConfig
 from config import *
 from models.utils.losses import *
 
 class trainCONVAE1D(tune.Trainable):
 
     def setup(self, config):
+
         self.cfg = OmegaConf.load(config_path + conv_ae_1D_config_file) #here use only vae conf file
-        self.model_name = '_'.join((self.cfg.model.name, self.cfg.dataset.name)) + '.h5'
+        self.model_name = os.path.join(self.cfg.model.name + '.h5')
+        trial_config = config
 
-        self.length = config['seq_in_length']
-        self.n_layers = config['n_layers']
-        self.filter_num = config['filter_num']
-        self.lr = config['lr']
-        self.batch_size = config['batch_size']
-        self.epochs = config['epochs']
-        self.lr_patience = config['lr_patience']
-        self.activation = config['activation']
-        self.kernel_size = config['kernel_size']
-        self.pool = config['pool']
-        self.dilation = config['dilation']
+        # Model trial params
+        model_config = {
+            'seq_in_length': trial_config['seq_in_length'],
+            'n_layers': trial_config['n_layers'],
+            'filter_num': trial_config['filter_num'],
+            'activation': trial_config['activation'],
+            'kernel_size': trial_config['kernel_size'],
+            'pool': trial_config['pool'],
+            'dilation': trial_config['dilation'],
+            'increasing': trial_config.get('increasing', False),
+            'flattened': trial_config.get('flattened', False),
+            'latent_dim': trial_config.get('latent_dim', 60),
+            'stride': 1 if trial_config['pool'] else 2,
+            'name': self.cfg.model.name  # preserve model name
+        }
 
-        self.increasing = config['increasing'] if 'increasing' in list(config.keys()) else False
-        self.flattened = config['flattened'] if 'flattened' in list(config.keys()) else False
-        self.latent_dim = config['latent_dim'] if 'latent_dim' in list(config.keys()) else 60
+        # Optimization trial params
+        opt_config = {
+            'lr': trial_config['lr'],
+            'batch_size': trial_config['batch_size'],
+            'epochs': trial_config['epochs'],
+            'lr_patience': trial_config['lr_patience']
+        }
 
-        if not self.pool:
-            self.stride = 2
-        self.predict = 0
+        # Construct dataset config and merge
+        dataset_config = {
+            #'scaler': trial_config['scaler'],
+            'feats': self.cfg.dataset.feats if isinstance(self.cfg.dataset.feats, (list, ListConfig))
+             else all_feats_dict[self.cfg.dataset.name] if  self.cfg.dataset.feats == 'all'
+             else [],
+            'dataset_subset': self.cfg.dataset.dataset_subset,
+            'train_val_split': self.cfg.dataset.train_val_split,
+            'batch_size': trial_config['batch_size'],
+            'data_path': self.cfg.dataset.data_path
+        }
 
-        # to write on cfg to have later on load dataset
-        self.cfg.dataset.sequence_length = self.length
-        self.cfg.dataset.out_window = self.length
-        self.sample_rate = self.cfg.dataset.sample_rate
-        self.target = False
+        # Merge model and opt into cfg
+        self.cfg.model = OmegaConf.merge(self.cfg.model, model_config)
+        self.cfg.opt = OmegaConf.merge(self.cfg.opt, opt_config)
+        self.cfg.dataset = OmegaConf.merge(self.cfg.dataset, dataset_config)
+        self.epochs = self.cfg.opt.epochs
 
-        self.act_dict = {'Relu': nn.ReLU(), 'Elu': nn.ELU(), 'Selu': nn.SELU(),'LRelu': nn.LeakyReLU()}
-        self.activation = self.act_dict[self.activation]
-
-        self.trainloader, self.valloader, n_features, scaled, scale, columns_subset,\
-        dataset_subset, train_val_split, dataset, data_path = get_dataset(self.cfg, batch_size=self.batch_size
-                                                                          , sequence_length=config['seq_in_length'])
-        self.scaled = scaled
-        self.n_features = n_features
-        self.columns_subset = columns_subset
-        self.dataset_subset = dataset_subset
-        self.train_val_split = train_val_split
-        self.dataset = dataset
-        self.data_path = data_path
-        self.scale = scale
-        self.padding = int((self.dilation * (self.kernel_size-1)/2))
+        # Load data
+        self.trainloader, self.valloader, self.n_features, self.scaler, self.scaler_params = get_dataset(self.cfg)
 
 
-        if self.pool == False:
-            self.stride = 2
-        else:
-            self.stride = 1
-
+        # Add dataset info into cfg.dataset
+        self.cfg.dataset.n_features = self.n_features    # Needed to specify the input channel of the model
+        # Set up device
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
-
-        self.model = get_model(self.cfg, in_channel=self.n_features ,  length=self.length,
-                               kernel_size=self.kernel_size,
-                               filter_num=self.filter_num, n_layers=self.n_layers,
-                               activation=self.activation, pool=self.pool,
-                               stride = self.stride, padding = self.padding,
-                               increasing=self.increasing, flattened=self.flattened,
-                               latent_dim=self.latent_dim).to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min', factor=0.8,
-                                                            patience=self.lr_patience, threshold=0.0001, threshold_mode='rel',
-                                                            cooldown=0, min_lr=9e-8, verbose=True)
-
-        print(self.model)
-
+        # Build model
+        self.model = get_model(self.cfg).to(self.device)
+        # Optimizer and scheduler
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.cfg.opt.lr)
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, 'min',
+            factor=0.8,
+            patience=self.cfg.opt.lr_patience,
+            threshold=0.0001,
+            threshold_mode='rel',
+            cooldown=0,
+            min_lr=9e-8,
+            verbose=True
+        )
         self.criterion = nn.MSELoss()
         self.best_val_loss = 10 ** 16
 
-        self.param_conf = {'columns': self.n_features, 'length':self.length ,'predict':self.predict, 'sequence_length':self.length,
-                        'device': self.device, 'out_window':self.length, 'in_channel':self.n_features, 'n_features':self.n_features, 'scaled':self.scaled,
-                        'sampling_rate':self.sample_rate, 'columns_subset': self.columns_subset, 'dataset_subset':self.dataset_subset,
-                        'target': self.target, 'batch_size': self.batch_size, 'train_val_split': self.train_val_split,
-                        'data_path': self.data_path, 'dataset': self.dataset, 'activation': self.activation, 'kernel_size':self.kernel_size,
-                        'filter_num':self.filter_num, 'n_layers':self.n_layers,
-                        'pool':self.pool, 'stride':self.stride, 'padding':self.padding
-                        ,'increasing':self.increasing, 'flattened':self.flattened,
-                        'latent_dim':self.latent_dim, 'scale':self.scale}
-
-        self.parameters_number = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        # Store parameter count for logging
+        self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
 
     def step(self):
         self.current_ip()
@@ -177,6 +170,7 @@ class trainCONVAE1D(tune.Trainable):
                 'optimizer_state_dict': self.optimizer.state_dict(),
                 'loss': self.best_val_loss,
                 'cfg': self.cfg,
+                'scaler_params': self.scaler_params,
                 'parameters_number': self.parameters_number,
                 'param_conf': self.param_conf
             }, f"{checkpoint_dir}/model.pt")

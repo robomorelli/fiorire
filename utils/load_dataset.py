@@ -1,13 +1,49 @@
-
-from preprocessing.sentinel_preprocessing import prep_sentinel
+from preprocessing.sentinel_preprocessing import get_scaled_train_val_df,  get_train_val_samplers
 from dataset.sentinel import Dataset_seq
 import torch
+import numpy as np
 from torchvision.transforms import transforms as T
 from torchvision.transforms import Lambda
 from torch.utils.data import DataLoader
 import pandas as pd
+from sklearn.preprocessing import RobustScaler, StandardScaler
 
 from config import *
+
+scaler_dict = {'standard': StandardScaler(), 'robust': RobustScaler()}
+
+
+
+
+def load_dataframe(file_path):
+    """
+    Load a pandas DataFrame from a CSV, pickle, or Parquet file based on the file extension.
+
+    Parameters:
+        file_path (str): The path to the data file.
+
+    Returns:
+        pd.DataFrame: The loaded DataFrame.
+
+    Raises:
+        ValueError: If the file extension is unsupported.
+        FileNotFoundError: If the file doesn't exist.
+    """
+    print('PATHHHH', os.getcwd())
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+
+    ext = os.path.splitext(file_path)[1].lower()
+
+    if ext == ".csv":
+        return pd.read_csv(file_path)
+    elif ext in [".pkl", ".pickle"]:
+        return pd.read_pickle(file_path)
+    elif ext == ".parquet":
+        return pd.read_parquet(file_path)
+    else:
+        raise ValueError(f"Unsupported file extension: {ext}")
 
 def get_dataset(cfg, **kwargs):
     """
@@ -16,7 +52,7 @@ def get_dataset(cfg, **kwargs):
     :param transform: transform to be applied to the dataset
     :return: dataset train, dataset test
     """
-    if cfg.dataset.name == "sentinel":
+    if cfg.dataset.name == "fiorire":
 
         if cfg.model.name == "conv_ae":
             transform = T.Compose([
@@ -30,98 +66,33 @@ def get_dataset(cfg, **kwargs):
         else:
             transform = None
 
-        scaled = cfg.dataset.scaled
-        columns_subset = cfg.dataset.columns_subset
-        dataset_subset = cfg.dataset.dataset_subset
-        train_val_split = cfg.dataset.train_val_split
-        sampling_rate = cfg.dataset.sample_rate
-        scale = cfg.dataset.scale
-        random_split = cfg.dataset.random_split
-        shuffle_train = cfg.dataset.shuffle_train
-        perc_overlap = cfg.dataset.perc_overlap
+        sequence_length = cfg.dataset.sequence_length
+        if not cfg.dataset.out_window:
+            cfg.dataset.out_window = cfg.dataset.sequence_length
+        batch_size = cfg.dataset.batch_size
 
         print('DATASET length ', cfg.dataset.dataset_subset)
+        df = load_dataframe(cfg.dataset.data_path)
 
-        sequence_length = kwargs['sequence_length']
-
-        if scaled:
-            dataset_name = 'dataset_4s/all_2016-2018_clean_std_4s.pkl'
-        else:
-            dataset_name = 'dataset_4s/all_2016-2018_clean_4s.pkl'
-
-        data_path = os.path.join(sentinel_path, dataset_name)
-        df = pd.read_pickle(data_path)
-
-        '''
-        df_train, df_test, df = prep_sentinel(df, cfg, cfg.dataset.columns, columns_subset=cfg.dataset.columns_subset,
-                                        dataset_subset=cfg.dataset.dataset_subset, train_val_split=train_val_split,
-                                        scale=scale)
-        
-        train_dataset = Dataset_seq(df_train, target=cfg.dataset.target, sequence_length=cfg.dataset.sequence_length,
-                                    out_window=cfg.dataset.out_window, prediction=False,
-                                    forecast_all = cfg.dataset.forecast_all, transform=transform)
-        trainloader = DataLoader(dataset=train_dataset, batch_size=kwargs['batch_size'], shuffle=True)
-
-        test_dataset = Dataset_seq(df_test, target=cfg.dataset.target, sequence_length=cfg.dataset.sequence_length,
-                                    out_window=cfg.dataset.out_window, prediction=False,
-                                   forecast_all = cfg.dataset.forecast_all, transform=transform)
-        valloader = DataLoader(dataset=test_dataset, batch_size=kwargs['batch_size'], shuffle=False)
-        '''
-
-        train_sampler, val_sampler, df = prep_sentinel(df, cfg, cfg.dataset.columns, columns_subset=cfg.dataset.columns_subset,
-                                        dataset_subset=cfg.dataset.dataset_subset, train_val_split=train_val_split,
-                                         scale=scale, perc_overlap = perc_overlap, random_split=random_split,
-                                                       shuffle_train=shuffle_train)
-
+        # get train and validation dataframes
+        train_df, val_df, scaler, df, scaler_params = get_scaled_train_val_df(cfg, df)
+        # get train and validation samplers
+        train_sampler, val_sampler = get_train_val_samplers(cfg, df)
+        # get the number of features
         n_features = len(df.columns)
-
-        # Dataset for dataloader definition
+        # Dataset for dataloader definition, left the argsument other than cfg because we want to use also without config file
         train_dataset = Dataset_seq(df, target=cfg.dataset.target, sequence_length=cfg.dataset.sequence_length,
-                                    out_window=cfg.dataset.out_window, prediction=False,
-                                    forecast_all = cfg.dataset.forecast_all, transform=transform)
-        trainloader = DataLoader(dataset=train_dataset, batch_size=kwargs['batch_size']
+                                    out_window=cfg.dataset.out_window, transform=transform)
+        trainloader = DataLoader(dataset=train_dataset, batch_size=batch_size
                                  ,sampler=train_sampler)#, shuffle=True)
         test_dataset = Dataset_seq(df, target=cfg.dataset.target, sequence_length=cfg.dataset.sequence_length,
-                                    out_window=cfg.dataset.out_window, prediction=False,
-                                   forecast_all = cfg.dataset.forecast_all, transform=transform)
-        valloader = DataLoader(dataset=test_dataset, batch_size=kwargs['batch_size'], sampler=val_sampler)
-                                #, shuffle=False)
+                                    out_window=cfg.dataset.out_window, transform=transform)
+        valloader = DataLoader(dataset=test_dataset, batch_size=batch_size, sampler=val_sampler)
 
+        if cfg.dataset.save_dataloaders:
+            torch.save(trainloader, os.path.join(root,'dataloader/train_dataloader_{}_ft_{}_length.pth'.format(
+                n_features, sequence_length)))
+            torch.save(valloader, os.path.join(root,'dataloader/test_dataloader_{}_ft_{}_length.pth'.format(
+                n_features, sequence_length)))
 
-        if 'conv' not in cfg.model.name:
-            if scaled:
-                if not shuffle_train:
-                    torch.save(trainloader, os.path.join(root,'dataloader/train_dataloader_{}_ft_{}_{}.pth'.format(n_features,
-                                                                                                     sampling_rate,
-                                                                                                     sequence_length)))
-                    torch.save(valloader, os.path.join(root,'dataloader/test_dataloader_{}_ft_{}_{}.pth'.format(n_features,
-                                                                                                   sampling_rate,
-                                                                                                   sequence_length)))
-                else:
-                    torch.save(trainloader,
-                        os.path.join(root,'dataloader/train_dataloader_{}_ft_{}_{}_shuffle.pth'.format(n_features,
-                                                                                                 sampling_rate,
-                                                                                                 sequence_length)))
-                    torch.save(valloader,
-                        os.path.join(root,'dataloader/test_dataloader_{}_ft_{}_{}_shuffle.pth'.format(n_features,
-                                                                                                sampling_rate,
-                                                                                                sequence_length)))
-            else:
-                if not shuffle_train:
-                    torch.save(trainloader,
-                        os.path.join(root,'dataloader/train_dataloader_not_scaled_{}_ft_{}_{}.pth'.format(n_features,
-                                                                                                    sampling_rate,
-                                                                                                    sequence_length)))
-                    torch.save(valloader,
-                        os.path.join(root,'dataloader/test_dataloader_not_scaled_{}_ft_{}_{}.pth'.format(n_features,
-                                                                                                   sampling_rate,
-                                                                                                   sequence_length)))
-                else:
-                    torch.save(trainloader, os.path.join(root,'dataloader/train_dataloader_not_scaled_{}_ft_{}_{}_shuffle.pth'.format(
-                        n_features, sampling_rate, sequence_length)))
-                    torch.save(valloader, os.path.join(root,'dataloader/test_dataloader_not_scaled_{}_ft_{}_{}_shuffle.pth'.format(
-                        n_features, sampling_rate, sequence_length)))
-
-        return trainloader, valloader, n_features, scaled, scale, columns_subset, dataset_subset, train_val_split, dataset_name, data_path
-
-
+        return trainloader, valloader, n_features, scaler, scaler_params
