@@ -74,6 +74,9 @@ def create_train_val_df(cfg, df, seed=42):
     df_train = df.iloc[train_indexes].copy().reset_index(drop=True)
     df_val = df.iloc[val_indexes].copy().reset_index(drop=True)
 
+    # inverse order split dataframe and index: split before the indexes and the the dataframe
+    # remove df split and use only indexes
+
     return df_train, df_val
 
 def get_scaler(cfg):

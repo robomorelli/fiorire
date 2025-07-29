@@ -33,6 +33,7 @@ def main(args):
                   .strip("[]").split(',')])
 
     trainer = get_trainer(cfg)
+
     if cfg.resources.gpu_trial != 0:
         resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial}
     else:

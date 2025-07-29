@@ -31,7 +31,7 @@ dataset:
                   #'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
   target: null
   dataset_subset: 12000000
-  scaler: {'RobustScaler': {'qr_1': 0.5, 'qr_2': 0.95}}   # other coiches{StandarcScaler: None}, None
+  scaler: {'RobustScaler': {'qr_1': 0.5, 'qr_2': 0.95}}   # other coiches {StandarcScaler: None}, None
   save_dataloaders: False
   forecast_all: 0
 

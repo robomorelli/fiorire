@@ -6,11 +6,10 @@ module load proxy/proxy_20
 
 cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
 
-# Read from environment (passed via PBS -v)
+# Read PBS environment
 NUM_NODES=${num_nodes}
 NUM_GPUS=${num_gpus}
 NUM_CPUS=${num_cpus}
-# Python defaults
 CONFIG_FILE=${model_name}
 NUM_SAMPLES=${num_samples}
 ENTITY=${entity}
@@ -22,35 +21,80 @@ echo "python configuration:"
 echo " - Nodes: $NUM_NODES"
 echo " - GPUs per node: $NUM_GPUS"
 echo " - CPUs per node: $NUM_CPUS"
-echo " - Model: ${CONFIG_FILE:-default from Python}"
-echo " - Num Samples: ${NUM_SAMPLES:-default from Python}"
-echo " - ENTITY: ${ENTITY:-default from Python}"
-echo " - WANDB_KEY: ${WANDB_KEY:-default from Python}"
-echo " - PROJECT_NAME: ${PROJECT_NAME:-default from Python}"
-echo " - WANDB: ${WANDB:-default from Python}"
+echo " - Model: ${CONFIG_FILE:-default}"
+echo " - Num Samples: ${NUM_SAMPLES:-default}"
+echo " - ENTITY: ${ENTITY:-default}"
+echo " - WANDB_KEY: ${WANDB_KEY:-default}"
+echo " - PROJECT_NAME: ${PROJECT_NAME:-default}"
+echo " - WANDB: ${WANDB:-default}"
 
-# Discover node list
+# Discover nodes
 NODES=($(sort -u $PBS_NODEFILE))
 MASTER_NODE=${NODES[0]}
 WORKER_NODES=("${NODES[@]:1}")
 NUM_ACTUAL_NODES=${#NODES[@]}
-
 echo "Allocated nodes: ${NODES[*]}"
 echo "Master node: $MASTER_NODE"
 echo "Worker nodes: ${WORKER_NODES[*]}"
 
-# Redis for Ray
-MASTER_IP=$(ssh $MASTER_NODE "hostname -I | awk '{print \$1}'")
-REDIS_PORT=6379
-REDIS_ADDRESS="$MASTER_IP:$REDIS_PORT"
+# Ray environment setup
 REDIS_PASSWORD="5241590000000000"
+TMPDIR="/tmp/ray-$USER"
+mkdir -p "$TMPDIR"
+chmod 700 "$TMPDIR"
+
+# Auto-select Redis port on master node
+MASTER_IP=$(ssh $MASTER_NODE "hostname -I | awk '{print \$1}'")
+for port in {6379..6399}; do
+  ssh $MASTER_NODE "lsof -i :$port" &> /dev/null
+  if [[ $? -ne 0 ]]; then
+    REDIS_PORT=$port
+    REDIS_ADDRESS="$MASTER_IP:$REDIS_PORT"
+    break
+  fi
+done
+if [[ -z "$REDIS_PORT" ]]; then
+  echo "[ERROR] No free Redis port found on $MASTER_NODE"
+  exit 1
+fi
+
+# Define cleanup function
+cleanup_ray_cluster() {
+  echo "[CLEANUP] Stopping Ray on all nodes..."
+
+  for NODE in "${NODES[@]}"; do
+    echo "[CLEANUP] Checking and stopping Ray on $NODE"
+    ssh $NODE "
+      source ~/.bashrc
+      conda activate fiorire
+      export TMPDIR='/tmp/ray-$USER'
+      CURRENT_CLUSTER=\$(cat \$TMPDIR/ray_current_cluster 2>/dev/null || true)
+      if [[ \"\$CURRENT_CLUSTER\" == \"$REDIS_ADDRESS\" ]]; then
+        echo \"[CLEANUP] Stopping Ray on $NODE (owned cluster)\"
+        ray stop
+      else
+        echo \"[CLEANUP] Skipped Ray stop on $NODE (not matching cluster)\"
+      fi
+    " &
+  done
+
+  wait
+  echo "[CLEANUP] Ray cleanup complete."
+}
+
+# Trap exit and signals
+trap cleanup_ray_cluster EXIT SIGINT SIGTERM
 
 # Start Ray head
 echo "[MASTER] Starting Ray head on $MASTER_NODE ($MASTER_IP)"
 ssh $MASTER_NODE "
   source ~/.bashrc
   conda activate fiorire
+  export TMPDIR='/tmp/ray-$USER'
   module load proxy/proxy_20
+  mkdir -p \$TMPDIR
+  chmod 700 \$TMPDIR
+  ray stop
   eval \$(python /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/set_gpus_env.py --n $NUM_GPUS)
   ray start --head --node-ip-address=$MASTER_IP --port=$REDIS_PORT --redis-password=$REDIS_PASSWORD
 " &
@@ -63,7 +107,11 @@ for WORKER in "${WORKER_NODES[@]}"; do
   ssh $WORKER "
     source ~/.bashrc
     conda activate fiorire
+    export TMPDIR='/tmp/ray-$USER'
     module load proxy/proxy_20
+    mkdir -p \$TMPDIR
+    chmod 700 \$TMPDIR
+    ray stop
     WORKER_IP=\$(hostname -I | awk '{print \$1}')
     eval \$(python /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/set_gpus_env.py --n $NUM_GPUS)
     ray start --address=$REDIS_ADDRESS --redis-password=$REDIS_PASSWORD --node-ip-address=\$WORKER_IP
@@ -72,61 +120,27 @@ done
 
 wait
 
-# Run Ray Tune training
+# Run training
 MODEL_CONFIG_PATH="main.py"
 echo "[MASTER] Running main.py on $MASTER_NODE"
 ssh $MASTER_NODE "
   source ~/.bashrc
   conda activate fiorire
+  export TMPDIR='/tmp/ray-$USER'
   module load proxy/proxy_20
   cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
 
   CMD=\"python $MODEL_CONFIG_PATH --address $REDIS_ADDRESS --password $REDIS_PASSWORD\"
 
-  echo '[MASTER] Argument origin:'
-  if [[ -n \"$CONFIG_FILE\" ]]; then
-    CMD+=\" --config_file $CONFIG_FILE\"
-    echo ' - config_file: from shell script (CLI override)'
-  else
-    echo ' - config_file: using default from Python'
-  fi
+  [[ -n \"$CONFIG_FILE\" ]] && CMD+=\" --config_file $CONFIG_FILE\"
+  [[ -n \"$NUM_SAMPLES\" ]] && CMD+=\" --num_samples $NUM_SAMPLES\"
+  [[ -n \"$WANDB_KEY\" ]] && CMD+=\" --wandb_key $WANDB_KEY\"
+  [[ -n \"$ENTITY\" ]] && CMD+=\" --entity $ENTITY\"
+  [[ -n \"$WANDB\" ]] && CMD+=\" --wandb $WANDB\"
+  [[ -n \"$PROJECT_NAME\" ]] && CMD+=\" --project_name $PROJECT_NAME\"
 
-  if [[ -n \"$NUM_SAMPLES\" ]]; then
-    CMD+=\" --num_samples $NUM_SAMPLES\"
-    echo ' - num_samples: from shell script (CLI override)'
-  else
-    echo ' - num_samples: using default from Python'
-  fi
-
-  if [[ -n \"$WANDB_KEY\" ]]; then
-    CMD+=\" --wandb_key $WANDB_KEY\"
-    echo ' - wandb_key: from shell script (CLI override)'
-  else
-    echo ' - wandb_key: using default from Python'
-  fi
-
-  if [[ -n \"$ENTITY\" ]]; then
-    CMD+=\" --entity $ENTITY\"
-    echo ' - entity: from shell script (CLI override)'
-  else
-    echo ' - entity: using default from Python'
-  fi
-
-  if [[ -n \"$WANDB\" ]]; then
-    CMD+=\" --wandb $WANDB\"
-    echo ' - wandb: from shell script (CLI override)'
-  else
-    echo ' - wandb: using default from Python'
-  fi
-
-  if [[ -n \"$PROJECT_NAME\" ]]; then
-    CMD+=\" --project_name $PROJECT_NAME\"
-    echo ' - project_name: from shell script (CLI override)'
-  else
-    echo ' - project_name: using default from Python'
-  fi
-
-  echo \"[MASTER] Final command:\"
-  echo \$CMD
+  echo \"[MASTER] Running: \$CMD\"
   eval \$CMD
 "
+
+# Ray will be cleaned up by the trap on exit
