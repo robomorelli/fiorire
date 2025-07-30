@@ -5,13 +5,9 @@ tune_config:
       batch_size: tune.choice([100, 500])
       seq_in_length: tune.choice([40])
       dilation: tune.choice([1])
-      #filter_num: tune.choice([12, 24, 36, 42, 64, 100, 110, 128]) 16 channels with flattened
-      #filter_num: tune.choice([12, 24, 36, 42, 64, 100, 110, 120]) #16 channels
       filter_num: tune.choice([110, 120])
-      #filter_num: tune.choice([12, 24, 28]) #4 channels
       n_layers: tune.choice([1, 2])
       lr_patience: tune.choice([5, 10])
-      #kernel_size: tune.choice([3, 5, 7, 9, 11])
       kernel_size: tune.choice([7, 9])
       increasing: tune.choice([0])
       flattened: tune.choice([0])
@@ -21,28 +17,23 @@ tune_config:
 
 # Dataset
 dataset:
-  name: 'sentinel'
-  sequential: False
-  sample_rate: "4s"
-  scaled: False
-  scale: False
-  clean: True
+  name: 'fiorire'
+  data_path: '/davinci-1/home/morellir/artificial_intelligence/repos/fiorire/data/fiorire/sentinel/dataset_4s/all_2016-2018_clean_4s.pkl'
   perc_overlap: 0
-  random_split: False #split randomly train and val: attention if per_overlap != 0
-  shuffle_train: True #shuffle the idx of the train
-  feats: 'all'
-  columns: ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
-             'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
-            'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
-            'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
-  #columns: ['RW3_motcurr','RW3_therm',
-  #          'RW3_speed', 'RW3_cmd_volt']
-  dataset_subset: 12000000
-  columns_subset: 0
-  target: None
-  predict: False
-  forecast_all: False
+  chunks_num: 10
+  sequence_length: 16
+  out_window: null
   train_val_split: 0.8
+  shuffle_train: True #shuffle the idx of the train
+  feats: ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr']   #['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
+                  # 'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
+                  #'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
+                  #'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
+  target: null
+  dataset_subset: 12000000
+  scaler: {'RobustScaler': {'qr_1': 0.5, 'qr_2': 0.95}}   # other coiches {StandarcScaler: None}, None
+  save_dataloaders: False
+  forecast_all: 0
 
 # Model
 model:
