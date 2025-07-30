@@ -9,6 +9,7 @@ from ray.air.integrations.wandb import WandbLoggerCallback
 from config import *
 
 def main(args):
+
     now = datetime.now()
     date = now.strftime("%D:%H:%M:%S")
 
@@ -19,8 +20,9 @@ def main(args):
     if args.debug_mode:
         ray_config, cfg = extract_fixed_config(cfg_path)
         trainer_test = get_trainer(cfg.model.name)(config=ray_config)
-    trainer = get_trainer(cfg.model.name)
+        print("Debug mode: testing trainer with config", ray_config)
 
+    trainer = get_trainer(cfg.model.name)
     sched = ASHAScheduler(metric=cfg.opt.tune_report, mode="min", max_t = 10 ** 18,
                                                         grace_period=50)
     if args.wandb:
