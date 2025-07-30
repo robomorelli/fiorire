@@ -1,9 +1,7 @@
 import pandas as pd
 import argparse
-import os
 from os.path import expanduser
 from omegaconf import OmegaConf
-from pathlib import Path
 import sys
 sys.path.append('../fdir')
 from config import *
@@ -11,7 +9,7 @@ from config import *
 def main(args):
     config_file = args.experiment_name.split('/')[0]
     config_path_rebase = root
-    #cfg = OmegaConf.load(os.path.join(config_path_rebase,'train_configurations', config_file + '.yaml'))
+    cfg = OmegaConf.load(os.path.join(config_path_rebase,'train_configurations', config_file + '.yaml'))
     folder = os.path.join(args.experiment_path, args.experiment_name)
     exp_names = os.listdir(folder)
     metrics = list(cfg.opt.metrics) + ['parameters_number']

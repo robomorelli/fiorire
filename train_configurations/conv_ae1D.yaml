@@ -14,6 +14,8 @@ tune_config:
       latent_dim: tune.choice([100, 160, 320, 256, 400, 512]) #64 (4,16) 160 (4, 40); 640 (16, 40); 256 (16,16)
       pool: tune.choice([1, 0])
       activation: tune.choice(['Elu', 'Relu'])
+      scaler: tune.choice(['RobustScaler-0.05-0.95', 'StandardScaler'])  # other choices {StandardScaler: None}, None
+      perc_overlap: tune.choice([0, 0.3, 0.7])
 
 # Dataset
 dataset:
@@ -32,7 +34,7 @@ dataset:
   target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
   dataset_subset: 12000000
-  scaler: {'RobustScaler': {'qr_1': 0.5, 'qr_2': 0.95}}   # other coiches {StandarcScaler: None}, None
+  scaler: 'RobustScaler-0.05-0.95'  # other coiches {StandarcScaler: None}, None
   save_dataloaders: False
   forecast: 0
 

@@ -1,19 +1,12 @@
 from preprocessing.sentinel_preprocessing import get_scaled_train_val_df,  get_train_val_samplers
 from dataset.sentinel import Dataset_seq
 import torch
-import numpy as np
 from torchvision.transforms import transforms as T
 from torchvision.transforms import Lambda
 from torch.utils.data import DataLoader
 import pandas as pd
-from sklearn.preprocessing import RobustScaler, StandardScaler
 
 from config import *
-
-scaler_dict = {'standard': StandardScaler(), 'robust': RobustScaler()}
-
-
-
 
 def load_dataframe(file_path):
     """

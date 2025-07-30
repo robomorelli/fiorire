@@ -63,6 +63,8 @@ class trainCONVAE1D(tune.Trainable):
         # Construct dataset config
         dataset_config = {
             'seq_in_length': trial_config['seq_in_length'],
+            'scaler': trial_config['scaler'],
+            'perc_overlap': trial_config['perc_overlap'],
             'feats': feats,
             'target': target,
             'dataset_subset': self.cfg.dataset.dataset_subset,

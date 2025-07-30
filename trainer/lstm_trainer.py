@@ -56,12 +56,11 @@ class trainLSTM(tune.Trainable):
         # Construct dataset config
         dataset_config = {
             'seq_in_length': trial_config['seq_in_length'],
+            'scaler': trial_config['scaler'],
+            'perc_overlap': trial_config['perc_overlap'],
             'feats': feats,
             'target': target,
-            'dataset_subset': self.cfg.dataset.dataset_subset,
-            'train_val_split': self.cfg.dataset.train_val_split,
             'batch_size': trial_config['batch_size'],
-            'data_path': self.cfg.dataset.data_path,
         }
 
         # Merge model and opt into cfg
@@ -107,74 +106,86 @@ class trainLSTM(tune.Trainable):
         return result
 
     def train_lstm(self, checkpoint_dir=None):
-        ####Train Loop####
         """
-        Set the models to the training mode first and train
+        Train loop for LSTM with tqdm progress bars
         """
-        for epoch in tqdm(range(self.epochs), unit='epoch'):
+        for epoch in tqdm(range(self.epochs), unit='epoch', desc="Epochs"):
             self.current_epoch = epoch
             temp_train_loss = 0
             train_steps = 0
-            for i, batch in tqdm(enumerate(self.trainloader), total=len(self.trainloader), unit="batch"):
-                self.model.train()
+
+            # Training phase with tqdm
+            self.model.train()
+            train_loader_tqdm = tqdm(self.trainloader, desc=f"Training Epoch {epoch + 1}", unit="batch", leave=False)
+            for i, batch in enumerate(train_loader_tqdm):
                 self.optimizer.zero_grad()
 
-                y_o = self.model(batch[0].to(self.device))
-                loss = self.criterion(y_o.to(self.device), batch[1].to(self.device))
+                inputs, targets = batch[0].to(self.device), batch[1].to(self.device)
+                outputs = self.model(inputs)
+                loss = self.criterion(outputs, targets)
+
                 loss.backward()
-                # torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
+                self.optimizer.step()
+
                 temp_train_loss += loss.item()
                 train_steps += 1
 
-                self.optimizer.step()
-
                 if i % 10 == 0:
-                    print("Loss:")
-                    print(loss.item())
+                    train_loader_tqdm.set_postfix(loss=loss.item())
 
-            temp_train_loss = temp_train_loss / train_steps
-            train_loss = temp_train_loss
-            print('train loss at the end of epoch is ', train_loss)
+            train_loss = temp_train_loss / train_steps
+            print(f"[Epoch {epoch + 1}] Train loss: {train_loss:.4f}")
 
+            # Validation phase with tqdm
             self.model.eval()
-            val_steps = 0
             temp_val_loss = 0
+            val_steps = 0
+
             with torch.no_grad():
-                for i, batch in tqdm(enumerate(self.valloader), total=len(self.valloader), desc="Evaluating"):
-                    y_o = self.model(batch[0].to(self.device))
-                    loss = self.criterion(y_o.to(self.device), batch[1].to(self.device)).item()
+                val_loader_tqdm = tqdm(self.valloader, desc="Validating", unit="batch", leave=False)
+                for batch in val_loader_tqdm:
+                    inputs, targets = batch[0].to(self.device), batch[1].to(self.device)
+                    outputs = self.model(inputs)
+                    loss = self.criterion(outputs, targets).item()
                     temp_val_loss += loss
                     val_steps += 1
 
-            temp_val_loss = temp_val_loss / val_steps
-            val_loss = temp_val_loss
-            print('eval loss {}'.format(val_loss))
+            val_loss = temp_val_loss / val_steps
+            print(f"[Epoch {epoch + 1}] Validation loss: {val_loss:.4f}")
+
             self.scheduler.step(val_loss)
+
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
-                return {"train_loss": train_loss, 'parameters_number': self.parameters_number,
-                        "val_loss": val_loss, "should_checkpoint": True}
+                return {
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "parameters_number": self.parameters_number,
+                    "should_checkpoint": True
+                }
             else:
-                return {"train_loss": train_loss,'parameters_number': self.parameters_number,
-                        "val_loss": val_loss}
+                return {
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                    "parameters_number": self.parameters_number
+                }
 
     def test_lstm(self, checkpoint_dir=None):
+        self.model.eval()
         test_loss = 0.0
         test_steps = 0
-        self.model.eval()
 
         with torch.no_grad():
-            for i, batch in tqdm(enumerate(self.valloader), total=len(self.valloader), desc="Evaluating"):
-                x_o, enc, y_o = self.model(batch[0].to(self.device))
-                loss = self.criterion(y_o.to(self.device), x_o.to(self.device)).item()
+            for batch in tqdm(self.valloader, desc="Testing", unit="batch"):
+                inputs, _, targets = batch[0].to(self.device), batch[1], batch[1].to(self.device)
+                outputs, enc, preds = self.model(inputs)
+                loss = self.criterion(preds, inputs).item()
                 test_loss += loss
                 test_steps += 1
 
-        test_loss = test_loss / test_steps
-        test_loss_cpu = test_loss.cpu()
-        print('test_loss {}'.format(test_loss_cpu))
-        return {"test_loss": test_loss_cpu}
-
+        test_loss /= test_steps
+        print(f"Test loss: {test_loss:.4f}")
+        return {"test_loss": test_loss}
 
     def save_checkpoint(self, checkpoint_dir):
         print("this is the checkpoint dir {}".format(checkpoint_dir))

@@ -85,14 +85,15 @@ def get_scaler(cfg):
         return None
 
     # Extract scaler name and params
-    scaler_name, scaler_params = list(scaler_cfg.items())[0]
+    #scaler_name, scaler_params = list(scaler_cfg.items())[0]
+    scaler_name = scaler_cfg.split('-')[0]
 
     if scaler_name == 'StandardScaler':
         return StandardScaler()
     elif scaler_name == 'RobustScaler':
         # Translate config keys to sklearn-compatible ones
-        q1 = scaler_params.get('qr_1', 0.25)
-        q2 = scaler_params.get('qr_2', 0.75)
+        q1 = float(scaler_cfg.split('-')[1])
+        q2 = float(scaler_cfg.split('-')[2])
         return RobustScaler(quantile_range=(q1 * 100, q2 * 100))
     else:
         raise ValueError(f"Scaler '{scaler_name}' not supported.")
@@ -198,6 +199,7 @@ def get_train_val_samplers(cfg, df):
     np.random.seed(101)
     step = cfg.dataset.seq_in_length - int(cfg.dataset.seq_in_length * cfg.dataset.perc_overlap)
     print('using step', step)
+    print('perc_overlap', cfg.dataset.perc_overlap)
     print('using sequence length', cfg.dataset.seq_in_length)
     step = step if step > 0 else 1
     print('step', step)
