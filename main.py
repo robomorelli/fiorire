@@ -2,7 +2,7 @@ import argparse
 import ray
 from ray.tune.schedulers import ASHAScheduler
 from utils.load_trainer import get_trainer
-from utils.general import make_paths_absolute, extract_config
+from utils.general import make_paths_absolute, extract_config, extract_fixed_config
 from datetime import datetime
 from ray.air.integrations.wandb import WandbLoggerCallback
 
@@ -16,6 +16,9 @@ def main(args):
     cfg_path = os.path.join(config_path, args.config_file + '.yaml')
     ray_config, cfg = extract_config(cfg_path)  # Extract fixed config parameters to avoid failure in get_trainer(cfg.model.name)(config=config) * the config is the problem
 
+    if args.debug:
+        ray_config, cfg = extract_fixed_config(cfg_path)
+        trainer_test = get_trainer(cfg.model.name)(config=ray_config)
     trainer = get_trainer(cfg.model.name)
 
     sched = ASHAScheduler(metric=cfg.opt.tune_report, mode="min", max_t = 10 ** 18,
@@ -54,12 +57,13 @@ if __name__ == "__main__":
     parser.add_argument("--address", default = '10.141.1.28:6379', help="adress of master")
     parser.add_argument("--password", help="password to connect to master")
     #parser.add_argument("--config_path", default='./train_configurations/', help="echo the string you use here")
-    parser.add_argument("--config_file", default='conv_ae1D', help="the model you want to hpo")
+    parser.add_argument("--config_file", default='lstm', help="the model you want to hpo")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
     parser.add_argument("--wandb", default=1, help="the model you want to hpo")
     parser.add_argument("--project_name", default='fiorire_hpc_hpo', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
+    parser.add_argument("--debug", default=1, help="the model you want to hpo")
     args = parser.parse_args()
 
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"
