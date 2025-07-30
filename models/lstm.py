@@ -3,53 +3,8 @@ import torch
 
 torch.manual_seed(0)
 
-class Encoder(nn.Module):
-    def __init__(self, seq_in, seq_out, n_features, output_size,
-                 embedding_size, n_layers_1=2, n_layers_2=1):
-        super().__init__()
 
-        self.n_features = n_features  # The number of expected features(= dimension size) in the input x
-        self.embedding_size = embedding_size  # the number of features in the embedded points of the inputs' number of features
-        self.n_layers_1 = n_layers_1
-        self.n_layers_2 = n_layers_2
-        self.hidden_size = (2 * embedding_size)  # The number of features in the hidden state h
-        # self.seq_out = seq_out
-        # self.seq_in = seq_in
-        self.output_size = output_size
-
-        self.LSTMenc = nn.LSTM(
-            input_size=self.n_features,
-            hidden_size=self.hidden_size,
-            num_layers=self.n_layers_1,
-            batch_first=True
-        )
-        self.LSTM1 = nn.LSTM(
-            input_size=self.hidden_size,
-            hidden_size=self.embedding_size,
-            num_layers=self.n_layers_2,
-            batch_first=True
-        )
-
-        self.out = nn.Linear(self.embedding_size, self.output_size)
-        self.apply(self.weight_init)
-
-    @staticmethod
-    def weight_init(m):
-        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv3d):
-            nn.init.kaiming_normal_(m.weight)
-            nn.init.zeros_(m.bias)
-
-    def forward(self, x):
-        x, (hidden_state, cell_state) = self.LSTMenc(x)
-        x, (hidden_state, cell_state) = self.LSTM1(x)  ### to switch to x because it needs repeated sequence
-        out = self.out(x)
-        return out
-
-
-
-
-
-class lstm_encoder(nn.Module):
+class ENCODER(nn.Module):
     ''' Encodes time-series sequence '''
 
     def __init__(self, input_size, hidden_size, num_layers=1, n_cells=1):
@@ -60,7 +15,7 @@ class lstm_encoder(nn.Module):
         :                       2 stacked LSTMs)
         '''
 
-        super(lstm_encoder, self).__init__()
+        super(ENCODER, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -127,7 +82,7 @@ class LSTM(nn.Module):
         self.seq_out = cfg.dataset.seq_out_length  # Add in traine
         self.input_size = cfg.dataset.n_features
 
-        self.encoder = lstm_encoder(self.input_size,
+        self.encoder = ENCODER(self.input_size,
                                     self.hidden_size, self.n_layers, self.n_cells)
 
         self.linear = nn.Linear(self.hidden_size, self.input_size)
