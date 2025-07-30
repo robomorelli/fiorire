@@ -29,9 +29,7 @@ def main(args):
                         checkpoint_at_end=True,  # otherwise it fails on multinode?
                         local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
                         name="{}/debugger".format(cfg.model.name),
-                        config=ray_config,
-
-                        )
+                        config=ray_config)
 
 
 if __name__ == "__main__":
