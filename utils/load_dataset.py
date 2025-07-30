@@ -43,7 +43,7 @@ def load_dataframe(file_path):
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
 
-def get_dataset(cfg, **kwargs):
+def  get_dataset(cfg, **kwargs):
     """
     Get the dataset.
     :param cfg:  configuration file
@@ -75,16 +75,16 @@ def get_dataset(cfg, **kwargs):
         train_df, val_df, scaler, df, scaler_params = get_scaled_train_val_df(cfg, df)
         # get train and validation samplers
         train_sampler, val_sampler = get_train_val_samplers(cfg, df)
-        # get the number of features
-        n_features = len(df.columns)
         # Dataset for dataloader definition, left the argsument other than cfg because we want to use also without config file
         train_dataset = Dataset_seq(df, target=cfg.dataset.target, sequence_length=cfg.dataset.seq_in_length,
-                                    out_window=cfg.dataset.seq_out_length, forecast_all=cfg.dataset.forecast_all, transform=transform)
+                                    out_window=cfg.dataset.seq_out_length, forecast=cfg.dataset.forecast, transform=transform)
         trainloader = DataLoader(dataset=train_dataset, batch_size=batch_size
                                  ,sampler=train_sampler)#, shuffle=True)
         test_dataset = Dataset_seq(df, target=cfg.dataset.target, sequence_length=cfg.dataset.seq_in_length,
-                                    out_window=cfg.dataset.seq_out_length, forecast_all=cfg.dataset.forecast_all, transform=transform)
+                                    out_window=cfg.dataset.seq_out_length, forecast=cfg.dataset.forecast, transform=transform)
         valloader = DataLoader(dataset=test_dataset, batch_size=batch_size, sampler=val_sampler)
+
+        n_features = len(cfg.dataset.feats)
 
         if cfg.dataset.save_dataloaders:
             torch.save(trainloader, os.path.join(root,'dataloader/train_dataloader_{}_ft_{}_length.pth'.format(

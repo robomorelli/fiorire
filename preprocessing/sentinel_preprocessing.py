@@ -164,7 +164,11 @@ def create_train_val_df_with_ano(cfg, df, seq_len, num_chunks=12, val_ratio=0.1,
     return df_train, df_val, df_train_ano, df_val_ano
 
 def get_scaled_train_val_df(cfg, df):
-    dataRaw = df[cfg.dataset.feats].dropna()
+
+    cfg.dataset.target = cfg.dataset.target if isinstance(cfg.dataset.target, list) else [cfg.dataset.target] if cfg.dataset.target else None
+    columns = cfg.dataset.feats + [x for x in cfg.dataset.target if x not in cfg.dataset.feats] if cfg.dataset.target else cfg.dataset.feats
+    dataRaw = df[columns].dropna()
+
     if cfg.dataset.dataset_subset:
         dataRaw = dataRaw.iloc[:cfg.dataset.dataset_subset, :]
 
@@ -172,7 +176,6 @@ def get_scaled_train_val_df(cfg, df):
     train_df, val_df = create_train_val_df(cfg, df, seed=42)
 
     scaler = get_scaler(cfg)
-
     if scaler:
         scaler.fit(train_df)
         train_df_scaled = scaler.transform(train_df.values)

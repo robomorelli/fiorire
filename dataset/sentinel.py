@@ -8,27 +8,23 @@ class Dataset_seq(Dataset):
 
     # TODO: implement also the forecasting (the idx of target is shifted ahead of many steps of the forecasting window
     def __init__(self, df, target=None, sequence_length=4, out_window=4,
-                 predict=False, forecast=False, forecast_all=False, transform=None):
+                 reconstruction=True, forecast=False, remove_target=False, transform=None):
 
-        self.predict = predict
         self.forecast = forecast
-        self.forecast_all = forecast_all
+        self.reconstruction = True if not forecast else reconstruction
+        self.remove_target = remove_target
+
+        if not (self.forecast or self.reconstruction):
+            raise Exception('You should define at least one of the modes: reconstruction, prediction or forecasting')
+
         self.transform = transform
         #TODO raise error if prediction == true but target is not defined
-        if self.predict and not self.forecast:
-            if target is None:
-                raise Exception(' you should define a target for the prediction mode')
-            self.df_data = df.drop(target, axis=1)
-            self.targets = df[target]
-        elif self.forecast:
-            self.df_data = df
-            self.targets = df[target]
-        elif self.forecast_all: # In case of recontruction
-            self.df_data = df  # In case of recontruction
-            self.targets = df  # In case of recontruction
-        else: # In case of recontruction
-            self.df_data = df  # In case of recontruction
-            self.targets = df  # In case of recontruction
+        if self.forecast:
+            self.df_data = df.drop(columns=target) if self.remove_target else df  # In case of forecasting, the target is not removed from the input data
+            self.targets = df[target] if target is not None else df  # In case of forecasting, the target is the same as the input data
+        elif self.reconstruction: # In case of recontruction
+            self.df_data = df.drop(columns=target) if self.remove_target else df
+            self.targets = df[target] if target is not None else df  # In case of recontruction
 
         self.sequence_length = sequence_length
         self.out_window = out_window
@@ -37,7 +33,7 @@ class Dataset_seq(Dataset):
         return len(self.df_data)
 
     def __getitem__(self, idx):
-        if self.forecast or self.forecast_all or self.predict:
+        if self.forecast:
             if (idx + self.sequence_length + self.out_window) > len(self.df_data):
                 indexes = list(range(len(self.df_data) - self.sequence_length - self.out_window,
                                      len(self.df_data) - self.out_window))
@@ -54,7 +50,7 @@ class Dataset_seq(Dataset):
             indexes_out = indexes[-self.out_window:]
 
         data = self.df_data.iloc[indexes, :].values
-        target = self.targets.iloc[indexes_out].values
+        target = self.targets.iloc[indexes_out, :].values
 
         if self.transform is not None:
             data = self.transform(data)

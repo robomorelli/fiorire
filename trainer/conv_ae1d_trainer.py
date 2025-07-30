@@ -41,16 +41,34 @@ class trainCONVAE1D(tune.Trainable):
         }
 
         # Construct dataset config and merge
+        # Handle 'feats'
+        if isinstance(self.cfg.dataset.feats, (list, ListConfig)):
+            feats = self.cfg.dataset.feats
+        elif self.cfg.dataset.feats == 'all':
+            feats = all_feats_dict[self.cfg.dataset.name]
+        else:
+            feats = [self.cfg.dataset.feats]
+
+        # Handle 'target'
+        if isinstance(self.cfg.dataset.target, (list, ListConfig)):
+            target = self.cfg.dataset.target
+        elif isinstance(self.cfg.dataset.target, str):
+            if self.cfg.dataset.target == 'all':
+                target = all_feats_dict[self.cfg.dataset.name]
+            else:
+                target = [self.cfg.dataset.target]
+        else:
+            target = None
+
+        # Construct dataset config
         dataset_config = {
-            #'scaler': trial_config['scaler'],
             'seq_in_length': trial_config['seq_in_length'],
-            'feats': self.cfg.dataset.feats if isinstance(self.cfg.dataset.feats, (list, ListConfig))
-             else all_feats_dict[self.cfg.dataset.name] if self.cfg.dataset.feats == 'all'
-             else [],
+            'feats': feats,
+            'target': target,
             'dataset_subset': self.cfg.dataset.dataset_subset,
             'train_val_split': self.cfg.dataset.train_val_split,
             'batch_size': trial_config['batch_size'],
-            'data_path': self.cfg.dataset.data_path
+            'data_path': self.cfg.dataset.data_path,
         }
 
         # Merge model and opt into cfg

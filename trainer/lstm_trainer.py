@@ -20,8 +20,8 @@ class trainLSTM(tune.Trainable):
         # Model trial params
         model_config = {
             'embedding_dim': trial_config['embedding_dim'],
-            'n_layers_cell_1': trial_config['n_layers_cell_1'],
-            'n_layers_cell_2': trial_config['n_layers_cell_2'] if trial_config['n_layers_cell_1'] > trial_config['n_layers_cell_2'] else max(trial_config['n_layers_cell_1'] - 1, 1),
+            'n_layers': trial_config['n_layers'],
+            'n_cells': trial_config['n_cells'],
             'name': self.cfg.model.name  # preserve model name
         }
 
@@ -34,12 +34,30 @@ class trainLSTM(tune.Trainable):
         }
 
         # Construct dataset config and merge
+        # Handle 'feats'
+        if isinstance(self.cfg.dataset.feats, (list, ListConfig)):
+            feats = self.cfg.dataset.feats
+        elif self.cfg.dataset.feats == 'all':
+            feats = all_feats_dict[self.cfg.dataset.name]
+        else:
+            feats = [self.cfg.dataset.feats]
+
+        # Handle 'target'
+        if isinstance(self.cfg.dataset.target, (list, ListConfig)):
+            target = self.cfg.dataset.target
+        elif isinstance(self.cfg.dataset.target, str):
+            if self.cfg.dataset.target == 'all':
+                target = all_feats_dict[self.cfg.dataset.name]
+            else:
+                target = [self.cfg.dataset.target]
+        else:
+            target = None
+
+        # Construct dataset config
         dataset_config = {
-            #'scaler': trial_config['scaler'],
             'seq_in_length': trial_config['seq_in_length'],
-            'feats': self.cfg.dataset.feats if isinstance(self.cfg.dataset.feats, (list, ListConfig))
-             else all_feats_dict[self.cfg.dataset.name] if self.cfg.dataset.feats == 'all'
-             else [],
+            'feats': feats,
+            'target': target,
             'dataset_subset': self.cfg.dataset.dataset_subset,
             'train_val_split': self.cfg.dataset.train_val_split,
             'batch_size': trial_config['batch_size'],
