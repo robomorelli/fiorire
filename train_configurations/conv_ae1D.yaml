@@ -18,11 +18,11 @@ tune_config:
 # Dataset
 dataset:
   name: 'fiorire'
-  data_path: '/davinci-1/home/morellir/artificial_intelligence/repos/fiorire/data/fiorire/sentinel/dataset_4s/all_2016-2018_clean_4s.pkl'
+  data_path: './data/fiorire/sentinel/dataset_4s/all_2016-2018_clean_4s.pkl'
   perc_overlap: 0
   chunks_num: 10
-  sequence_length: 16
-  out_window: null
+  seq_in_length: 16
+  seq_out_length: null
   train_val_split: 0.8
   shuffle_train: True #shuffle the idx of the train
   feats: ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr']   #['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',

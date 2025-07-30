@@ -2,9 +2,8 @@
 
 from utils.trainer_registry import TRAINER_REGISTRY
 
-def get_trainer(cfg, **kwargs):
-    trainer_name = cfg.model.name
+def get_trainer(cfg_model_name, **kwargs):
     try:
-        return TRAINER_REGISTRY[trainer_name]
+        return TRAINER_REGISTRY[cfg_model_name]
     except KeyError:
-        raise ValueError(f"Trainer '{trainer_name}' not found in registry.")
+        raise ValueError(f"Trainer '{cfg_model_name}' not found in registry.")

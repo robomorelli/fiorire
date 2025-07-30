@@ -29,10 +29,8 @@ def load_dataframe(file_path):
         ValueError: If the file extension is unsupported.
         FileNotFoundError: If the file doesn't exist.
     """
-    print('PATHHHH', os.getcwd())
     if not os.path.isfile(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
-
 
     ext = os.path.splitext(file_path)[1].lower()
 
@@ -58,6 +56,7 @@ def get_dataset(cfg, **kwargs):
             transform = T.Compose([
                 T.ToTensor(),
             ])
+
         elif cfg.model.name == "conv_ae1D":
             transform = T.Compose([
                 T.ToTensor(),
@@ -66,12 +65,10 @@ def get_dataset(cfg, **kwargs):
         else:
             transform = None
 
-        sequence_length = cfg.dataset.sequence_length
-        if not cfg.dataset.out_window:
-            cfg.dataset.out_window = cfg.dataset.sequence_length
+        if not cfg.dataset.seq_out_length:
+            cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
         batch_size = cfg.dataset.batch_size
 
-        print('DATASET length ', cfg.dataset.dataset_subset)
         df = load_dataframe(cfg.dataset.data_path)
 
         # get train and validation dataframes
@@ -81,18 +78,18 @@ def get_dataset(cfg, **kwargs):
         # get the number of features
         n_features = len(df.columns)
         # Dataset for dataloader definition, left the argsument other than cfg because we want to use also without config file
-        train_dataset = Dataset_seq(df, target=cfg.dataset.target, sequence_length=cfg.dataset.sequence_length,
-                                    out_window=cfg.dataset.out_window, transform=transform)
+        train_dataset = Dataset_seq(df, target=cfg.dataset.target, sequence_length=cfg.dataset.seq_in_length,
+                                    out_window=cfg.dataset.seq_out_length, forecast_all=cfg.dataset.forecast_all, transform=transform)
         trainloader = DataLoader(dataset=train_dataset, batch_size=batch_size
                                  ,sampler=train_sampler)#, shuffle=True)
-        test_dataset = Dataset_seq(df, target=cfg.dataset.target, sequence_length=cfg.dataset.sequence_length,
-                                    out_window=cfg.dataset.out_window, transform=transform)
+        test_dataset = Dataset_seq(df, target=cfg.dataset.target, sequence_length=cfg.dataset.seq_in_length,
+                                    out_window=cfg.dataset.seq_out_length, forecast_all=cfg.dataset.forecast_all, transform=transform)
         valloader = DataLoader(dataset=test_dataset, batch_size=batch_size, sampler=val_sampler)
 
         if cfg.dataset.save_dataloaders:
             torch.save(trainloader, os.path.join(root,'dataloader/train_dataloader_{}_ft_{}_length.pth'.format(
-                n_features, sequence_length)))
+                n_features, cfg.dataset.seq_in_length)))
             torch.save(valloader, os.path.join(root,'dataloader/test_dataloader_{}_ft_{}_length.pth'.format(
-                n_features, sequence_length)))
+                n_features, cfg.dataset.seq_in_length)))
 
         return trainloader, valloader, n_features, scaler, scaler_params

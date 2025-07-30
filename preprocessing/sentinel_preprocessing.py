@@ -193,7 +193,9 @@ def get_scaled_train_val_df(cfg, df):
 def get_train_val_samplers(cfg, df):
     # return trian, val and scaler
     np.random.seed(101)
-    step = cfg.dataset.sequence_length - int(cfg.dataset.sequence_length * cfg.dataset.perc_overlap)
+    step = cfg.dataset.seq_in_length - int(cfg.dataset.seq_in_length * cfg.dataset.perc_overlap)
+    print('using step', step)
+    print('using sequence length', cfg.dataset.seq_in_length)
     step = step if step > 0 else 1
     print('step', step)
 

@@ -1,77 +1,87 @@
-from ray import tune
 from utils.load_model import get_model
 from utils.load_dataset import get_dataset
+from utils.general import make_paths_absolute, extract_config, extract_fixed_config
 from omegaconf import OmegaConf
 from tqdm import tqdm
-from torch import nn
+from omegaconf import ListConfig
 from config import *
 from models.utils.losses import *
 
 class trainLSTM(tune.Trainable):
 
     def setup(self, config):
-        self.cfg = OmegaConf.load(config_path + lstm_config_file) #here use only vae conf file
-        self.model_name = '_'.join((self.cfg.model.name, self.cfg.dataset.name)) + '.h5'
+
+        self.cfg = OmegaConf.load(os.path.join(config_path, lstm_config_file)) #here use only vae conf file
+        self.model_name = os.path.join(self.cfg.model.name + '.h5')
+        make_paths_absolute(self.cfg)
+
+        trial_config = config
+
+        # Model trial params
+        model_config = {
+            'embedding_dim': trial_config['embedding_dim'],
+            'n_layers_cell_1': trial_config['n_layers_cell_1'],
+            'n_layers_cell_2': trial_config['n_layers_cell_2'] if trial_config['n_layers_cell_1'] > trial_config['n_layers_cell_2'] else max(trial_config['n_layers_cell_1'] - 1, 1),
+            'name': self.cfg.model.name  # preserve model name
+        }
 
         #following config keys have to be in the config file of this model
-        self.seq_in_length = config['seq_in_length']
-        self.seq_out_length = config['seq_in_length']  #Actually is the same of seq in, to change in hyper conf
-        self.embedding_dim = config['embedding_dim']
-        self.n_layers_1 = config['n_layers_cell_1']
-        self.n_layers_2 = config['n_layers_cell_2']
-        if self.n_layers_2 > self.n_layers_1 and self.n_layers_2 != 1:
-            self.n_layers_2 = self.n_layers_2 - 1
-        self.lr = config['lr']
-        self.batch_size = config['batch_size']
-        self.epochs = config['epochs']
-        self.lr_patience = config['lr_patience']
+        opt_config = {
+            'lr': trial_config['lr'],
+            'batch_size': trial_config['batch_size'],
+            'epochs': trial_config['epochs'],
+            'lr_patience': trial_config['lr_patience']
+        }
 
-        self.sample_rate = self.cfg.dataset.sample_rate
-        self.target = self.cfg.dataset.target
-        self.predict = self.cfg.dataset.predict
+        # Construct dataset config and merge
+        dataset_config = {
+            #'scaler': trial_config['scaler'],
+            'seq_in_length': trial_config['seq_in_length'],
+            'feats': self.cfg.dataset.feats if isinstance(self.cfg.dataset.feats, (list, ListConfig))
+             else all_feats_dict[self.cfg.dataset.name] if self.cfg.dataset.feats == 'all'
+             else [],
+            'dataset_subset': self.cfg.dataset.dataset_subset,
+            'train_val_split': self.cfg.dataset.train_val_split,
+            'batch_size': trial_config['batch_size'],
+            'data_path': self.cfg.dataset.data_path,
+        }
 
-        # to write on cfg to have later on load dataset
-        self.cfg.dataset.sequence_length = self.seq_in_length
-        self.cfg.dataset.out_window = self.seq_in_length
+        # Merge model and opt into cfg
+        self.cfg.model = OmegaConf.merge(self.cfg.model, model_config)
+        self.cfg.opt = OmegaConf.merge(self.cfg.opt, opt_config)
+        self.cfg.dataset = OmegaConf.merge(self.cfg.dataset, dataset_config)
+        self.epochs = self.cfg.opt.epochs
 
-        self.trainloader, self.valloader, n_features, scaled, columns_subset, dataset_subset,_, dataset_name, data_path\
-                                = get_dataset(self.cfg, batch_size=self.batch_size,
-                                              sequence_length = config['seq_in_length'])
+        # Load data
+        self.trainloader, self.valloader, self.n_features, self.scaler, self.scaler_params = get_dataset(self.cfg)
 
         print('number of training data {}'.format(len(self.trainloader.dataset)))
-
-        self.scaled = scaled
-        self.n_features = n_features
-        self.output_size = n_features #actually the same of n_features
-        self.columns_subset = columns_subset
-        self.dataset_subset = dataset_subset
-
+        # Add dataset info into cfg.dataset
+        self.cfg.dataset.n_features = self.n_features    # Needed to specify the input channel of the model
+        self.cfg.model.output_size = self.n_features if not self.cfg.dataset.target else len(self.cfg.target)    # Needed to specify the output channel of the model
+        # Set up device
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
-        self.model = get_model(self.cfg, seq_in_length=self.seq_in_length, seq_out_length=self.seq_out_length,
-                               n_features=n_features, output_size=self.output_size,
-                               embedding_dim=self.embedding_dim,
-                                 n_layers_1=self.n_layers_1, n_layers_2=self.n_layers_2,
-                               ).to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min', factor=0.8,
-                                                            patience=self.lr_patience, threshold=0.0001, threshold_mode='rel',
-                                                            cooldown=0, min_lr=9e-8, verbose=True)
+        # Build model
+        self.model = get_model(self.cfg).to(self.device)
 
+        # Optimizer and scheduler
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.cfg.opt.lr)
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, 'min',
+            factor=0.8,
+            patience=self.cfg.opt.lr_patience,
+            threshold=0.0001,
+            threshold_mode='rel',
+            cooldown=0,
+            min_lr=9e-8,
+            verbose=True
+        )
         self.criterion = nn.MSELoss()
-
         self.best_val_loss = 10 ** 16
 
-        #All the parameters needed to load the model after HPO
-        self.param_conf = {'columns': self.n_features, 'sequence_length':self.seq_in_length,
-                           'seq_in_length': self.seq_in_length,'seq_out_length': self.seq_out_length,
-                           'batch_size':self.batch_size ,'predict':self.predict,
-                        'device': self.device, 'out_window':self.seq_in_length,
-                           'n_features':self.n_features, 'scaled':self.scaled,
-                        'sampling_rate':self.sample_rate, 'output_size': self.n_features,
-                           'embedding_dim': self.embedding_dim,
-                           'n_layers_1': self.n_layers_1,
-                           'n_layers_2': self.n_layers_2}
-        self.parameters_number = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        # Store parameter count for logging
+        self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        self.parameters_number = self.cfg.model.parameter_count
 
     def step(self):
         self.current_ip()

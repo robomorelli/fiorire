@@ -1,13 +1,7 @@
-import os
-import torch
 import torch.nn as nn
-# from .early_stopping import *
-from json import dump
 import torch
-from tqdm import tqdm
 
 torch.manual_seed(0)
-
 
 class Encoder(nn.Module):
     def __init__(self, seq_in, seq_out, n_features, output_size,
@@ -56,14 +50,17 @@ class Encoder(nn.Module):
 class LSTM(nn.Module):
     def __init__(self, cfg, **kwargs):
         super().__init__()
+        self.cfg = cfg
+        model_cfg = cfg.model
 
-        self.seq_in_length = kwargs['seq_in_length']
-        self.seq_out_length = kwargs['seq_out_length']  # Add in trainer
-        self.n_features = kwargs['n_features']
-        self.embedding_dim = kwargs['embedding_dim']
-        self.n_layers_1 = kwargs['n_layers_1']
-        self.n_layers_2 = kwargs['n_layers_2']
-        self.output_size = kwargs['n_features']
+        self.embedding_dim = model_cfg.embedding_dim
+        self.n_layers_1 = model_cfg.n_layers_cell_1
+        self.n_layers_2 = model_cfg.n_layers_cell_2
+        self.output_size = model_cfg.output_size if hasattr(model_cfg, 'output_size') else self.n_features
+
+        self.seq_in_length = cfg.dataset.seq_in_length
+        self.seq_out_length = cfg.dataset.seq_out_length  # Add in trainer
+        self.n_features = cfg.dataset.n_features
 
         self.encoder = Encoder(self.seq_in_length, self.seq_out_length, self.n_features,
                                self.output_size,

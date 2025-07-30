@@ -1,58 +1,36 @@
 import argparse
 import ray
 from ray.tune.schedulers import ASHAScheduler
-from omegaconf import OmegaConf
-from config import *
 from utils.load_trainer import get_trainer
+from utils.general import make_paths_absolute, extract_config
 from datetime import datetime
-#from ray.tune.integration.wandb import WandbLoggerCallback
 from ray.air.integrations.wandb import WandbLoggerCallback
 
-def main(args):
+from config import *
 
+def main(args):
     now = datetime.now()
     date = now.strftime("%D:%H:%M:%S")
-    print(date)
 
     print(args.address, args.password)
-    cfg = OmegaConf.load(os.path.join(config_path, args.config_file + '.yaml'))
+    cfg_path = os.path.join(config_path, args.config_file + '.yaml')
+    ray_config, cfg = extract_config(cfg_path)  # Extract fixed config parameters to avoid failure in get_trainer(cfg.model.name)(config=config) * the config is the problem
 
-    if not cfg.dataset.out_window:
-        cfg.dataset.out_window = cfg.dataset.sequence_length
+    trainer = get_trainer(cfg.model.name)
 
-    config = {}
-    for k, v in cfg.tune_config.items():
-        try:
-            config[k] = ray_mapper[v.split('(')[0]]([float(s) if '.' in s else int(s) for s in v.split(v.split('(')[0])[1].\
-                                                strip("()").strip("[]").split(',')])
-            print([float(s) if '.' in s else int(s) for s in v.split(v.split('(')[0])[1].\
-                                                strip("()").strip("[]").split(',')])
-        except:
-            config[k] = ray_mapper[v.split('(')[0]]([s.strip(' ').strip("''") for s in v.split(v.split('(')[0])[1]\
-                                                    .strip("()").strip("[]").split(',')])
-            print([s.strip(' ').strip("''") for s in v.split(v.split('(')[0])[1].strip("()")\
-                  .strip("[]").split(',')])
-
-    trainer = get_trainer(cfg)
+    sched = ASHAScheduler(metric=cfg.opt.tune_report, mode="min", max_t = 10 ** 18,
+                                                        grace_period=50)
+    if args.wandb:
+        callbacks = [WandbLoggerCallback(project=args.project_name,ntity=args.entity,  # optional
+                                log_config=True,  # logs the config used in each trial
+                                api_key=args.wandb_key,upload_checkpoints = True )]
+    else:
+        callbacks = []
 
     if cfg.resources.gpu_trial != 0:
         resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial}
     else:
         resources_per_trial = {"cpu": cfg.resources.cpu_trial}
-
-    sched = ASHAScheduler(metric=cfg.opt.tune_report, mode="min", max_t = 10 ** 18,
-                                                        grace_period=50)
-    if args.wandb:
-        callbacks = [WandbLoggerCallback(
-                                project=args.project_name,
-                                entity=args.entity,  # optional
-                                log_config=True,  # logs the config used in each trial
-                                api_key=args.wandb_key,
-                                upload_checkpoints = True
-                            )
-                        ]
-    else:
-        callbacks = []
 
     analysis = tune.run(trainer,
                         scheduler=sched,
@@ -60,8 +38,8 @@ def main(args):
                         num_samples=int(args.num_samples),
                         checkpoint_at_end=True, #otherwise it fails on multinode?
                         local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
-                        name="{}/test3".format(cfg.model.name,date.replace('/', '-')),
-                        config=config,
+                        name="{}/test".format(cfg.model.name,date.replace('/', '-')),
+                        config=ray_config,
                         callbacks=callbacks,
     )
 

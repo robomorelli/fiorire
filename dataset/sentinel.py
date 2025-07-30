@@ -8,14 +8,14 @@ class Dataset_seq(Dataset):
 
     # TODO: implement also the forecasting (the idx of target is shifted ahead of many steps of the forecasting window
     def __init__(self, df, target=None, sequence_length=4, out_window=4,
-                 prediction=False, forecast=False, forecast_all=False, transform=None):
+                 predict=False, forecast=False, forecast_all=False, transform=None):
 
-        self.prediction = prediction
+        self.predict = predict
         self.forecast = forecast
         self.forecast_all = forecast_all
         self.transform = transform
         #TODO raise error if prediction == true but target is not defined
-        if self.prediction and not self.forecast:
+        if self.predict and not self.forecast:
             if target is None:
                 raise Exception(' you should define a target for the prediction mode')
             self.df_data = df.drop(target, axis=1)
@@ -37,7 +37,7 @@ class Dataset_seq(Dataset):
         return len(self.df_data)
 
     def __getitem__(self, idx):
-        if self.forecast or self.forecast_all or self.prediction:
+        if self.forecast or self.forecast_all or self.predict:
             if (idx + self.sequence_length + self.out_window) > len(self.df_data):
                 indexes = list(range(len(self.df_data) - self.sequence_length - self.out_window,
                                      len(self.df_data) - self.out_window))

@@ -1,10 +1,9 @@
-import os
 import torch.nn as nn
-
 from config import activation_dict
 from models.utils.layers import conv_block, deconv_block, conv_block1D, deconv_block1D
 import torch
-from tqdm import tqdm
+
+torch.manual_seed(0)
 
 class Encoder(nn.Module):
     def __init__(self, in_channel=1, length = 16, kernel_size=3, latent_dim = 40, filter_num_list=None,
@@ -124,7 +123,6 @@ class CONV_AE1D(nn.Module):
         model_cfg = cfg.model
 
         self.in_channel = cfg.dataset.n_features  # or cfg.model.in_channel if set there
-        self.length = model_cfg.seq_in_length
         self.kernel_size = model_cfg.kernel_size
         self.filter_num = model_cfg.filter_num
         self.n_layers = model_cfg.n_layers
@@ -136,6 +134,9 @@ class CONV_AE1D(nn.Module):
         self.increasing = getattr(model_cfg, 'increasing', False)
         self.flattened = getattr(model_cfg, 'flattened', True)
         self.latent_dim = getattr(model_cfg, 'latent_dim', 60)
+        self.output_size = model_cfg.output_size if hasattr(model_cfg, 'output_size') else self.n_features
+
+        self.length = cfg.dataset.seq_in_length
 
         if self.increasing:
             self.filter_num_list = [int(self.filter_num * ((ix + 1) * 2)) for ix in range(self.n_layers)]
