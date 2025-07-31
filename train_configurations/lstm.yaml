@@ -1,16 +1,19 @@
 # Optimization
 tune_config:
       #intermediate_dim: tune.choice([1, 2, 5, 10, 20])
-      epochs: tune.choice([200])
-      lr: tune.choice([0.0006, 0.0003, 0.001])
-      batch_size: tune.choice([100, 500])
-      seq_in_length: tune.choice([16])
-      embedding_dim: tune.choice([10, 16, 20, 32, 40, 48])
-      n_layers: tune.choice([1,2,3])
-      n_cells: tune.choice([1,2])
-      lr_patience: tune.choice([5, 10])
-      scaler: tune.choice(['RobustScaler-0.05-0.95', 'StandardScaler'])  # other choices {StandardScaler: None}, None
-      perc_overlap: tune.choice([0, 0.3, 0.7])
+      opt.epochs: tune.choice([200])
+      opt.lr: tune.choice([0.0006, 0.0003, 0.001])
+      opt.batch_size: tune.choice([100, 500])
+      opt.lr_patience: tune.choice([5, 10])
+
+      model.embedding_dim: tune.choice([10, 16, 20, 32, 40, 48])
+      model.n_layers: tune.choice([1,2,3])
+      model.n_cells: tune.choice([1,2])
+
+      dataset.scaler: tune.choice(['RobustScaler-0.05-0.95', 'StandardScaler'])  # other choices {StandardScaler: None}, None
+      dataset.perc_overlap: tune.choice([0, 0.3, 0.7])
+      dataset.seq_in_length: tune.choice([16])
+
 
 # Dataset
 dataset:

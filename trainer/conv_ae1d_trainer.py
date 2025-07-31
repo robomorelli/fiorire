@@ -1,83 +1,23 @@
 from utils.load_model import get_model
 from utils.load_dataset import get_dataset
-from utils.general import make_paths_absolute, extract_config, extract_fixed_config
-from omegaconf import OmegaConf
+from trainer.utils import infer_input_output, model_setup
 from tqdm import tqdm
-from omegaconf import ListConfig
 from config import *
 from models.utils.losses import *
 
 class trainCONVAE1D(tune.Trainable):
 
     def setup(self, config):
-
-        self.cfg = OmegaConf.load(config_path + conv_ae_1D_config_file) #here use only vae conf file
-        self.model_name = os.path.join(self.cfg.model.name + '.h5')    # the name of the saved model
-        make_paths_absolute(self.cfg)
-
-        trial_config = config
-
-        # Model trial params
-        model_config = {
-            'n_layers': trial_config['n_layers'],
-            'filter_num': trial_config['filter_num'],
-            'activation': trial_config['activation'],
-            'kernel_size': trial_config['kernel_size'],
-            'pool': trial_config['pool'],
-            'dilation': trial_config['dilation'],
-            'increasing': trial_config.get('increasing', False),
-            'flattened': trial_config.get('flattened', False),
-            'latent_dim': trial_config.get('latent_dim', 60),
-            'stride': 1 if trial_config['pool'] else 2,
-            'name': self.cfg.model.name  # preserve model name
-        }
-
-        # Optimization trial params
-        opt_config = {
-            'lr': trial_config['lr'],
-            'batch_size': trial_config['batch_size'],
-            'epochs': trial_config['epochs'],
-            'lr_patience': trial_config['lr_patience']
-        }
-
-        # Construct dataset config and merge
+        # Load and set up the configuration
+        self.cfg = model_setup(conv_ae_1D_config_file, config)
         # Handle 'feats'
-        if isinstance(self.cfg.dataset.feats, (list, ListConfig)):
-            feats = self.cfg.dataset.feats
-        elif self.cfg.dataset.feats == 'all':
-            feats = all_feats_dict[self.cfg.dataset.name]
-        else:
-            feats = [self.cfg.dataset.feats]
-
-        # Handle 'target'
-        if isinstance(self.cfg.dataset.target, (list, ListConfig)):
-            target = self.cfg.dataset.target
-        elif isinstance(self.cfg.dataset.target, str):
-            if self.cfg.dataset.target == 'all':
-                target = all_feats_dict[self.cfg.dataset.name]
-            else:
-                target = [self.cfg.dataset.target]
-        else:
-            target = None
-
-        # Construct dataset config
-        dataset_config = {
-            'seq_in_length': trial_config['seq_in_length'],
-            'scaler': trial_config['scaler'],
-            'perc_overlap': trial_config['perc_overlap'],
-            'feats': feats,
-            'target': target,
-            'dataset_subset': self.cfg.dataset.dataset_subset,
-            'train_val_split': self.cfg.dataset.train_val_split,
-            'batch_size': trial_config['batch_size'],
-            'data_path': self.cfg.dataset.data_path,
-        }
+        feats, target = infer_input_output(self.cfg)
 
         # Merge model and opt into cfg
-        self.cfg.model = OmegaConf.merge(self.cfg.model, model_config)
-        self.cfg.opt = OmegaConf.merge(self.cfg.opt, opt_config)
-        self.cfg.dataset = OmegaConf.merge(self.cfg.dataset, dataset_config)
+        self.cfg.dataset.feats = feats
+        self.cfg.dataset.target = target
         self.epochs = self.cfg.opt.epochs
+        self.model_name = os.path.join(self.cfg.model.name + '.h5')  # the name of the saved model
 
         # Load data
         self.trainloader, self.valloader, self.n_features, self.scaler, self.scaler_params = get_dataset(self.cfg)
@@ -92,14 +32,10 @@ class trainCONVAE1D(tune.Trainable):
         # Optimizer and scheduler
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.cfg.opt.lr)
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, 'min',
-            factor=0.8,
-            patience=self.cfg.opt.lr_patience,
-            threshold=0.0001,
-            threshold_mode='rel',
-            cooldown=0,
-            min_lr=9e-8,
-            verbose=True
+            self.optimizer, 'min', factor=0.8,
+            patience=self.cfg.opt.lr_patience, threshold=0.0001,
+            threshold_mode='rel', cooldown=0,
+            min_lr=9e-8, verbose=True
         )
         self.criterion = nn.MSELoss()
         self.best_val_loss = 10 ** 16

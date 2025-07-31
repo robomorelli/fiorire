@@ -1,21 +1,24 @@
 # Optimization
 tune_config:
-      epochs: tune.choice([200])
-      lr: tune.choice([0.0009, 0.0003, 0.001])
-      batch_size: tune.choice([100, 500])
-      seq_in_length: tune.choice([40])
-      dilation: tune.choice([1])
-      filter_num: tune.choice([110, 120])
-      n_layers: tune.choice([1, 2])
-      lr_patience: tune.choice([5, 10])
-      kernel_size: tune.choice([7, 9])
-      increasing: tune.choice([0])
-      flattened: tune.choice([0])
-      latent_dim: tune.choice([100, 160, 320, 256, 400, 512]) #64 (4,16) 160 (4, 40); 640 (16, 40); 256 (16,16)
-      pool: tune.choice([1, 0])
-      activation: tune.choice(['Elu', 'Relu'])
-      scaler: tune.choice(['RobustScaler-0.05-0.95', 'StandardScaler'])  # other choices {StandardScaler: None}, None
-      perc_overlap: tune.choice([0, 0.3, 0.7])
+  model.n_layers: tune.choice([1, 2])
+  model.filter_num: tune.choice([110, 120])
+  model.activation: tune.choice(['Elu', 'Relu'])
+  model.kernel_size: tune.choice([7, 9])
+  model.latent_dim: tune.choice([100, 160, 320])
+  model.flattened: tune.choice([0])
+  model.increasing: tune.choice([0])
+  model.pool: tune.choice([1, 0])
+  model.dilation: tune.choice([1])
+
+  opt.lr: tune.choice([0.0009, 0.0003, 0.001])
+  opt.batch_size: tune.choice([100, 500])
+  opt.epochs: tune.choice([200])
+  opt.lr_patience: tune.choice([5, 10])
+
+  dataset.scaler: tune.choice(['RobustScaler-0.05-0.95', 'StandardScaler'])
+  dataset.seq_in_length: tune.choice([40])
+  dataset.perc_overlap: tune.choice([0, 0.3, 0.7])
+
 
 # Dataset
 dataset:

@@ -1,72 +1,27 @@
 from utils.load_model import get_model
 from utils.load_dataset import get_dataset
-from utils.general import make_paths_absolute, extract_config, extract_fixed_config
-from omegaconf import OmegaConf
+from trainer.utils import infer_input_output, model_setup
 from tqdm import tqdm
-from omegaconf import ListConfig
 from config import *
 from models.utils.losses import *
 
 class trainLSTM(tune.Trainable):
 
     def setup(self, config):
-
-        self.cfg = OmegaConf.load(os.path.join(config_path, lstm_config_file)) #here use only vae conf file
-        self.model_name = os.path.join(self.cfg.model.name + '.h5')
-        make_paths_absolute(self.cfg)
-
-        trial_config = config
-
-        # Model trial params
-        model_config = {
-            'embedding_dim': trial_config['embedding_dim'],
-            'n_layers': trial_config['n_layers'],
-            'n_cells': trial_config['n_cells'],
-            'name': self.cfg.model.name  # preserve model name
-        }
-
-        #following config keys have to be in the config file of this model
-        opt_config = {
-            'lr': trial_config['lr'],
-            'batch_size': trial_config['batch_size'],
-            'epochs': trial_config['epochs'],
-            'lr_patience': trial_config['lr_patience']
-        }
-
-        # Construct dataset config and merge
+        # Load and set up the configuration
+        self.cfg = model_setup(lstm_config_file, config)
         # Handle 'feats'
-        if isinstance(self.cfg.dataset.feats, (list, ListConfig)):
-            feats = self.cfg.dataset.feats
-        elif self.cfg.dataset.feats == 'all':
-            feats = all_feats_dict[self.cfg.dataset.name]
-        else:
-            feats = [self.cfg.dataset.feats]
-
-        # Handle 'target'
-        if isinstance(self.cfg.dataset.target, (list, ListConfig)):
-            target = self.cfg.dataset.target
-        elif isinstance(self.cfg.dataset.target, str):
-            if self.cfg.dataset.target == 'all':
-                target = all_feats_dict[self.cfg.dataset.name]
-            else:
-                target = [self.cfg.dataset.target]
-        else:
-            target = None
-
-        # Construct dataset config
-        dataset_config = {
-            'seq_in_length': trial_config['seq_in_length'],
-            'scaler': trial_config['scaler'],
-            'perc_overlap': trial_config['perc_overlap'],
-            'feats': feats,
-            'target': target,
-            'batch_size': trial_config['batch_size'],
-        }
+        feats, target = infer_input_output(self.cfg)
 
         # Merge model and opt into cfg
-        self.cfg.model = OmegaConf.merge(self.cfg.model, model_config)
-        self.cfg.opt = OmegaConf.merge(self.cfg.opt, opt_config)
-        self.cfg.dataset = OmegaConf.merge(self.cfg.dataset, dataset_config)
+        self.cfg.dataset.feats = feats
+        self.cfg.dataset.target = target
+        self.epochs = self.cfg.opt.epochs
+        self.model_name = os.path.join(self.cfg.model.name + '.h5')  # the name of the saved model
+
+        # Merge model and opt into cfg
+        self.cfg.dataset.feats = feats
+        self.cfg.dataset.target = target
         self.epochs = self.cfg.opt.epochs
 
         # Load data

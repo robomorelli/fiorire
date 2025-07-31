@@ -1,4 +1,7 @@
-import math
+from utils.general import make_paths_absolute, extract_config, extract_fixed_config
+from omegaconf import ListConfig
+from omegaconf import OmegaConf
+from config import *
 
 class EarlyStopping():
     """
@@ -30,3 +33,44 @@ class EarlyStopping():
             if self.counter >= self.patience:
                 print('INFO: Early stopping')
                 self.early_stop = True
+
+
+def model_setup(config_file_name, config):
+
+    cfg = OmegaConf.load(config_path + config_file_name)  # here use only vae conf file
+    make_paths_absolute(cfg)
+    # Allow dynamic field insertion
+    OmegaConf.set_struct(cfg, False)
+
+    # Merge trial parameters from Ray Tune into OmegaConf config
+    for k, v in config.items():
+        OmegaConf.update(cfg, k, v, merge=True)
+    # Construct dataset config and merge
+
+    return cfg
+
+def infer_input_output(cfg):
+    """
+    Infer input and output dimensions from the configuration.
+    :param cfg: configuration object
+    :return: input_dim, output_dim
+    """
+    if isinstance(cfg.dataset.feats, (list, ListConfig)):
+        feats = cfg.dataset.feats
+    elif cfg.dataset.feats == 'all':
+        feats = all_feats_dict[cfg.dataset.name]
+    else:
+        feats = [cfg.dataset.feats]
+
+    # Handle 'target'
+    if isinstance(cfg.dataset.target, (list, ListConfig)):
+        target = cfg.dataset.target
+    elif isinstance(cfg.dataset.target, str):
+        if cfg.dataset.target == 'all':
+            target = all_feats_dict[cfg.dataset.name]
+        else:
+            target = [cfg.dataset.target]
+    else:
+        target = None
+
+    return feats, target

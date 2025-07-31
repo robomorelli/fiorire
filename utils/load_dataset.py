@@ -60,7 +60,7 @@ def  get_dataset(cfg, **kwargs):
 
         if not cfg.dataset.seq_out_length:
             cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
-        batch_size = cfg.dataset.batch_size
+        batch_size = cfg.opt.batch_size
 
         df = load_dataframe(cfg.dataset.data_path)
 

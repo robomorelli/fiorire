@@ -22,7 +22,7 @@ def make_paths_absolute(cfg):
         absolute_path = project_root / dataset_path
         cfg.dataset.data_path = str(absolute_path.resolve())
 
-def extract_config(cfg_path):
+def extract_config_bkp(cfg_path):
     cfg = OmegaConf.load(cfg_path)
     config = {}
     for k, v in cfg.tune_config.items():
@@ -38,6 +38,25 @@ def extract_config(cfg_path):
                   .strip("[]").split(',')])
     return config, cfg
 
+def extract_config(cfg_path):
+    from omegaconf import OmegaConf
+    cfg = OmegaConf.load(cfg_path)
+    config = {}
+
+    for k, v in cfg.tune_config.items():
+        try:
+            # Handle numeric values
+            config[k] = ray_mapper[v.split('(')[0]](
+                [float(s) if '.' in s else int(s) for s in v.split(v.split('(')[0])[1].strip("()[]").split(',')]
+            )
+        except:
+            # Handle string or categorical values
+            config[k] = ray_mapper[v.split('(')[0]](
+                [s.strip().strip("''").strip('"') for s in v.split(v.split('(')[0])[1].strip("()[]").split(',')]
+            )
+    return config, cfg
+
+
 def extract_fixed_config(cfg_path):
     cfg = OmegaConf.load(cfg_path)
     config = {}
@@ -48,6 +67,28 @@ def extract_fixed_config(cfg_path):
             # Handle cases where string parsing is needed
             values = v[v.find("[")+1 : v.find("]")].split(",")
             config[k] = eval(values[0].strip())
+        else:
+            config[k] = v  # Fallback
+    return config, cfg
+
+def extract_fixed_config_bkp(cfg_path):
+    cfg = OmegaConf.load(cfg_path)
+    config = {}
+
+    for k, v in cfg.tune_config.items():
+        if isinstance(v, (list, ListConfig)):
+            config[k] = v[0]  # Just use the first item in the list
+        elif isinstance(v, str) and v.startswith("tune.choice"):
+            try:
+                # Try parsing as float/int
+                values = [float(s) if '.' in s else int(s)
+                          for s in v[v.find("[")+1 : v.find("]")].split(",")]
+                config[k] = values[0]
+            except ValueError:
+                # Parse as strings
+                values = [s.strip().strip('"').strip("'")
+                          for s in v[v.find("[")+1 : v.find("]")].split(",")]
+                config[k] = values[0]
         else:
             config[k] = v  # Fallback
     return config, cfg
