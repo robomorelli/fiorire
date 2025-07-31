@@ -35,8 +35,7 @@ class trainCONVAE1D(tune.Trainable):
             self.optimizer, 'min', factor=0.8,
             patience=self.cfg.opt.lr_patience, threshold=0.0001,
             threshold_mode='rel', cooldown=0,
-            min_lr=9e-8, verbose=True
-        )
+            min_lr=9e-8, verbose=True)
         self.criterion = nn.MSELoss()
         self.best_val_loss = 10 ** 16
 

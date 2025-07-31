@@ -10,21 +10,24 @@ from config import *
 
 def main(args):
 
+    # Get date to name the results folder
     now = datetime.now()
     date = now.strftime("%D:%H:%M:%S")
 
+    # Set the path to the configuration file
     cfg_path = os.path.join(config_path, args.config_file + '.yaml')
     ray_config, cfg = extract_config(cfg_path)  # Extract fixed config parameters to avoid failure in get_trainer(cfg.model.name)(config=config) * the config is the problem
 
+    # Debug mode: simulate one training iteration to check if the config is correct
     if args.debug_mode:
         ray_config, cfg = extract_fixed_config(cfg_path)
         trainer_test = get_trainer(cfg.model.name)(config=ray_config)
         result = trainer_test.step()  # this simulates one training iteration
         print("Debug mode training result:", result)
 
+    # Set the trainer
     trainer = get_trainer(cfg.model.name)
-    sched = ASHAScheduler(metric=cfg.opt.tune_report, mode="min", max_t = 10 ** 18,
-                                                        grace_period=50)
+
     if args.wandb:
         callbacks = [WandbLoggerCallback(project=args.project_name,ntity=args.entity,  # optional
                                 log_config=True,  # logs the config used in each trial
@@ -32,8 +35,9 @@ def main(args):
     else:
         callbacks = []
 
+    # Set the resources for each trial
     resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial} if cfg.resources.gpu_trial != 0 else {"cpu": cfg.resources.cpu_trial}
-
+    sched = ASHAScheduler(metric=cfg.opt.tune_report, mode="min", max_t = 10 ** 18, grace_period=50)
     analysis = tune.run(trainer,
                         scheduler=sched, resources_per_trial=resources_per_trial,
                         num_samples=int(args.num_samples), checkpoint_at_end=True, #otherwise it fails on multinode?
@@ -51,7 +55,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default = '10.141.1.28:6379', help="adress of master")
     parser.add_argument("--password", help="password to connect to master")
-    #parser.add_argument("--config_path", default='./train_configurations/', help="echo the string you use here")
     parser.add_argument("--config_file", default='lstm', help="[conv_ae1D, lstm]")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
     parser.add_argument("--wandb", default=1, help="the model you want to hpo")
