@@ -27,6 +27,16 @@ Use the provided `launch_wrapper.sh` script:
 Example of usage:
 sh launch_wrapper.sh num_nodes 2 num_gpus 1 num_cpus 16 config_file conv_ae1D
 all the args not specified are replaced from the default of the bash script (see the default value into the bash file) or from the main args default arguments
+
+NUM_NODES=${NUM_NODES:-1}   <<< bash
+NUM_GPUS=${NUM_GPUS:-1}   <<< bash
+NUM_CPUS=${NUM_CPUS:-12}   <<< bash
+CONFIG_FILE=""   <<< python
+NUM_SAMPLES=""    <<< python
+ENTITY=""    <<< python
+WANDB=""    <<< python
+WANDB_KEY=""    <<< python
+PROJECT_NAME=""    <<< python
 ```
 
 This script handles Ray cluster setup and experiment launch with appropriate environment variables.
@@ -55,7 +65,7 @@ To integrate a new model into **fiorire**, follow these 3 steps:
 
 Create a YAML config in `config/`, e.g., `my_model_config.yaml`:
 
-- Include dataset paths, model defaults, and `tune_config` block for Ray Tune.
+- Include dataset paths, model defaults, and `tune_config` block for Ray Tune hyperparameters settings.
 - Example:
 
 ```yaml
@@ -66,6 +76,8 @@ tune_config:
 model:
   name: my_model_name
 ```
+- Note: all the hyperparameters should be in the form <block_type>.<hyperparameter>: tune.choice([list of possible value]). 
+- <block_type> are: "model", "opt", "dataset" depending which block the variable affect the configuration
 
 ### 2. Define the Model
 
@@ -84,7 +96,7 @@ class MyModel(nn.Module):
 Inside `model/your_model_trainer.py`, define the training logic:
 
 ```python
-def train_my_model(config, cfg):
+def trainer_my_model(config, cfg):
     model = MyModel(...)
     ...
     return final_results
