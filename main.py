@@ -13,7 +13,6 @@ def main(args):
     now = datetime.now()
     date = now.strftime("%D:%H:%M:%S")
 
-    print(args.address, args.password)
     cfg_path = os.path.join(config_path, args.config_file + '.yaml')
     ray_config, cfg = extract_config(cfg_path)  # Extract fixed config parameters to avoid failure in get_trainer(cfg.model.name)(config=config) * the config is the problem
 
@@ -33,21 +32,14 @@ def main(args):
     else:
         callbacks = []
 
-    if cfg.resources.gpu_trial != 0:
-        resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial}
-    else:
-        resources_per_trial = {"cpu": cfg.resources.cpu_trial}
+    resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial} if cfg.resources.gpu_trial != 0 else {"cpu": cfg.resources.cpu_trial}
 
     analysis = tune.run(trainer,
-                        scheduler=sched,
-                        resources_per_trial=resources_per_trial,
-                        num_samples=int(args.num_samples),
-                        checkpoint_at_end=True, #otherwise it fails on multinode?
+                        scheduler=sched, resources_per_trial=resources_per_trial,
+                        num_samples=int(args.num_samples), checkpoint_at_end=True, #otherwise it fails on multinode?
                         local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
                         name="{}/test".format(cfg.model.name,date.replace('/', '-')),
-                        config=ray_config,
-                        callbacks=callbacks,
-    )
+                        config=ray_config, callbacks=callbacks)
 
     print("Best config is:", analysis.get_best_config(metric="val_loss", mode="min"))
 
