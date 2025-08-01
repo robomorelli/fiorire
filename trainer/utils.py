@@ -51,7 +51,7 @@ def model_setup(config_file_name, config):
 
     return cfg
 
-def infer_input_output(cfg):
+def update_input_output(cfg):
     """
     Infer input and output dimensions from the configuration.
     :param cfg: configuration object
@@ -75,8 +75,20 @@ def infer_input_output(cfg):
     else:
         target = None
 
-    return feats, target
+    # Merge model and opt into cfg
+    cfg.dataset.feats = feats
+    cfg.dataset.target = target
 
+    return cfg, feats, target
+
+def get_optimizazion_objects(model, cfg):
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.opt.lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 'min', factor=0.8, patience=cfg.opt.lr_patience, threshold=0.0001,
+        threshold_mode='rel', cooldown=0,min_lr=9e-8, verbose=True)
+    criterion = nn.MSELoss()
+
+    return optimizer, scheduler, criterion
 
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train"):

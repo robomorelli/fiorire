@@ -1,7 +1,6 @@
 from utils.load_model import get_model
 from utils.load_dataset import get_dataset, get_train_val_dataset
-from trainer.utils import infer_input_output, model_setup
-from trainer.utils import train_one_epoch, validate_one_epoch
+from trainer.utils import update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
 from config import *
 from models.utils.losses import *
 
@@ -10,39 +9,25 @@ class trainCONVAE1D(tune.Trainable):
     def setup(self, config):
         # Load and set up the configuration
         self.cfg = model_setup(conv_ae_1D_config_file, config)
-        # Handle 'feats'
-        feats, target = infer_input_output(self.cfg)
-
-        # Merge model and opt into cfg
-        self.cfg.dataset.feats = feats
-        self.cfg.dataset.target = target
+        self.cfg, _, _ = update_input_output(self.cfg)
         self.epochs = self.cfg.opt.epochs
         self.current_epoch = 0
-        self.model_name = os.path.join(self.cfg.model.name + '.h5')  # the name of the saved model
-
-        # Load data
-        self.trainloader, self.valloader, self.n_features, self.scaler, self.scaler_params = get_train_val_dataset(self.cfg)
-
-        # Add dataset info into cfg.dataset
-        self.cfg.dataset.n_features = self.n_features    # Needed to specify the input channel of the model
-        # Set up device
-        self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
-        # Build model
-        self.cfg.model.output_size = self.n_features if not self.cfg.dataset.target else len(self.cfg.target)    # Needed to specify the output channel of the model
-        self.model = get_model(self.cfg).to(self.device)
-        # Optimizer and scheduler
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.cfg.opt.lr)
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, 'min', factor=0.8,
-            patience=self.cfg.opt.lr_patience, threshold=0.0001,
-            threshold_mode='rel', cooldown=0,
-            min_lr=9e-8, verbose=True)
-        self.criterion = nn.MSELoss()
         self.best_val_loss = 10 ** 16
 
-        # Store parameter count for logging
+        # Load data
+        self.trainloader, self.valloader, self.scaler, self.scaler_params = get_train_val_dataset(self.cfg)
+
+        # Set up device
+        self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
+
+        # Build model
+        self.model = get_model(self.cfg).to(self.device)
         self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         self.parameters_number = self.cfg.model.parameter_count
+
+        # Optimizer and scheduler
+        self.optimizer, self.scheduler, self.criterion = get_optimizazion_objects(self.model, self.cfg)
+
 
     def step(self):
         self.current_ip()
@@ -54,21 +39,16 @@ class trainCONVAE1D(tune.Trainable):
             self.current_epoch = epoch
 
             train_loss = train_one_epoch(
-                model=self.model,
-                dataloader=self.trainloader,
-                criterion=self.criterion,
-                optimizer=self.optimizer,
-                device=self.device,
-                desc=f"Epoch {epoch + 1} [Train]",
+                model=self.model, dataloader=self.trainloader,
+                criterion=self.criterion, optimizer=self.optimizer,
+                device=self.device, desc=f"Epoch {epoch + 1} [Train]",
             )
 
             print(f"Epoch {epoch + 1} - Avg Train Loss: {train_loss:.6f}")
 
             val_loss = validate_one_epoch(
-                model=self.model,
-                dataloader=self.valloader,
-                criterion=self.criterion,
-                device=self.device,
+                model=self.model, dataloader=self.valloader,
+                criterion=self.criterion,device=self.device,
                 desc=f"Epoch {epoch + 1} [Val]",
             )
 
@@ -79,8 +59,7 @@ class trainCONVAE1D(tune.Trainable):
             result = {
                 "train_loss": train_loss,
                 "val_loss": val_loss,
-                "parameters_number": self.parameters_number,
-            }
+                "parameters_number": self.parameters_number}
 
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
@@ -94,14 +73,10 @@ class trainCONVAE1D(tune.Trainable):
     def save_checkpoint(self, checkpoint_dir):
         print("this is the checkpoint dir {}".format(checkpoint_dir))
         torch.save({
-                'epoch': self.current_epoch,
-                'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(),
-                'loss': self.best_val_loss,
-                'cfg': self.cfg,
-                'scaler_params': self.scaler_params,
-                'parameters_number': self.parameters_number,
-                'param_conf': self.parameters_number
+                'epoch': self.current_epoch, 'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(), 'loss': self.best_val_loss,
+                'cfg': self.cfg, 'scaler_params': self.scaler_params,
+                'parameters_number': self.parameters_number,'param_conf': self.parameters_number
             }, f"{checkpoint_dir}/model.pt")
         return os.path.join(checkpoint_dir, "model.pt")
 

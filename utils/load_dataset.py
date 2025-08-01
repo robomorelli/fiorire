@@ -79,13 +79,16 @@ def  get_train_val_dataset(cfg, **kwargs):
 
         n_features = len(cfg.dataset.feats)
 
+        cfg.dataset.n_features = n_features    # Needed to specify the input channel of the model
+        cfg.model.output_size = n_features if not cfg.dataset.target else len(cfg.target)    # Needed to specify the output channel of the model
+
         if cfg.dataset.save_dataloaders:
             torch.save(trainloader, os.path.join(root,'dataloader/train_dataloader_{}_ft_{}_length.pth'.format(
                 n_features, cfg.dataset.seq_in_length)))
             torch.save(valloader, os.path.join(root,'dataloader/test_dataloader_{}_ft_{}_length.pth'.format(
                 n_features, cfg.dataset.seq_in_length)))
 
-        return trainloader, valloader, n_features, scaler, scaler_params
+        return trainloader, valloader, scaler, scaler_params
 
 
 def get_dataset(cfg, data_path, scale=True, scaler=None, **kwargs):
