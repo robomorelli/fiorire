@@ -1,7 +1,7 @@
 from utils.load_model import get_model
-from utils.load_dataset import get_dataset
+from utils.load_dataset import get_dataset, get_train_val_dataset
 from trainer.utils import infer_input_output, model_setup
-from tqdm import tqdm
+from trainer.utils import train_one_epoch, validate_one_epoch
 from config import *
 from models.utils.losses import *
 
@@ -17,10 +17,11 @@ class trainCONVAE1D(tune.Trainable):
         self.cfg.dataset.feats = feats
         self.cfg.dataset.target = target
         self.epochs = self.cfg.opt.epochs
+        self.current_epoch = 0
         self.model_name = os.path.join(self.cfg.model.name + '.h5')  # the name of the saved model
 
         # Load data
-        self.trainloader, self.valloader, self.n_features, self.scaler, self.scaler_params = get_dataset(self.cfg)
+        self.trainloader, self.valloader, self.n_features, self.scaler, self.scaler_params = get_train_val_dataset(self.cfg)
 
         # Add dataset info into cfg.dataset
         self.cfg.dataset.n_features = self.n_features    # Needed to specify the input channel of the model
@@ -45,68 +46,50 @@ class trainCONVAE1D(tune.Trainable):
 
     def step(self):
         self.current_ip()
-        result = self.train_conv_ae1D(checkpoint_dir=None)
+        result = self.train_step(checkpoint_dir=None)
         return result
 
-    def train_conv_ae1D(self, checkpoint_dir=None):
+    def train_step(self, checkpoint_dir=None):
         for epoch in range(self.epochs):
             self.current_epoch = epoch
-            temp_train_loss = 0
-            train_steps = 0
 
-            # Training loop with tqdm and per-batch loss display
-            pbar_train = tqdm(enumerate(self.trainloader), total=len(self.trainloader),
-                              desc=f"Epoch {epoch + 1} [Train]")
-            for i, batch in pbar_train:
-                self.model.train()
-                self.optimizer.zero_grad()
+            train_loss = train_one_epoch(
+                model=self.model,
+                dataloader=self.trainloader,
+                criterion=self.criterion,
+                optimizer=self.optimizer,
+                device=self.device,
+                desc=f"Epoch {epoch + 1} [Train]",
+            )
 
-                y_o = self.model(batch[0].to(self.device))
-                loss = self.criterion(y_o.to(self.device), batch[1].to(self.device))
-                loss.backward()
-                self.optimizer.step()
-
-                temp_train_loss += loss.item()
-                train_steps += 1
-                pbar_train.set_postfix(loss=loss.item())
-
-            train_loss = temp_train_loss / train_steps
             print(f"Epoch {epoch + 1} - Avg Train Loss: {train_loss:.6f}")
 
-            # Validation loop with tqdm and per-batch val loss display
-            self.model.eval()
-            temp_val_loss = 0
-            val_steps = 0
+            val_loss = validate_one_epoch(
+                model=self.model,
+                dataloader=self.valloader,
+                criterion=self.criterion,
+                device=self.device,
+                desc=f"Epoch {epoch + 1} [Val]",
+            )
 
-            pbar_val = tqdm(enumerate(self.valloader), total=len(self.valloader), desc=f"Epoch {epoch + 1} [Val]")
-            with torch.no_grad():
-                for i, batch in pbar_val:
-                    y_o = self.model(batch[0].to(self.device))
-                    loss = self.criterion(batch[0].to(self.device), y_o.to(self.device)).item()
-                    temp_val_loss += loss
-                    val_steps += 1
-                    pbar_val.set_postfix(val_loss=loss)
-
-            val_loss = temp_val_loss / val_steps
             print(f"Epoch {epoch + 1} - Avg Val Loss: {val_loss:.6f}")
 
-            # Scheduler step
             self.scheduler.step(val_loss)
+
+            result = {
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "parameters_number": self.parameters_number,
+            }
 
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
-                return {
-                    "train_loss": train_loss,
-                    "val_loss": val_loss,
-                    "parameters_number": self.parameters_number,
-                    "should_checkpoint": True
-                }
-            else:
-                return {
-                    "train_loss": train_loss,
-                    "val_loss": val_loss,
-                    "parameters_number": self.parameters_number
-                }
+                result["should_checkpoint"] = True
+
+            return result  # For Ray Tune: return after one epoch
+
+    def test_step(self, checkpoint_dir=None):
+        raise NotImplementedError("test_lstm method is not implemented yet.")
 
     def save_checkpoint(self, checkpoint_dir):
         print("this is the checkpoint dir {}".format(checkpoint_dir))

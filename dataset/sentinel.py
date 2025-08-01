@@ -2,23 +2,19 @@ from torch.utils.data import Dataset
 import torch
 
 class Dataset_seq(Dataset):
-    # TODO: implementation of recontruction and prediction (given the time steps recontruct all the
-    #   features or predict the features dropped from the df and compare the prediction with the actual value
-    #   for the anomaly detection task.
 
-    # TODO: implement also the forecasting (the idx of target is shifted ahead of many steps of the forecasting window
-    def __init__(self, df, target=None, sequence_length=4, out_window=4,
+    def __init__(self, df, target=None, sequence_length=16, out_window=16,  is_anomaly_column=None,
                  reconstruction=True, forecast=False, remove_target=False, transform=None):
 
         self.forecast = forecast
         self.reconstruction = True if not forecast else reconstruction
         self.remove_target = remove_target
+        self.is_anomaly_column = is_anomaly_column
 
         if not (self.forecast or self.reconstruction):
             raise Exception('You should define at least one of the modes: reconstruction, prediction or forecasting')
 
         self.transform = transform
-        #TODO raise error if prediction == true but target is not defined
         if self.forecast:
             self.df_data = df.drop(columns=target) if self.remove_target else df  # In case of forecasting, the target is not removed from the input data
             self.targets = df[target] if target is not None else df  # In case of forecasting, the target is the same as the input data
@@ -56,4 +52,8 @@ class Dataset_seq(Dataset):
             data = self.transform(data)
             target = self.transform(target)
 
-        return torch.tensor(data).float(), torch.tensor(target).float()
+        if self.is_anomaly_column is not None:
+            anomaly_data = data[:, self.is_anomaly_column]
+            return torch.tensor(data).float(), torch.tensor(target).float(), torch.tensor(anomaly_data).float()
+        else:
+            return torch.tensor(data).float(), torch.tensor(target).float()

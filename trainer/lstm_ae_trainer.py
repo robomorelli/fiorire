@@ -3,7 +3,6 @@ from utils.load_model import get_model
 from utils.load_dataset import get_dataset
 from omegaconf import OmegaConf
 from tqdm import tqdm
-from torch import nn
 from config import *
 from models.utils.losses import *
 

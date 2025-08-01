@@ -99,7 +99,7 @@ def get_scaler(cfg):
         raise ValueError(f"Scaler '{scaler_name}' not supported.")
 
 
-def create_train_val_df_with_ano(cfg, df, seq_len, num_chunks=12, val_ratio=0.1, seed=42):
+def create_train_val_df_with_ano(cfg, df, seq_len, ano_col='is_anomaly', num_chunks=12, val_ratio=0.1, seed=42):
     np.random.seed(seed)  # Set seed for reproducibility
     df = df.reset_index(drop=True)  # preserve original index for window detection
 
@@ -125,8 +125,8 @@ def create_train_val_df_with_ano(cfg, df, seq_len, num_chunks=12, val_ratio=0.1,
     df_val = df.iloc[val_indexes].copy().reset_index(drop=True)
 
     # Identify anomaly indices within each split
-    train_anomalous_idx = df_train[df_train['is_anomaly'] == 1].index.to_numpy()
-    val_anomalous_idx = df_val[df_val['is_anomaly'] == 1].index.to_numpy()
+    train_anomalous_idx = df_train[df_train[ano_col] == 1].index.to_numpy()
+    val_anomalous_idx = df_val[df_val[ano_col] == 1].index.to_numpy()
 
     # Helper function to get anomaly window indices
     def get_anomaly_window_indexes(anomalous_idx, total_len):
@@ -178,8 +178,7 @@ def get_scaled_train_val_df(cfg, df):
 
     scaler = get_scaler(cfg)
     if scaler:
-        scaler.fit(train_df)
-        train_df_scaled = scaler.transform(train_df.values)
+        train_df_scaled = scaler.fit_transform(train_df.values)
         val_df_scaled = scaler.transform(val_df.values)
 
         train_df = pd.DataFrame(train_df_scaled, columns=train_df.columns)
@@ -192,6 +191,35 @@ def get_scaled_train_val_df(cfg, df):
 
     return train_df, val_df, scaler, df, scaler_params
 
+def get_scaled_df(cfg, df, scale=False, scaler=None, add_columns=None):
+
+    cfg.dataset.target = cfg.dataset.target if isinstance(cfg.dataset.target, list) else [cfg.dataset.target] if cfg.dataset.target else None
+    columns = cfg.dataset.feats + [x for x in cfg.dataset.target if x not in cfg.dataset.feats] if cfg.dataset.target else cfg.dataset.feats
+    if add_columns:
+        columns += add_columns if isinstance(add_columns, list) else [add_columns]
+
+    dataRaw = df[columns].dropna()
+    if cfg.dataset.dataset_subset:
+        dataRaw = dataRaw.iloc[:cfg.dataset.dataset_subset, :]
+
+    df = dataRaw.copy()
+
+    if scale:
+        if scaler:
+            df_scaled = scaler.transform(df.values)
+            df = pd.DataFrame(df_scaled, columns=df.columns)
+            scaler_params = serialize_scaler(scaler)
+        else:
+            scaler = get_scaler(cfg)
+            df_scaled = scaler.fit_transform(df.values)
+            df = pd.DataFrame(df_scaled, columns=df.columns)
+
+            scaler_params = serialize_scaler(scaler)
+    else:
+        scaler = None
+        scaler_params = None
+
+    return df, scaler, df, scaler_params
 
 
 def get_train_val_samplers(cfg, df):
@@ -224,3 +252,25 @@ def get_train_val_samplers(cfg, df):
     val_sampler = SubsetRandomSampler(val_idx)
 
     return train_sampler, val_sampler
+
+def get_sampler(cfg, df, shuffle=False):
+    # return trian, val and scaler
+    np.random.seed(101)
+    step = cfg.dataset.seq_in_length - int(cfg.dataset.seq_in_length * cfg.dataset.perc_overlap)
+    print('using step', step)
+    print('perc_overlap', cfg.dataset.perc_overlap)
+    print('using sequence length', cfg.dataset.seq_in_length)
+    step = step if step > 0 else 1
+    print('step', step)
+
+    dataset_size = len(df)
+    idxs = np.arange(0, dataset_size, step)
+    print('idxs', idxs[:10])
+    print('len idxs', len(idxs))
+
+    if shuffle:
+        np.random.shuffle(idxs)
+
+    sampler = SubsetRandomSampler(idxs)
+
+    return sampler

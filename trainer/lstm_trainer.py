@@ -1,7 +1,7 @@
 from utils.load_model import get_model
-from utils.load_dataset import get_dataset
+from utils.load_dataset import get_dataset, get_train_val_dataset
 from trainer.utils import infer_input_output, model_setup
-from tqdm import tqdm
+from trainer.utils import train_one_epoch, validate_one_epoch
 from config import *
 from models.utils.losses import *
 
@@ -17,37 +17,26 @@ class trainLSTM(tune.Trainable):
         self.cfg.dataset.feats = feats
         self.cfg.dataset.target = target
         self.epochs = self.cfg.opt.epochs
+        self.current_epoch = 0
         self.model_name = os.path.join(self.cfg.model.name + '.h5')  # the name of the saved model
 
-        # Merge model and opt into cfg
-        self.cfg.dataset.feats = feats
-        self.cfg.dataset.target = target
-        self.epochs = self.cfg.opt.epochs
-
         # Load data
-        self.trainloader, self.valloader, self.n_features, self.scaler, self.scaler_params = get_dataset(self.cfg)
+        self.trainloader, self.valloader, self.n_features, self.scaler, self.scaler_params = get_train_val_dataset(self.cfg)
 
-        print('number of training data {}'.format(len(self.trainloader.dataset)))
         # Add dataset info into cfg.dataset
         self.cfg.dataset.n_features = self.n_features    # Needed to specify the input channel of the model
-        self.cfg.model.output_size = self.n_features if not self.cfg.dataset.target else len(self.cfg.target)    # Needed to specify the output channel of the model
         # Set up device
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
         # Build model
+        self.cfg.model.output_size = self.n_features if not self.cfg.dataset.target else len(self.cfg.target)    # Needed to specify the output channel of the model
         self.model = get_model(self.cfg).to(self.device)
-
         # Optimizer and scheduler
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.cfg.opt.lr)
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, 'min',
-            factor=0.8,
-            patience=self.cfg.opt.lr_patience,
-            threshold=0.0001,
-            threshold_mode='rel',
-            cooldown=0,
-            min_lr=9e-8,
-            verbose=True
-        )
+            self.optimizer, 'min', factor=0.8,
+            patience=self.cfg.opt.lr_patience, threshold=0.0001,
+            threshold_mode='rel', cooldown=0,
+            min_lr=9e-8, verbose=True)
         self.criterion = nn.MSELoss()
         self.best_val_loss = 10 ** 16
 
@@ -57,90 +46,50 @@ class trainLSTM(tune.Trainable):
 
     def step(self):
         self.current_ip()
-        result = self.train_lstm(checkpoint_dir=None)
+        result = self.train_step(checkpoint_dir=None)
         return result
 
-    def train_lstm(self, checkpoint_dir=None):
-        """
-        Train loop for LSTM with tqdm progress bars
-        """
-        for epoch in tqdm(range(self.epochs), unit='epoch', desc="Epochs"):
+    def train_step(self, checkpoint_dir=None):
+        for epoch in range(self.epochs):
             self.current_epoch = epoch
-            temp_train_loss = 0
-            train_steps = 0
 
-            # Training phase with tqdm
-            self.model.train()
-            train_loader_tqdm = tqdm(self.trainloader, desc=f"Training Epoch {epoch + 1}", unit="batch", leave=False)
-            for i, batch in enumerate(train_loader_tqdm):
-                self.optimizer.zero_grad()
+            train_loss = train_one_epoch(
+                model=self.model,
+                dataloader=self.trainloader,
+                criterion=self.criterion,
+                optimizer=self.optimizer,
+                device=self.device,
+                desc=f"Epoch {epoch + 1} [Train]",
+            )
 
-                inputs, targets = batch[0].to(self.device), batch[1].to(self.device)
-                outputs = self.model(inputs)
-                loss = self.criterion(outputs, targets)
+            print(f"Epoch {epoch + 1} - Avg Train Loss: {train_loss:.6f}")
 
-                loss.backward()
-                self.optimizer.step()
+            val_loss = validate_one_epoch(
+                model=self.model,
+                dataloader=self.valloader,
+                criterion=self.criterion,
+                device=self.device,
+                desc=f"Epoch {epoch + 1} [Val]",
+            )
 
-                temp_train_loss += loss.item()
-                train_steps += 1
-
-                if i % 10 == 0:
-                    train_loader_tqdm.set_postfix(loss=loss.item())
-
-            train_loss = temp_train_loss / train_steps
-            print(f"[Epoch {epoch + 1}] Train loss: {train_loss:.4f}")
-
-            # Validation phase with tqdm
-            self.model.eval()
-            temp_val_loss = 0
-            val_steps = 0
-
-            with torch.no_grad():
-                val_loader_tqdm = tqdm(self.valloader, desc="Validating", unit="batch", leave=False)
-                for batch in val_loader_tqdm:
-                    inputs, targets = batch[0].to(self.device), batch[1].to(self.device)
-                    outputs = self.model(inputs)
-                    loss = self.criterion(outputs, targets).item()
-                    temp_val_loss += loss
-                    val_steps += 1
-
-            val_loss = temp_val_loss / val_steps
-            print(f"[Epoch {epoch + 1}] Validation loss: {val_loss:.4f}")
+            print(f"Epoch {epoch + 1} - Avg Val Loss: {val_loss:.6f}")
 
             self.scheduler.step(val_loss)
 
+            result = {
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "parameters_number": self.parameters_number,
+            }
+
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
-                return {
-                    "train_loss": train_loss,
-                    "val_loss": val_loss,
-                    "parameters_number": self.parameters_number,
-                    "should_checkpoint": True
-                }
-            else:
-                return {
-                    "train_loss": train_loss,
-                    "val_loss": val_loss,
-                    "parameters_number": self.parameters_number
-                }
+                result["should_checkpoint"] = True
 
-    def test_lstm(self, checkpoint_dir=None):
-        self.model.eval()
-        test_loss = 0.0
-        test_steps = 0
+            return result  # For Ray Tune: return after one epoch
 
-        with torch.no_grad():
-            for batch in tqdm(self.valloader, desc="Testing", unit="batch"):
-                inputs, _, targets = batch[0].to(self.device), batch[1], batch[1].to(self.device)
-                outputs, enc, preds = self.model(inputs)
-                loss = self.criterion(preds, inputs).item()
-                test_loss += loss
-                test_steps += 1
-
-        test_loss /= test_steps
-        print(f"Test loss: {test_loss:.4f}")
-        return {"test_loss": test_loss}
+    def test_step(self, checkpoint_dir=None):
+        raise NotImplementedError("test_lstm method is not implemented yet.")
 
     def save_checkpoint(self, checkpoint_dir):
         print("this is the checkpoint dir {}".format(checkpoint_dir))
