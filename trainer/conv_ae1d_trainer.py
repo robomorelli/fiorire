@@ -1,6 +1,8 @@
 from utils.load_model import get_model
 from utils.load_dataset import get_train_val_dataloader, get_metric_loader
 from trainer.utils import update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
+from omegaconf import ListConfig
+
 from config import *
 from models.utils.losses import *
 
@@ -13,6 +15,7 @@ class trainCONVAE1D(tune.Trainable):
         self.epochs = self.cfg.opt.epochs
         self.current_epoch = 0
         self.best_val_loss = float('inf')
+        self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
 
         # Load data
         # try to separate the anomalous sequences from the main dataset anyway. If they are not present, the dataset will be empty
@@ -41,19 +44,27 @@ class trainCONVAE1D(tune.Trainable):
         for epoch in range(self.epochs):
             self.current_epoch = epoch
 
-            train_loss = train_one_epoch(
+            train_results = train_one_epoch(
                 model=self.model, dataloader=self.trainloader,
                 criterion=self.criterion, optimizer=self.optimizer,
                 device=self.device, desc=f"Epoch {epoch + 1} [Train]",
             )
 
+            train_loss = train_results["train_loss"]
             print(f"Epoch {epoch + 1} - Avg Train Loss: {train_loss:.6f}")
 
-            val_loss = validate_one_epoch(
+            evaluate_detection_metrics = self.cfg.opt.evaluate_detection_metrics and (self.metrics_loader is not None and
+                                                        (self.current_epoch + 1)%self.cfg.opt.detect_anomaly_epoch_freq==0)
+            val_results = validate_one_epoch(
                 model=self.model, dataloader=self.valloader,
+                metric_loader =self.metrics_loader,
                 criterion=self.criterion,device=self.device,
                 desc=f"Epoch {epoch + 1} [Val]",
+                evaluate_detection_metrics=evaluate_detection_metrics,
+                n_std=self.n_std,
+                anomaly_threshold=train_results['anomaly_threshold'] if 'anomaly_threshold' in train_results else None
             )
+            val_loss = val_results["val_loss"]
 
             print(f"Epoch {epoch + 1} - Avg Val Loss: {val_loss:.6f}")
 
@@ -79,7 +90,8 @@ class trainCONVAE1D(tune.Trainable):
                 'epoch': self.current_epoch, 'model_state_dict': self.model.state_dict(),
                 'optimizer_state_dict': self.optimizer.state_dict(), 'loss': self.best_val_loss,
                 'cfg': self.cfg, 'scaler_params': self.scaler_params,
-                'parameters_number': self.parameters_number,'param_conf': self.parameters_number
+                'parameters_number': self.parameters_number,'param_conf': self.parameters_number,
+                'metric_score': metric_dict
             }, f"{checkpoint_dir}/model.pt")
         return os.path.join(checkpoint_dir, "model.pt")
 
