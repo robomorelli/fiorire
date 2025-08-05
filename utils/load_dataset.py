@@ -1,12 +1,34 @@
-from preprocessing.sentinel_preprocessing import get_scaled_train_val_df,  get_train_val_samplers, get_scaled_df, get_sampler
+from preprocessing.sentinel_preprocessing import get_scaled_train_val_dataloader, get_scaled_dataloader
 from dataset.sentinel import Dataset_seq
 import torch
 from torchvision.transforms import transforms as T
 from torchvision.transforms import Lambda
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 import pandas as pd
 
 from config import *
+
+
+def get_transform(cfg):
+    # Define the dataset name to apply specific transformations
+    if cfg.dataset.name == "fiorire":
+        if cfg.model.name == "conv_ae":
+            transform = T.Compose([
+                T.ToTensor(),
+            ])
+
+        elif cfg.model.name == "conv_ae1D":
+            transform = T.Compose([
+                T.ToTensor(),
+                Lambda(lambda x: x.permute((0, 2, 1))),
+                Lambda(lambda x: x.squeeze(0))])
+        else:
+            transform = None
+    else:
+        raise ValueError(f"Unsupported dataset name: {cfg.dataset.name}")
+
+    return transform
+
 
 def load_dataframe(file_path):
     """
@@ -36,99 +58,90 @@ def load_dataframe(file_path):
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
 
-def  get_train_val_dataset(cfg, **kwargs):
+
+def get_train_val_dataloader(cfg, filter_anomalies=True, **kwargs):
     """
     Get the dataset.
     :param cfg:  configuration file
     :param transform: transform to be applied to the dataset
     :return: dataset train, dataset test
     """
-    if cfg.dataset.name == "fiorire":
+    transform = get_transform(cfg)
 
-        if cfg.model.name == "conv_ae":
-            transform = T.Compose([
-                T.ToTensor(),
-            ])
+    # If seq_out_length is not specified, set it equal to seq_in_length
+    if not cfg.dataset.seq_out_length:
+        cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
 
-        elif cfg.model.name == "conv_ae1D":
-            transform = T.Compose([
-                T.ToTensor(),
-                Lambda(lambda x: x.permute((0, 2, 1))),
-                Lambda(lambda x: x.squeeze(0))])
-        else:
-            transform = None
+    # Load the dataframe from the specified path
+    df = load_dataframe(cfg.dataset.data_path)
+    # get train and validation (and eventually metrics (anomalous+normal) sampler)
+    # TO DO: the normal part of metric dataloader should be a subset of the validation set but the threshold shouls
+    # be defined from a separate normal sample (train?)
+    trainloader, valloader, metric_loader, scaler, scaler_params = get_scaled_train_val_dataloader(cfg, df,
+                                                                                                   seq_len=cfg.dataset.seq_in_length,
+                                                                                                   filter_anomalies=filter_anomalies,
+                                                                                                   transform=transform,
+                                                                                                   ano_col=cfg.dataset.is_anomaly_column)
 
-        if not cfg.dataset.seq_out_length:
-            cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
-        batch_size = cfg.opt.batch_size
+    n_features = len(cfg.dataset.feats)
+    cfg.dataset.n_features = n_features  # Needed to specify the input channel of the model
+    cfg.model.output_size = n_features if not cfg.dataset.target else len(
+        cfg.dataset.target)  # Needed to specify the output channel of the model
 
-        df = load_dataframe(cfg.dataset.data_path)
+    if cfg.dataset.save_dataloaders:
+        torch.save(trainloader, os.path.join(root, 'dataloader/train_dataloader_{}_ft_{}_length.pth'.format(
+            n_features, cfg.dataset.seq_in_length)))
+        torch.save(valloader, os.path.join(root, 'dataloader/val_dataloader_{}_ft_{}_length.pth'.format(
+            n_features, cfg.dataset.seq_in_length)))
+        torch.save(valloader, os.path.join(root, 'dataloader/metric_dataloader_{}_ft_{}_length.pth'.format(
+            n_features, cfg.dataset.seq_in_length)))
 
-        # get train and validation dataframes
-        train_df, val_df, scaler, df, scaler_params = get_scaled_train_val_df(cfg, df)
-        # get train and validation samplers
-        train_sampler, val_sampler = get_train_val_samplers(cfg, df)
-        # Dataset for dataloader definition, left the argsument other than cfg because we want to use also without config file
-        train_dataset = Dataset_seq(df, target=cfg.dataset.target, sequence_length=cfg.dataset.seq_in_length,
-                                    out_window=cfg.dataset.seq_out_length, forecast=cfg.dataset.forecast, transform=transform)
-        trainloader = DataLoader(dataset=train_dataset, batch_size=batch_size
-                                 ,sampler=train_sampler)#, shuffle=True)
-        test_dataset = Dataset_seq(df, target=cfg.dataset.target, sequence_length=cfg.dataset.seq_in_length,
-                                    out_window=cfg.dataset.seq_out_length, forecast=cfg.dataset.forecast, transform=transform)
-        valloader = DataLoader(dataset=test_dataset, batch_size=batch_size, sampler=val_sampler)
-
-        n_features = len(cfg.dataset.feats)
-
-        cfg.dataset.n_features = n_features    # Needed to specify the input channel of the model
-        cfg.model.output_size = n_features if not cfg.dataset.target else len(cfg.target)    # Needed to specify the output channel of the model
-
-        if cfg.dataset.save_dataloaders:
-            torch.save(trainloader, os.path.join(root,'dataloader/train_dataloader_{}_ft_{}_length.pth'.format(
-                n_features, cfg.dataset.seq_in_length)))
-            torch.save(valloader, os.path.join(root,'dataloader/test_dataloader_{}_ft_{}_length.pth'.format(
-                n_features, cfg.dataset.seq_in_length)))
-
-        return trainloader, valloader, scaler, scaler_params
+    return trainloader, valloader, metric_loader, scaler, scaler_params
 
 
-def get_dataset(cfg, data_path, scale=True, scaler=None, **kwargs):
+def get_metric_loader(cfg, metric_loader=None, data_path=None, scale=True, scaler=None):
     """
-    Get the dataset.
-    :param cfg:  configuration file
-    :param transform: transform to be applied to the dataset
-    :return: dataset train, dataset test
+    Get the metrics loader.
+    :param cfg: configuration file
+    :param metrics_loader: optional, if None it will be loaded from the path specified in the config file
+    :return: metrics loader
     """
-    if cfg.dataset.name == "fiorire":
+    metric_datasets_list = []
+    # existing metric_loader (e.g., from get_train_val_dataset)
+    if metric_loader is not None:
+        metric_datasets_list.append(metric_loader.dataset)
 
-        if cfg.model.name == "conv_ae":
-            transform = T.Compose([
-                T.ToTensor(),
-            ])
+    # Define the dataset name to apply specific transformations
+    transform = get_transform(cfg)
 
-        elif cfg.model.name == "conv_ae1D":
-            transform = T.Compose([
-                T.ToTensor(),
-                Lambda(lambda x: x.permute((0, 2, 1))),
-                Lambda(lambda x: x.squeeze(0))])
-        else:
-            transform = None
+    # If seq_out_length is not specified, set it equal to seq_in_length
+    if not cfg.dataset.seq_out_length:
+        cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
 
-        if not cfg.dataset.seq_out_length:
-            cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
-        batch_size = cfg.opt.batch_size
+    # Load the dataframe from the specified path
+    metric_df = load_dataframe(data_path)
 
-        df = load_dataframe(data_path)
+    metric_loader, scaler, scaler_params = get_scaled_dataloader(cfg, metric_df,
+                                        seq_len=cfg.dataset.seq_in_length,
+                                        transform=transform,
+                                        scale=scale,
+                                        scaler=scaler,
+                                        ano_col=cfg.dataset.is_anomaly_column)
 
-        # get train and validation dataframes
-        df, scaler, df, scaler_params = get_scaled_df(cfg, df, scale, scaler)
-        # get train and validation samplers
-        train_sampler, val_sampler = get_sampler(cfg, df, shuffle=True)
+    if metric_loader is not None:
+        metric_datasets_list.append(metric_loader.dataset)
 
-        dataset = Dataset_seq(df, target=cfg.dataset.target, sequence_length=cfg.dataset.seq_in_length,
-                                   out_window=cfg.dataset.seq_out_length, forecast=cfg.dataset.forecast,
-                                   transform=transform)
-        loader = DataLoader(dataset=dataset, batch_size=batch_size, sampler=val_sampler)
+    # concatenate if we have at least one dataset
+    if metric_datasets_list:
+        metric_dataset = ConcatDataset(metric_datasets_list)
+        #df_merge = pd.concat([ds.df for ds in metric_datasets_list], ignore_index=True)
+        #dataset_args = dict(df=df_merge, target=cfg.dataset.target,
+        #                    sequence_length=cfg.dataset.seq_in_length, out_window=cfg.dataset.seq_out_length,
+        #                    forecast=cfg.dataset.forecast, transform=transform)
+        #metrics_dataset = Dataset_seq(**dataset_args)
+        metric_loader = DataLoader(metric_dataset, batch_size=cfg.opt.batch_size,
+                                    shuffle=False)
+    else:
+        metric_loader = None
 
-        n_features = len(cfg.dataset.feats)
-
-        return loader, n_features, scaler, scaler_params
+    return metric_loader

@@ -2,6 +2,7 @@
 from pathlib import Path
 from omegaconf import ListConfig
 from omegaconf import OmegaConf
+import numpy as np
 from config import *
 
 def find_project_root(current: Path, markers=('config', 'main.py')) -> Path:
@@ -92,3 +93,36 @@ def extract_fixed_config_bkp(cfg_path):
         else:
             config[k] = v  # Fallback
     return config, cfg
+
+
+def inject_binary_anomalies(length=100_000, anomaly_ratio=0.1, min_seq_len=100, max_seq_len=5000, seed=42):
+    np.random.seed(seed)
+    total_anomalies = int(length * anomaly_ratio)  # e.g., 10_000
+    binary_column = np.zeros(length, dtype=int)
+
+    used = 0
+    starts = []
+
+    while used < total_anomalies:
+        # Sample random sequence length
+        seq_len = np.random.randint(min_seq_len, max_seq_len + 1)
+        seq_len = min(seq_len, total_anomalies - used)  # don't overshoot total
+
+        # Find valid starting point
+        max_start = length - seq_len
+        attempts = 0
+        while True:
+            start = np.random.randint(0, max_start)
+            end = start + seq_len
+            # Avoid overlap with previous sequences
+            if binary_column[start:end].sum() == 0:
+                break
+            attempts += 1
+            if attempts > 1000:
+                raise RuntimeError("Too many attempts to find non-overlapping region.")
+
+        binary_column[start:end] = 1
+        starts.append((start, end))
+        used += seq_len
+
+    return binary_column, starts

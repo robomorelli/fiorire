@@ -90,14 +90,13 @@ def get_optimizazion_objects(model, cfg):
 
     return optimizer, scheduler, criterion
 
-
 def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train"):
     model.train()
     epoch_loss = 0
     steps = 0
 
     pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc=desc, leave=False)
-    for i, (inputs, targets) in pbar:
+    for i, (inputs, targets, is_anomaly) in pbar:
         inputs, targets = inputs.to(device), targets.to(device)
 
         optimizer.zero_grad()
@@ -119,7 +118,7 @@ def validate_one_epoch(model, dataloader, criterion, device, desc="Val"):
     steps = 0
 
     pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc=desc, leave=False)
-    for i, (inputs, targets) in pbar:
+    for i, (inputs, targets, is_anomaly) in pbar:
         inputs, targets = inputs.to(device), targets.to(device)
 
         outputs = model(inputs).to(device)
@@ -130,8 +129,6 @@ def validate_one_epoch(model, dataloader, criterion, device, desc="Val"):
         pbar.set_postfix(val_loss=loss.item())
 
     return epoch_loss / steps
-
-
 
 def test_anomaly_step(self, n_std=3):
     self.model.eval()

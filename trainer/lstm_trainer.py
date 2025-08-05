@@ -1,5 +1,5 @@
 from utils.load_model import get_model
-from utils.load_dataset import get_dataset, get_train_val_dataset
+from utils.load_dataset import get_train_val_dataloader, get_metric_loader
 from trainer.utils import update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
 from config import *
 from models.utils.losses import *
@@ -9,13 +9,17 @@ class trainLSTM(tune.Trainable):
     def setup(self, config):
         # Load and set up the configuration
         self.cfg = model_setup(lstm_config_file, config)
-        self.cfg, _, _ = update_input_output(self.cfg)
+        self.cfg, _, _ = update_input_output(self.cfg)    # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.epochs = self.cfg.opt.epochs
         self.current_epoch = 0
-        self.best_val_loss = 10 ** 16
+        self.best_val_loss = float('inf')
 
         # Load data
-        self.trainloader, self.valloader, self.scaler, self.scaler_params = get_train_val_dataset(self.cfg)
+        # try to separate the anomalous sequences from the main dataset anyway. If they are not present, the dataset will be empty
+        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(self.cfg, filter_anomalies=True)
+        # If the anomalous sequences are not present in the main dataset, the metrics_loader will be None. Try to load it from the path specified in the config file
+        self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader, data_path=self.cfg.opt.metrics_dataset_path,
+                                                scale=True, scaler=self.scaler) if self.cfg.opt.evaluate_detection_metrics else None
 
         # Set up device
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
@@ -27,7 +31,6 @@ class trainLSTM(tune.Trainable):
 
         # Optimizer and scheduler
         self.optimizer, self.scheduler, self.criterion = get_optimizazion_objects(self.model, self.cfg)
-
 
     def step(self):
         self.current_ip()
