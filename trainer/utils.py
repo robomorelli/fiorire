@@ -1,4 +1,4 @@
-from utils.general import resolve_paths, extract_config, extract_fixed_config
+from utils.general import resolve_paths, infer_model_type, reduce_anomaly_mask
 from omegaconf import OmegaConf, ListConfig
 import torch
 import numpy as np
@@ -118,10 +118,16 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train
 
     # Stack all errors: [N, C, L]
     all_errors = torch.cat(all_errors, dim=0)
+    model_type, last_layer = infer_model_type(model)
 
-    # Compute mean per channel over all samples and time steps
-    channel_mean_errors = all_errors.mean(dim=(0, 2)).numpy()  # shape: [C]
-    channel_std_errors = all_errors.std(dim=(0, 2)).numpy()  # shape: [C]
+    if model_type == "cnn":
+        channel_mean_errors = all_errors.mean(dim=(0, 2)).numpy()  # [C]
+        channel_std_errors = all_errors.std(dim=(0, 2)).numpy()
+    elif model_type == "lstm":
+        channel_mean_errors = all_errors.mean(dim=(0, 1)).numpy()  # [C]
+        channel_std_errors = all_errors.std(dim=(0, 1)).numpy()
+    else:
+        raise ValueError("Unknown model type")
 
     return {
         "train_loss": epoch_loss / steps,
@@ -164,8 +170,16 @@ def validate_one_epoch(
             pbar.set_postfix(loss=loss.item())
 
     all_errors = torch.cat(all_errors, dim=0)  # [N, C, L]
-    channel_mean_errors = all_errors.mean(dim=(0, 2)).numpy()
-    channel_std_errors = all_errors.std(dim=(0, 2)).numpy()
+    model_type, last_layer = infer_model_type(model)
+
+    if model_type == "cnn":
+        channel_mean_errors = all_errors.mean(dim=(0, 2)).numpy()  # [C]
+        channel_std_errors = all_errors.std(dim=(0, 2)).numpy()
+    elif model_type == "lstm":
+        channel_mean_errors = all_errors.mean(dim=(0, 1)).numpy()  # [C]
+        channel_std_errors = all_errors.std(dim=(0, 1)).numpy()
+    else:
+        raise ValueError("Unknown model type")
 
     # Core validation results
     results = {
@@ -233,7 +247,15 @@ def test_anomaly_step(model, dataloader, device,  n_std: List[int]=None, anomaly
 
         assert channel_means.ndim == 1 and channel_stds.ndim == 1, "channel_means and channel_stds must be 1D arrays"
         assert channel_means.shape == channel_stds.shape, "channel_means and channel_stds must have the same shape"
-        C = all_errors.shape[1]
+        model_type, last_layer = infer_model_type(model)
+
+        if model_type == "cnn":
+            C = all_errors.shape[1]
+        elif model_type == "lstm":
+            C = all_errors.shape[2]
+        else:
+            raise ValueError("Unknown model type")
+
         assert channel_means.shape[0] == C, f"Expected {C} channels, but got {channel_means.shape[0]}"
 
     else:
@@ -251,13 +273,12 @@ def test_anomaly_step(model, dataloader, device,  n_std: List[int]=None, anomaly
     for n_std in n_std:
         # Compute thresholds per channel
         thresholds = channel_means + n_std * channel_stds  # [C]
-        thresholds_tensor = torch.tensor(thresholds).view(1, -1, 1)  # [1, C, 1]
-
-        # Predict anomalies
-        anomaly_mask_pred = (all_errors > thresholds_tensor).int()  # [N, C, L]
 
         # Flatten for F1
-        anomaly_mask_pred_reduced = anomaly_mask_pred.any(dim=1, keepdim=True).int()  # [N, 1, L]
+        model_type, last_layer = infer_model_type(model)
+        anomaly_mask_pred_reduced = reduce_anomaly_mask(all_errors, thresholds, model_type)
+
+        # Flatten and evaluate
         y_pred = anomaly_mask_pred_reduced.view(-1).numpy()
         y_true = all_masks.view(-1).numpy()
         f1 = f1_score(y_true, y_pred)
@@ -266,14 +287,14 @@ def test_anomaly_step(model, dataloader, device,  n_std: List[int]=None, anomaly
         results_per_std[n_std] = {
             "f1_score": f1,
             "thresholds": thresholds,
-            "anomaly_mask_pred": anomaly_mask_pred,
+            "anomaly_mask_pred": anomaly_mask_pred_reduced,
         }
 
         # Track best
         if f1 > best_f1:
             best_f1 = f1
             best_n_std = n_std
-            best_pred_mask = anomaly_mask_pred
+            best_pred_mask = anomaly_mask_pred_reduced
 
     return {"metrics_results":{
         "best_f1_score": best_f1,
@@ -285,3 +306,5 @@ def test_anomaly_step(model, dataloader, device,  n_std: List[int]=None, anomaly
         "ground_truth_mask": all_masks,
         "results_per_std": results_per_std  # Optional: full history
     }}
+
+

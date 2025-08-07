@@ -1,7 +1,9 @@
 # utils/general.py
 from pathlib import Path
 from omegaconf import OmegaConf, DictConfig, ListConfig
+from typing import Tuple
 import numpy as np
+import torch
 from config import *
 
 def find_project_root(current: Path, markers=('config', 'main.py')) -> Path:
@@ -134,3 +136,59 @@ def inject_binary_anomalies(length=100_000, anomaly_ratio=0.1, min_seq_len=100, 
         used += seq_len
 
     return binary_column, starts
+
+
+def infer_model_type(model: torch.nn.Module) -> Tuple[str, str]:
+    """
+    Infer model type from the modules of the model.
+    Returns:
+        - model_type: One of ['cnn', 'lstm', 'mixed', 'unknown']
+        - defining_layer: The name of the last relevant layer class (e.g., 'Conv1d' or 'LSTM')
+    """
+    last_relevant_layer = None
+
+    for mod in reversed(list(model.modules())):
+        if isinstance(mod, torch.nn.LSTM):
+            return "lstm", "LSTM"
+        elif isinstance(mod, torch.nn.Conv1d):
+            return "cnn", "Conv1d"
+
+    # Fallbacks
+    for mod in model.modules():
+        if isinstance(mod, torch.nn.LSTM):
+            last_relevant_layer = "LSTM"
+        elif isinstance(mod, torch.nn.Conv1d):
+            last_relevant_layer = "Conv1d"
+
+    if last_relevant_layer:
+        return "mixed", last_relevant_layer
+    else:
+        return "unknown", None
+
+
+def reduce_anomaly_mask(all_errors, thresholds, model_type):
+    """
+    Reduces anomaly mask to [N, 1, L] based on model type for F1 score computation.
+
+    Args:
+        all_errors (Tensor): [N, C, L] for CNN or [N, L, C] for LSTM
+        thresholds (array-like): per-channel threshold [C]
+        model_type (str): 'cnn' or 'lstm'
+
+    Returns:
+        reduced_mask (Tensor): [N, 1, L]
+    """
+    if model_type == 'cnn':
+        thresholds_tensor = torch.tensor(thresholds).view(1, -1, 1)  # [1, C, 1]
+        mask = (all_errors > thresholds_tensor).int()               # [N, C, L]
+        reduced = mask.any(dim=1, keepdim=True).int()               # [N, 1, L]
+
+    elif model_type == 'lstm':
+        thresholds_tensor = torch.tensor(thresholds).view(1, 1, -1)  # [1, 1, C]
+        mask = (all_errors > thresholds_tensor).int()               # [N, L, C]
+        reduced = mask.any(dim=2, keepdim=True).permute(0, 2, 1).int()  # [N, 1, L]
+
+    else:
+        raise ValueError(f"[❌ Error] Unknown model type: {model_type}")
+
+    return reduced
