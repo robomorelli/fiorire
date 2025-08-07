@@ -7,7 +7,8 @@ tune_config:
   model.latent_dim: tune.choice([100, 160, 320])
   model.flattened: tune.choice([0])
   model.increasing: tune.choice([0])
-  model.pool: tune.choice([1, 0])
+  model.pool: tune.choice([1])
+  model.stride: tune.choice([1])
   model.dilation: tune.choice([1])
 
   opt.lr: tune.choice([0.0009, 0.0003, 0.001])
@@ -36,7 +37,7 @@ dataset:
                   #'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
   target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
-  dataset_subset: 12000000
+  dataset_subset: 120000
   scaler: 'RobustScaler-0.05-0.95'  # other coiches {StandarcScaler: None}, None
   save_dataloaders: False
   forecast: False
@@ -57,8 +58,9 @@ opt:
   metrics: ['train_loss', 'val_loss']
   order_by: 'val_loss'
   num_workers: 12
-  evaluate_detection_metrics: True
+  evaluate_metrics: True
   n_std: [1, 3]
   metrics_dataset_path: './data/fiorire/sentinel/dataset_4s/all_2016-2018_clean_4s_test.pkl'   # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
   detect_anomaly_epoch_freq: 1
+  exp_name: 'conv_ae1D_fiorire'
 

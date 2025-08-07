@@ -1,4 +1,4 @@
-from utils.general import make_paths_absolute, extract_config, extract_fixed_config
+from utils.general import resolve_paths, extract_config, extract_fixed_config
 from omegaconf import OmegaConf, ListConfig
 import torch
 import numpy as np
@@ -39,10 +39,9 @@ class EarlyStopping():
                 self.early_stop = True
 
 
-def model_setup(config_file_name, config):
+def model_setup(config_file_name, config, root):
 
     cfg = OmegaConf.load(config_path + config_file_name)  # here use only vae conf file
-    make_paths_absolute(cfg)
     # Allow dynamic field insertion
     OmegaConf.set_struct(cfg, False)
 
@@ -50,6 +49,7 @@ def model_setup(config_file_name, config):
     for k, v in config.items():
         OmegaConf.update(cfg, k, v, merge=True)
     # Construct dataset config and merge
+    cfg = resolve_paths(cfg, root)
 
     return cfg
 
@@ -124,20 +124,23 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train
     channel_std_errors = all_errors.std(dim=(0, 2)).numpy()  # shape: [C]
 
     return {
-        "loss": epoch_loss / steps,
-        "channel_means": channel_mean_errors,  # shape: [C]
-        "channel_stds": channel_std_errors  # shape: [C]
+        "train_loss": epoch_loss / steps,
+        "anomaly_threshold": {
+            "channel_means": channel_mean_errors,  # shape: [C]
+            "channel_stds": channel_std_errors  # shape: [C]
+        },
     }
 
 @torch.no_grad()
 def validate_one_epoch(
     model,
-    dataloader,
+    dataloader: Optional[torch.utils.data.DataLoader],
+    metric_loader: Optional[torch.utils.data.DataLoader],
     criterion,
     device,
     desc: str = "Validation",
-    evaluation_metrics: bool = True,
-    n_std_list: Optional[List[float]] = None,
+    evaluate_metrics: bool = True,
+    n_std: Optional[List[float]] = None,
     anomaly_threshold: Optional[dict] = None):
 
     model.eval()
@@ -164,23 +167,37 @@ def validate_one_epoch(
     channel_mean_errors = all_errors.mean(dim=(0, 2)).numpy()
     channel_std_errors = all_errors.std(dim=(0, 2)).numpy()
 
+    # Core validation results
     results = {
         "val_loss": epoch_loss / steps,
         "val_channel_mean_errors": channel_mean_errors,
         "val_channel_std_errors": channel_std_errors,
     }
 
-    if evaluation_metrics:
+    # Optionally evaluate anomaly detection metrics
+    if evaluate_metrics:
         test_results = test_anomaly_step(
             model=model,
-            dataloader=dataloader,
+            dataloader=metric_loader,
             device=device,
-            n_std=n_std_list,
+            n_std=n_std,
             anomaly_threshold=anomaly_threshold,
         )
-        results.update(test_results)
+
+        # Flatten only necessary fields for logging
+        if "metrics_results" in test_results:
+            metrics = test_results["metrics_results"]
+            results.update({
+                "f1_score": metrics["best_f1_score"],
+                "best_n_std": metrics["best_n_std"],
+                "channel_means": metrics["channel_means"],
+                "channel_stds": metrics["channel_stds"],
+                # optionally more if needed for post-analysis
+                # "channel_thresholds": metrics["channel_thresholds"]
+            })
 
     return results
+
 
 def test_anomaly_step(model, dataloader, device,  n_std: List[int]=None, anomaly_threshold=None, desc="Testing for Anomalies"):
     model.eval()
@@ -240,7 +257,8 @@ def test_anomaly_step(model, dataloader, device,  n_std: List[int]=None, anomaly
         anomaly_mask_pred = (all_errors > thresholds_tensor).int()  # [N, C, L]
 
         # Flatten for F1
-        y_pred = anomaly_mask_pred.view(-1).numpy()
+        anomaly_mask_pred_reduced = anomaly_mask_pred.any(dim=1, keepdim=True).int()  # [N, 1, L]
+        y_pred = anomaly_mask_pred_reduced.view(-1).numpy()
         y_true = all_masks.view(-1).numpy()
         f1 = f1_score(y_true, y_pred)
 
@@ -257,7 +275,7 @@ def test_anomaly_step(model, dataloader, device,  n_std: List[int]=None, anomaly
             best_n_std = n_std
             best_pred_mask = anomaly_mask_pred
 
-    return {
+    return {"metrics_results":{
         "best_f1_score": best_f1,
         "best_n_std": best_n_std,
         "channel_means": channel_means,
@@ -266,4 +284,4 @@ def test_anomaly_step(model, dataloader, device,  n_std: List[int]=None, anomaly
         "anomaly_mask_pred": best_pred_mask,
         "ground_truth_mask": all_masks,
         "results_per_std": results_per_std  # Optional: full history
-    }
+    }}

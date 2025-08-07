@@ -6,7 +6,7 @@ import numpy as np
 class Dataset_seq(Dataset):
 
     def __init__(self, df, target=None, sequence_length=16, out_window=16,  is_anomaly_column=None,
-                 reconstruction=True, forecast=False, remove_target=False, transform=None):
+                 reconstruction=True, forecast=False, remove_target=False, transform=None, sampler=None, indices=None):
 
         self.df = df
         self.forecast = forecast
@@ -20,6 +20,8 @@ class Dataset_seq(Dataset):
         self.transform = transform
         self.sequence_length = sequence_length
         self.out_window = out_window
+        self.sampler_type = type(sampler).__name__
+        self.indices = indices
 
         if not (self.forecast or self.reconstruction):
             raise Exception('You should define at least one of the modes: reconstruction, prediction or forecasting')

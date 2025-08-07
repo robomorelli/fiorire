@@ -1,7 +1,6 @@
 # utils/general.py
 from pathlib import Path
-from omegaconf import ListConfig
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, DictConfig, ListConfig
 import numpy as np
 from config import *
 
@@ -14,14 +13,23 @@ def find_project_root(current: Path, markers=('config', 'main.py')) -> Path:
             return parent
     return current  # fallback: return current if no marker found
 
-def make_paths_absolute(cfg):
-    dataset_path = Path(cfg.dataset.data_path)
+def resolve_paths(cfg: DictConfig, root_dir: str=root) -> DictConfig:
+    """
+    Recursively find keys containing 'path' and resolve relative paths
+    against root_dir.
+    """
+    def _resolve(d):
+        for k, v in d.items():
+            if isinstance(v, DictConfig) or isinstance(v, dict):
+                _resolve(v)
+            elif isinstance(v, str) and "path" in k.lower():
+                if not os.path.isabs(v):
+                    abs_path = os.path.abspath(os.path.join(root_dir, v))
+                    d[k] = abs_path
 
-    if not dataset_path.is_absolute():
-        current_file = Path(__file__).resolve()
-        project_root = find_project_root(current_file)
-        absolute_path = project_root / dataset_path
-        cfg.dataset.data_path = str(absolute_path.resolve())
+    _resolve(cfg)
+    return cfg
+
 
 def extract_config_bkp(cfg_path):
     cfg = OmegaConf.load(cfg_path)

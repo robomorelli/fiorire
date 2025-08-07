@@ -1,12 +1,37 @@
 from preprocessing.sentinel_preprocessing import get_scaled_train_val_dataloader, get_scaled_dataloader
-from dataset.sentinel import Dataset_seq
+from torch.utils.data import Sampler
 import torch
 from torchvision.transforms import transforms as T
 from torchvision.transforms import Lambda
-from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data import DataLoader, ConcatDataset, SubsetRandomSampler, SequentialSampler
 import pandas as pd
 
 from config import *
+
+
+class ConcatSampler(Sampler):
+    def __init__(self, samplers, dataset_lengths):
+        """
+        :param samplers: list of individual samplers for each dataset
+        :param dataset_lengths: list of lengths of each dataset in the same order
+        """
+        self.samplers = samplers
+        self.dataset_lengths = dataset_lengths
+        self.index_offsets = self._compute_offsets()
+
+    def _compute_offsets(self):
+        offsets = [0]
+        for length in self.dataset_lengths[:-1]:
+            offsets.append(offsets[-1] + length)
+        return offsets
+
+    def __iter__(self):
+        for offset, sampler in zip(self.index_offsets, self.samplers):
+            for idx in sampler:
+                yield offset + idx  # Shift index according to dataset offset
+
+    def __len__(self):
+        return sum(len(s) for s in self.samplers)
 
 
 def get_transform(cfg):
@@ -73,6 +98,7 @@ def get_train_val_dataloader(cfg, filter_anomalies=True, **kwargs):
         cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
 
     # Load the dataframe from the specified path
+    print("Loading dataset from:", cfg.dataset.data_path)
     df = load_dataframe(cfg.dataset.data_path)
     # get train and validation (and eventually metrics (anomalous+normal) sampler)
     # TO DO: the normal part of metric dataloader should be a subset of the validation set but the threshold shouls
@@ -133,14 +159,37 @@ def get_metric_loader(cfg, metric_loader=None, data_path=None, scale=True, scale
 
     # concatenate if we have at least one dataset
     if metric_datasets_list:
+        samplers = []
+        dataset_lengths = []
+
+        for dataset in metric_datasets_list:
+            dataset_lengths.append(len(dataset))
+
+            # Use default logic to choose a sampler (customize as needed)
+            if hasattr(dataset, 'sampler_type'):
+                # Custom datasets can define their own sampler preference
+                sampler_type = dataset.sampler_type
+            else:
+                sampler_type = 'SequentialSampler'  # Default
+
+            if sampler_type == 'SubsetRandomSampler':
+                sampler = SubsetRandomSampler(dataset.indices)
+            elif sampler_type == 'Subset' and hasattr(dataset, 'indices'):
+                # For Dataset objects that already define a subset of indices
+                sampler = SubsetRandomSampler(dataset.indices)
+            else:
+                sampler = SequentialSampler(dataset)
+
+            samplers.append(sampler)
+
+        concat_sampler = ConcatSampler(samplers=samplers, dataset_lengths=dataset_lengths)
         metric_dataset = ConcatDataset(metric_datasets_list)
-        #df_merge = pd.concat([ds.df for ds in metric_datasets_list], ignore_index=True)
-        #dataset_args = dict(df=df_merge, target=cfg.dataset.target,
-        #                    sequence_length=cfg.dataset.seq_in_length, out_window=cfg.dataset.seq_out_length,
-        #                    forecast=cfg.dataset.forecast, transform=transform)
-        #metrics_dataset = Dataset_seq(**dataset_args)
-        metric_loader = DataLoader(metric_dataset, batch_size=cfg.opt.batch_size,
-                                    shuffle=False)
+        metric_loader = DataLoader(
+            metric_dataset,
+            batch_size=cfg.opt.batch_size,
+            sampler=concat_sampler,
+        )
+
     else:
         metric_loader = None
 

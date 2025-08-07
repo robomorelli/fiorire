@@ -278,8 +278,8 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
                         remove_target=cfg.dataset.remove_target,
                         transform=transform)
 
-    train_dataset = Dataset_seq(**dataset_args)
-    val_dataset = Dataset_seq(**dataset_args)
+    train_dataset = Dataset_seq(**dataset_args, sampler=samplers['train'], indices=samplers['train'].indices)
+    val_dataset = Dataset_seq(**dataset_args, sampler=samplers['val'], indices=samplers['val'].indices)
 
     trainloader = DataLoader(train_dataset, batch_size=cfg.opt.batch_size, sampler=samplers["train"])
     valloader = DataLoader(val_dataset, batch_size=cfg.opt.batch_size, sampler=samplers["val"])
@@ -343,8 +343,8 @@ def get_scaled_dataloader(cfg, df, seq_len=40, transform=None, ano_col=None, sca
         is_anomaly_column=ano_col, remove_target=cfg.dataset.remove_target,
         forecast=cfg.dataset.forecast, transform=transform)
 
-    dataset = Dataset_seq(**dataset_args)
-    loader = DataLoader(dataset, batch_size=cfg.opt.batch_size, sampler=samplers["dataset"])
+    dataset = Dataset_seq(**dataset_args, sampler=samplers["dataset"], indices=samplers['dataset'].indices)
+    loader = DataLoader(dataset, batch_size=cfg.opt.batch_size)
 
     return loader, scaler, scaler_params
 

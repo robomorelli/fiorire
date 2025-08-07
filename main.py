@@ -2,7 +2,7 @@ import argparse
 import ray
 from ray.tune.schedulers import ASHAScheduler
 from utils.load_trainer import get_trainer
-from utils.general import extract_config, extract_fixed_config
+from utils.general import extract_config, extract_fixed_config, resolve_paths
 from datetime import datetime
 from ray.air.integrations.wandb import WandbLoggerCallback
 
@@ -17,7 +17,6 @@ def main(args):
     # Set the path to the configuration file
     cfg_path = os.path.join(config_path, args.config_file + '.yaml')
     ray_config, cfg = extract_config(cfg_path)  # Extract fixed config parameters to avoid failure in get_trainer(cfg.model.name)(config=config) * the config is the problem
-
     # Debug mode: simulate one training iteration to check if the config is correct
     if args.debug_mode:
         ray_config, cfg = extract_fixed_config(cfg_path)
@@ -41,8 +40,10 @@ def main(args):
     analysis = tune.run(trainer,
                         scheduler=sched, resources_per_trial=resources_per_trial,
                         num_samples=int(args.num_samples), checkpoint_at_end=True, #otherwise it fails on multinode?
-                        local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
-                        name="{}/test".format(cfg.model.name,date.replace('/', '-')),
+                        #local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
+                        local_dir='./ray_results',
+                        sync_config=tune.SyncConfig(syncer=None),
+                        name="{}".format(cfg.opt.exp_name),
                         config=ray_config, callbacks=callbacks)
 
     print("Best config is:", analysis.get_best_config(metric="val_loss", mode="min"))
@@ -55,13 +56,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default = '10.141.1.28:6379', help="adress of master")
     parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='lstm', help="[conv_ae1D, lstm]")
+    parser.add_argument("--config_file", default='conv_ae1D', help="[conv_ae1D, lstm]")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
-    parser.add_argument("--wandb", default=1, help="the model you want to hpo")
+    parser.add_argument("--wandb", default=1, type=int, help="the model you want to hpo")
     parser.add_argument("--project_name", default='fiorire_zbook_testing_automatic', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
-    parser.add_argument("--debug_mode", default=1, help="the model you want to hpo")
+    parser.add_argument("--debug_mode", default=0, help="the model you want to hpo")
     args = parser.parse_args()
 
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"
