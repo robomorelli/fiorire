@@ -36,7 +36,7 @@ dataset:
                   #'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
   target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
-  dataset_subset: 12000000
+  dataset_subset: 120000
   scaler: 'RobustScaler-0.05-0.95'  # other coiches {StandarcScaler: None}, None
   save_dataloaders: 0
   forecast: 0

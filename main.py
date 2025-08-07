@@ -29,7 +29,7 @@ def main(args):
     trainer = get_trainer(cfg.model.name)
 
     if args.wandb:
-        callbacks = [WandbLoggerCallback(project=args.project_name,ntity=args.entity,  # optional
+        callbacks = [WandbLoggerCallback(project=args.project_name,entity=args.entity,  # optional
                                 log_config=True,  # logs the config used in each trial
                                 api_key=args.wandb_key,upload_checkpoints = True )]
     else:
@@ -55,13 +55,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default = '10.141.1.28:6379', help="adress of master")
     parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='lstm', help="[conv_ae1D, lstm]")
+    parser.add_argument("--config_file", default='conv_ae1D', help="[conv_ae1D, lstm]")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
     parser.add_argument("--wandb", default=1, help="the model you want to hpo")
     parser.add_argument("--project_name", default='fiorire_zbook_testing_automatic', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
-    parser.add_argument("--debug_mode", default=1, help="the model you want to hpo")
+    parser.add_argument("--debug_mode", default=0, help="the model you want to hpo")
     args = parser.parse_args()
 
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"
