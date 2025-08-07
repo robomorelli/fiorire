@@ -103,7 +103,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train
         inputs, targets = inputs.to(device), targets.to(device)
 
         optimizer.zero_grad()
-        outputs = model(inputs)
+        outputs = model(inputs).to(device)
         loss = criterion(outputs, targets)
         loss.backward()
         optimizer.step()
@@ -153,7 +153,7 @@ def validate_one_epoch(
         for i, (inputs, targets, is_anomaly) in pbar:
             inputs, targets = inputs.to(device), targets.to(device)
 
-            outputs = model(inputs)
+            outputs = model(inputs).to(device)
             loss = criterion(outputs, targets)
 
             error = torch.abs(outputs - targets)  # [B, C, L]
@@ -213,7 +213,7 @@ def test_anomaly_step(model, dataloader, device,  n_std: List[int]=None, anomaly
             x = x.to(device)
             target = target.to(device)
 
-            recon = model(x)
+            recon = model(x).to(device)
             error = torch.abs(recon - target)  # [B, C, L]
             all_errors.append(error.cpu())
             all_masks.append(mask.cpu())

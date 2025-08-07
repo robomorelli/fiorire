@@ -42,7 +42,7 @@ def main(args):
                         num_samples=int(args.num_samples), checkpoint_at_end=True, #otherwise it fails on multinode?
                         #local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
                         local_dir='./ray_results',
-                        sync_config=tune.SyncConfig(syncer=None),
+                        #sync_config=tune.SyncConfig(syncer=None),
                         name="{}".format(cfg.opt.exp_name),
                         config=ray_config, callbacks=callbacks)
 
@@ -56,7 +56,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default = '10.141.1.28:6379', help="adress of master")
     parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='conv_ae1D', help="[conv_ae1D, lstm]")
+    parser.add_argument("--config_file", default='lstm', help="[conv_ae1D, lstm]")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
     parser.add_argument("--wandb", default=1, type=int, help="the model you want to hpo")
     parser.add_argument("--project_name", default='fiorire_zbook_testing_automatic', help="the model you want to hpo")
