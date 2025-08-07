@@ -28,7 +28,7 @@ def main(args):
     trainer = get_trainer(cfg.model.name)
 
     if args.wandb:
-        callbacks = [WandbLoggerCallback(project=args.project_name,ntity=args.entity,  # optional
+        callbacks = [WandbLoggerCallback(project=args.project_name, entity=args.entity,  # optional
                                 log_config=True,  # logs the config used in each trial
                                 api_key=args.wandb_key,upload_checkpoints = True )]
     else:
