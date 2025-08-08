@@ -53,10 +53,11 @@ resources:
 
 opt:
   fine_tuning: False
-  tune_report: 'val_loss'
+  opt_metric: {'val_loss':'min'}
   k_fold_cv: False
-  metrics: ['train_loss', 'val_loss']
-  order_by: 'val_loss'
+  metrics_to_report: ['train_loss', 'f1_score']
+  other_reports: ['parameters_number']
+  order_by: 'val_loss'    # summary of the results is ordered by this value
   num_workers: 12
   evaluate_metrics: True
   n_std: [1, 3]

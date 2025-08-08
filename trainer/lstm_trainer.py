@@ -11,18 +11,23 @@ class trainLSTM(tune.Trainable):
     def setup(self, config):
         # Load and set up the configuration
         self.cfg = model_setup(lstm_config_file, config, root)
-        self.cfg, _, _ = update_input_output(self.cfg)    # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
+        self.cfg, _, _ = update_input_output(
+            self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.epochs = self.cfg.opt.epochs
         self.current_epoch = 0
-        self.best_val_loss = float('inf')
+        self.metric_key, self.mode = list(self.cfg.opt.opt_metric.items())[0]
+        self.best_metric = float("inf") if self.mode == "min" else -float("inf")
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
 
         # Load data
         # try to separate the anomalous sequences from the main dataset anyway. If they are not present, the dataset will be empty
-        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(self.cfg, filter_anomalies=True)
+        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
+            self.cfg, filter_anomalies=True)
         # If the anomalous sequences are not present in the main dataset, the metrics_loader will be None. Try to load it from the path specified in the config file
-        self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader, data_path=self.cfg.opt.metrics_dataset_path,
-                                                scale=True, scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+        self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader,
+                                                data_path=self.cfg.opt.metrics_dataset_path,
+                                                scale=True,
+                                                scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
 
         # Set up device
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
@@ -80,17 +85,19 @@ class trainLSTM(tune.Trainable):
             "epoch": self.current_epoch,
             "train_loss": train_loss,
             "val_loss": val_loss,
+            'f1_score': self.val_results.get('f1_score', 0.0),  # 👈 Always included
             "parameters_number": self.parameters_number,
-            "should_checkpoint": val_loss < self.best_val_loss
         }
 
-        if "f1_score" in self.val_results:
-            result["f1_score"] = self.val_results["f1_score"]
-            result["best_n_std"] = self.val_results["best_n_std"]
+        if self.metric_key in self.val_results:
+            result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, 0.0)  # 👈 Always included
 
         # Track best model
-        if val_loss < self.best_val_loss:
-            self.best_val_loss = val_loss
+        # example of self.cfg.opt_metric: {'val_loss': 'min'}
+        # Step 2: Save model only if current metric is better
+        current_metric = result.get(self.metric_key)
+        result["should_checkpoint"], result[f"best_{self.metric_key}"] = self.check_improvements(current_metric)
+        result["best_n_std"] = self.val_results.get("best_n_std", 0.0)  # 👈 Always included
 
         return result
 
@@ -101,10 +108,10 @@ class trainLSTM(tune.Trainable):
         print("this is the checkpoint dir {}".format(checkpoint_dir))
         torch.save({
             'epoch': self.current_epoch, 'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(), 'loss': self.best_val_loss,
+            'optimizer_state_dict': self.optimizer.state_dict(), 'loss': self.metric_key,
             'cfg': self.cfg, 'scaler_params': self.scaler_params,
             'parameters_number': self.parameters_number, 'param_conf': self.parameters_number,
-            'metric_score': self.val_results["metric_results"] if "metric_score" in self.val_results else None,
+            'metric_score': self.val_results if "metric_score" in self.val_results else None,
         }, f"{checkpoint_dir}/model.pt")
         return os.path.join(checkpoint_dir, "model.pt")
 
@@ -117,3 +124,14 @@ class trainLSTM(tune.Trainable):
         hostname = socket.getfqdn(socket.gethostname())
         self._local_ip = socket.gethostbyname(hostname)
         return self._local_ip
+
+    def check_improvements(self, current_metric):
+        """
+        Check if the current metric is better than the best metric.
+        """
+        if (self.mode == "min" and current_metric < self.best_metric) or \
+                (self.mode == "max" and current_metric > self.best_metric):
+            self.best_metric = current_metric
+            return True, current_metric
+        else:
+            return False, self.best_metric

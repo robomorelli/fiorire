@@ -38,7 +38,6 @@ class EarlyStopping():
                 print('INFO: Early stopping')
                 self.early_stop = True
 
-
 def model_setup(config_file_name, config, root):
 
     cfg = OmegaConf.load(config_path + config_file_name)  # here use only vae conf file
@@ -211,7 +210,6 @@ def validate_one_epoch(
             })
 
     return results
-
 
 def test_anomaly_step(model, dataloader, device,  n_std: List[int]=None, anomaly_threshold=None, desc="Testing for Anomalies"):
     model.eval()

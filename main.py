@@ -2,9 +2,10 @@ import argparse
 import ray
 from ray.tune.schedulers import ASHAScheduler
 from utils.load_trainer import get_trainer
-from utils.general import extract_config, extract_fixed_config, resolve_paths
+from utils.general import extract_config, extract_fixed_config, get_sync_config
 from datetime import datetime
 from ray.air.integrations.wandb import WandbLoggerCallback
+from ray.tune import CLIReporter
 
 from config import *
 
@@ -12,7 +13,6 @@ def main(args):
 
     # Get date to name the results folder
     now = datetime.now()
-    date = now.strftime("%D:%H:%M:%S")
 
     # Set the path to the configuration file
     cfg_path = os.path.join(config_path, args.config_file + '.yaml')
@@ -35,8 +35,13 @@ def main(args):
         callbacks = []
 
     # Set the resources for each trial
-    resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial} if cfg.resources.gpu_trial != 0 else {"cpu": cfg.resources.cpu_trial}
-    sched = ASHAScheduler(metric=cfg.opt.tune_report, mode="min", max_t = 10 ** 18, grace_period=50)
+    resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial} if (
+            cfg.resources.gpu_trial != 0) else {"cpu": cfg.resources.cpu_trial}
+    metric, mode = list(cfg.opt.opt_metric.items())[0]
+    progress_reporter = CLIReporter(
+        metric_columns=[metric, f'best_{metric}'] + list(cfg.opt.metrics_to_report))
+    sched = ASHAScheduler(metric=metric, mode=mode, max_t = 10 ** 18, grace_period=50)
+    sync_config = get_sync_config()
     analysis = tune.run(trainer,
                         scheduler=sched, resources_per_trial=resources_per_trial,
                         num_samples=int(args.num_samples), checkpoint_at_end=True, #otherwise it fails on multinode?
@@ -44,6 +49,8 @@ def main(args):
                         local_dir='./ray_results',
                         #sync_config=tune.SyncConfig(syncer=None),
                         name="{}".format(cfg.opt.exp_name),
+                        progress_reporter=progress_reporter,   # <-- add this here
+                        sync_config=sync_config,
                         config=ray_config, callbacks=callbacks)
 
     print("Best config is:", analysis.get_best_config(metric="val_loss", mode="min"))
@@ -62,7 +69,7 @@ if __name__ == "__main__":
     parser.add_argument("--project_name", default='fiorire_zbook_testing_automatic', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
-    parser.add_argument("--debug_mode", default=1, help="the model you want to hpo")
+    parser.add_argument("--debug_mode", default=0, help="the model you want to hpo")
     args = parser.parse_args()
 
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"
@@ -71,7 +78,7 @@ if __name__ == "__main__":
     # first start from the terminal: ray start --head
     # args.address have to be the address of the node otherwise uncomment ray.init(address='auto') line
     #ray.init(address='auto') #
-    ray.init(address='auto', runtime_env={"env_vars": {"RAY_DEBUG": "legacy"}})
+    ray.init(address='auto')
     ###### ISSUE when start on address but ray try to connect to localhost
     ##########No available node types can fulfill resource request
     ########No available node types can fulfill resource request

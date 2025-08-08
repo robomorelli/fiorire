@@ -4,6 +4,9 @@ from omegaconf import OmegaConf, DictConfig, ListConfig
 from typing import Tuple
 import numpy as np
 import torch
+import ray
+from ray.tune.syncer import SyncConfig
+
 from config import *
 
 def find_project_root(current: Path, markers=('config', 'main.py')) -> Path:
@@ -192,3 +195,16 @@ def reduce_anomaly_mask(all_errors, thresholds, model_type):
         raise ValueError(f"[❌ Error] Unknown model type: {model_type}")
 
     return reduced
+
+
+def get_sync_config():
+    cluster_resources = ray.cluster_resources()
+    # Count how many nodes are in the cluster by checking "node" resource count
+    num_nodes = cluster_resources.get("node", 0)
+
+    if num_nodes <= 1:
+        print("Single node detected - disabling syncer.")
+        return SyncConfig(syncer=None)
+    else:
+        print(f"Multiple nodes detected ({num_nodes}) - enabling default syncer.")
+        return SyncConfig()  # Default sync config, enables syncing

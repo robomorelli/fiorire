@@ -75,4 +75,4 @@ class Dataset_seq(Dataset):
             target = self.transform(target)
             anomaly_labels = self.transform(anomaly_labels)
 
-        return torch.tensor(data).float(), torch.tensor(target).float(), torch.tensor(anomaly_labels).float()
+        return data.float(), target.float(), anomaly_labels.float()

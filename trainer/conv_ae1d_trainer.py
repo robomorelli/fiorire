@@ -1,3 +1,5 @@
+from ray.data.datasource import FileMetadataProvider
+
 from utils.load_model import get_model
 from utils.load_dataset import get_train_val_dataloader, get_metric_loader
 from trainer.utils import update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
@@ -14,7 +16,8 @@ class trainCONVAE1D(tune.Trainable):
         self.cfg, _, _ = update_input_output(self.cfg)    # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.epochs = self.cfg.opt.epochs
         self.current_epoch = 0
-        self.best_val_loss = float('inf')
+        self.metric_key, self.mode = list(self.cfg.opt.opt_metric.items())[0]
+        self.best_metric = float("inf") if self.mode == "min" else -float("inf")
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
 
         # Load data
@@ -80,19 +83,19 @@ class trainCONVAE1D(tune.Trainable):
             "epoch": self.current_epoch,
             "train_loss": train_loss,
             "val_loss": val_loss,
+            'f1_score': self.val_results.get('f1_score', 0.0),  # 👈 Always included
             "parameters_number": self.parameters_number,
-            "should_checkpoint": val_loss < self.best_val_loss,
         }
 
-        if "f1_score" in self.val_results:
-            result["f1_score"] = self.val_results.get("f1_score", 0.0),  # 👈 Always included
-            result["best_n_std"] = self.val_results.get("best_n_std", 0.0)  # 👈 Always included
+        if self.metric_key in self.val_results:
+            result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, 0.0)  # 👈 Always included
 
         # Track best model
-        if val_loss < self.best_val_loss:
-            self.best_val_loss = val_loss
-
-        print(result)
+        # example of self.cfg.opt_metric: {'val_loss': 'min'}
+        # Step 2: Save model only if current metric is better
+        current_metric = result.get(self.metric_key)
+        result["should_checkpoint"],  result[f"best_{self.metric_key}"]= self.check_improvements(current_metric)
+        result["best_n_std"] = self.val_results.get("best_n_std", 0.0)  # 👈 Always included
 
         return result
 
@@ -103,10 +106,10 @@ class trainCONVAE1D(tune.Trainable):
         print("this is the checkpoint dir {}".format(checkpoint_dir))
         torch.save({
                 'epoch': self.current_epoch, 'model_state_dict': self.model.state_dict(),
-                'optimizer_state_dict': self.optimizer.state_dict(), 'loss': self.best_val_loss,
+                'optimizer_state_dict': self.optimizer.state_dict(), 'loss': self.metric_key,
                 'cfg': self.cfg, 'scaler_params': self.scaler_params,
                 'parameters_number': self.parameters_number,'param_conf': self.parameters_number,
-                'metric_score': self.val_results["metric_results"] if "metric_score" in self.val_results else None,
+                'metric_score': self.val_results if "metric_score" in self.val_results else None,
             }, f"{checkpoint_dir}/model.pt")
         return os.path.join(checkpoint_dir, "model.pt")
 
@@ -119,3 +122,15 @@ class trainCONVAE1D(tune.Trainable):
         hostname = socket.getfqdn(socket.gethostname())
         self._local_ip = socket.gethostbyname(hostname)
         return self._local_ip
+
+    def check_improvements(self, current_metric):
+        """
+        Check if the current metric is better than the best metric.
+        """
+        if (self.mode == "min" and current_metric < self.best_metric) or \
+                (self.mode == "max" and current_metric > self.best_metric):
+            self.best_metric = current_metric
+            return True, current_metric
+        else:
+            return False, self.best_metric
+
