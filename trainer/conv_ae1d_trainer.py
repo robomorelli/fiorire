@@ -81,16 +81,18 @@ class trainCONVAE1D(tune.Trainable):
             "train_loss": train_loss,
             "val_loss": val_loss,
             "parameters_number": self.parameters_number,
-            "should_checkpoint": val_loss < self.best_val_loss
+            "should_checkpoint": val_loss < self.best_val_loss,
         }
 
         if "f1_score" in self.val_results:
-            result["f1_score"] = self.val_results["f1_score"]
-            result["best_n_std"] = self.val_results["best_n_std"]
+            result["f1_score"] = self.val_results.get("f1_score", 0.0),  # 👈 Always included
+            result["best_n_std"] = self.val_results.get("best_n_std", 0.0)  # 👈 Always included
 
         # Track best model
         if val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
+
+        print(result)
 
         return result
 
