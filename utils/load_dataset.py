@@ -48,7 +48,10 @@ def get_transform(cfg):
                 Lambda(lambda x: x.permute((0, 2, 1))),
                 Lambda(lambda x: x.squeeze(0))])
         else:
-            transform = None
+            transform = T.Compose([
+                T.ToTensor(),
+                Lambda(lambda x: x.squeeze(0))  # Removes channel dim added by ToTensor
+            ])
     else:
         raise ValueError(f"Unsupported dataset name: {cfg.dataset.name}")
 

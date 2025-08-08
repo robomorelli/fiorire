@@ -13,6 +13,7 @@ def main(args):
 
     # Get date to name the results folder
     now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
     # Set the path to the configuration file
     cfg_path = os.path.join(config_path, args.config_file + '.yaml')
@@ -39,14 +40,14 @@ def main(args):
             cfg.resources.gpu_trial != 0) else {"cpu": cfg.resources.cpu_trial}
     metric, mode = list(cfg.opt.opt_metric.items())[0]
     progress_reporter = CLIReporter(
-        metric_columns=[metric, f'best_{metric}'] + list(cfg.opt.metrics_to_report))
+        metric_columns=[metric, f'best_{metric}'] + list(cfg.opt.metrics_to_report) + list(cfg.opt.other_reports))
     sched = ASHAScheduler(metric=metric, mode=mode, max_t = 10 ** 18, grace_period=50)
     sync_config = get_sync_config()
     analysis = tune.run(trainer,
                         scheduler=sched, resources_per_trial=resources_per_trial,
                         num_samples=int(args.num_samples), checkpoint_at_end=True, #otherwise it fails on multinode?
                         #local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
-                        local_dir='./ray_results',
+                        local_dir='./ray_results/{}_{}'.format(cfg.opt.exp_name, date_str),
                         #sync_config=tune.SyncConfig(syncer=None),
                         name="{}".format(cfg.opt.exp_name),
                         progress_reporter=progress_reporter,   # <-- add this here
@@ -63,7 +64,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default = '10.141.1.28:6379', help="adress of master")
     parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='conv_ae1D', help="[conv_ae1D, lstm]")
+    parser.add_argument("--config_file", default='lstm', help="[conv_ae1D, lstm]")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
     parser.add_argument("--wandb", default=1, type=int, help="the model you want to hpo")
     parser.add_argument("--project_name", default='fiorire_zbook_testing_automatic', help="the model you want to hpo")
