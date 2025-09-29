@@ -211,7 +211,9 @@ def validate_one_epoch(
 
     return results
 
-def test_anomaly_step(model, dataloader, device,  n_std: List[int]=None, anomaly_threshold=None, desc="Testing for Anomalies"):
+def test_anomaly_step(model, dataloader, device,
+                      n_std: List[int]=None, anomaly_threshold=None,
+                      desc="Testing for Anomalies"):
     model.eval()
     all_errors = []
     all_masks = []

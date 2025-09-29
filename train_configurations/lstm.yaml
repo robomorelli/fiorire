@@ -46,9 +46,7 @@ resources:
   cpu_trial: 12
 
 opt:
-  fine_tuning: False
   opt_metric: {'f1_score':'max'} #{'val_loss':'min'}
-  k_fold_cv: False
   metrics_to_report: ['train_loss', 'f1_score']
   other_reports: ['parameters_number']
   order_by: 'val_loss'    # summary of the results is ordered by this value

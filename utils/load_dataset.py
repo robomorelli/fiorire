@@ -5,6 +5,7 @@ from torchvision.transforms import transforms as T
 from torchvision.transforms import Lambda
 from torch.utils.data import DataLoader, ConcatDataset, SubsetRandomSampler, SequentialSampler
 import pandas as pd
+import csv
 
 from config import *
 
@@ -57,34 +58,103 @@ def get_transform(cfg):
 
     return transform
 
-
-def load_dataframe(file_path):
+def load_dataframe(cfg):
     """
-    Load a pandas DataFrame from a CSV, pickle, or Parquet file based on the file extension.
+    Load a pandas DataFrame from CSV, TSV, Excel, Parquet, Pickle, or text-like files.
+    Automatically detects file type and delimiter for text files. Validates expected columns if provided.
 
     Parameters:
-        file_path (str): The path to the data file.
+        file_path (str): Path to the data file.
+        expected_cols (list of str, optional): List of expected column names. Used to validate delimiter detection.
 
     Returns:
-        pd.DataFrame: The loaded DataFrame.
+        pd.DataFrame: Loaded DataFrame.
 
     Raises:
-        ValueError: If the file extension is unsupported.
         FileNotFoundError: If the file doesn't exist.
+        ValueError: If the file format is unsupported or cannot be parsed.
     """
+    file_path = cfg.dataset.data_path
+    expected_cols = cfg.dataset.feats
+
     if not os.path.isfile(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
     ext = os.path.splitext(file_path)[1].lower()
 
-    if ext == ".csv":
-        return pd.read_csv(file_path)
-    elif ext in [".pkl", ".pickle"]:
-        return pd.read_pickle(file_path)
-    elif ext == ".parquet":
-        return pd.read_parquet(file_path)
-    else:
-        raise ValueError(f"Unsupported file extension: {ext}")
+    def detect_delimiter(path):
+        """Auto-detect delimiter from first line of a text file."""
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            sample = f.read(2048)
+        try:
+            return csv.Sniffer().sniff(sample).delimiter
+        except csv.Error:
+            for d in [",", "\t", ";", "|"]:
+                if d in sample:
+                    return d
+            return ","  # default
+
+    def try_read_csv(path):
+        """Try multiple delimiters and validate expected columns."""
+        delimiters = [",", "\t", ";", "|"]
+        for d in delimiters:
+            try:
+                df = pd.read_csv(path, delimiter=d)
+                if expected_cols is None or all(col in df.columns for col in expected_cols):
+                    return df  # valid delimiter
+            except Exception:
+                continue
+        # last resort: read with auto-detected delimiter
+        d = detect_delimiter(path)
+        df = pd.read_csv(path, delimiter=d)
+        return df
+
+    try:
+        # CSV / text-like files
+        if ext in [".csv", ".txt", ".dat"] or ext not in [".xlsx", ".xlsm", ".xls", ".xlsb", ".odf", ".ods", ".odt", ".pkl", ".pickle", ".parquet"]:
+            return try_read_csv(file_path)
+
+        # Pickle
+        elif ext in [".pkl", ".pickle"]:
+            return pd.read_pickle(file_path)
+
+        # Parquet
+        elif ext == ".parquet":
+            return pd.read_parquet(file_path)
+
+        # Excel modern
+        elif ext in [".xlsx", ".xlsm"]:
+            try:
+                df = pd.read_excel(file_path, engine="openpyxl")
+            except Exception:
+                df = try_read_csv(file_path)
+            return df
+
+        # Excel old
+        elif ext == ".xls":
+            try:
+                df = pd.read_excel(file_path, engine="xlrd")
+            except Exception:
+                try:
+                    df = pd.read_excel(file_path, engine="openpyxl")
+                except Exception:
+                    df = try_read_csv(file_path)
+            return df
+
+        # Excel binary
+        elif ext == ".xlsb":
+            return pd.read_excel(file_path, engine="pyxlsb")
+
+        # OpenDocument formats
+        elif ext in [".odf", ".ods", ".odt"]:
+            return pd.read_excel(file_path, engine="odf")
+
+        else:
+            # Last resort: treat as text
+            return try_read_csv(file_path)
+
+    except Exception as e:
+        raise ValueError(f"Failed to load file '{file_path}': {e}")
 
 
 def get_train_val_dataloader(cfg, filter_anomalies=True, **kwargs):
@@ -102,7 +172,9 @@ def get_train_val_dataloader(cfg, filter_anomalies=True, **kwargs):
 
     # Load the dataframe from the specified path
     print("Loading dataset from:", cfg.dataset.data_path)
-    df = load_dataframe(cfg.dataset.data_path)
+    df = load_dataframe(cfg)
+    #
+
     # get train and validation (and eventually metrics (anomalous+normal) sampler)
     # TO DO: the normal part of metric dataloader should be a subset of the validation set but the threshold shouls
     # be defined from a separate normal sample (train?)
@@ -148,7 +220,7 @@ def get_metric_loader(cfg, metric_loader=None, data_path=None, scale=True, scale
         cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
 
     # Load the dataframe from the specified path
-    metric_df = load_dataframe(data_path)
+    metric_df = load_dataframe(cfg)
 
     metric_loader, scaler, scaler_params = get_scaled_dataloader(cfg, metric_df,
                                         seq_len=cfg.dataset.seq_in_length,
