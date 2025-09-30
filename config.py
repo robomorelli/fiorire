@@ -17,6 +17,8 @@ conv_ae_config_file = 'conv_ae.yaml'
 conv_ae_1D_config_file = 'conv_ae1D.yaml'
 conv_ae_2D_config_file = 'conv_ae2D.yaml'
 
+available_metrics = ['loss', 'f1']
+
 # sentinel
 sentinel_path = root + '/data/fiorire/sentinel/'
 

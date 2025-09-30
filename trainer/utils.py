@@ -7,35 +7,55 @@ from tqdm import tqdm
 from typing import List, Optional
 from config import *
 
-class EarlyStopping():
+class EarlyStopping:
     """
-    Early stopping to stop the training when the loss does not improve after
-    certain epochs.
+    Early stopping to stop the training when a monitored metric does not improve after
+    certain epochs. Works for both minimizing loss or maximizing a metric.
     """
-    def __init__(self, patience=5, min_delta=0):
+    def __init__(self, patience=5, min_delta=0, opt_metric_dict=None):
         """
-        :param patience: how many epochs to wait before stopping when loss is
-               not improving
-        :param min_delta: minimum difference between new loss and old loss for
-               new loss to be considered as an improvement
+        :param patience: Number of epochs to wait before stopping when metric is
+                         not improving.
+        :param min_delta: Minimum difference between new metric and best metric to
+                          qualify as an improvement.
+        :param opt_metric_dict: Dictionary with keys:
+            - 'metric_key': name of the metric to monitor (e.g., 'val_loss', 'val_f1')
+            - 'mode': 'min' (for loss) or 'max' (for accuracy/F1)
+            - 'best_metric': initial best metric value (-inf for max, +inf for min)
         """
         self.patience = patience
         self.min_delta = min_delta
+
+        self.metric_key = opt_metric_dict.get('metric_key', 'loss') if opt_metric_dict else 'loss'
+        self.mode = opt_metric_dict.get('mode', 'min') if opt_metric_dict else 'min'
+        self.best_metric = opt_metric_dict.get('best_metric', float('inf') if self.mode == 'min' else -float('inf')) if opt_metric_dict else None
+
         self.counter = 0
-        self.best_loss = None
         self.early_stop = False
-    def __call__(self, val_loss):
-        if self.best_loss == None:
-            self.best_loss = val_loss
-        elif self.best_loss - val_loss > self.min_delta:
-            self.best_loss = val_loss
-            # reset counter if validation loss improves
+
+        # For comparison
+        if self.mode not in ['min', 'max']:
+            raise ValueError("mode must be 'min' or 'max'")
+
+    def __call__(self, current_metric):
+        # Determine if improvement happened
+        if self.best_metric is None:
+            self.best_metric = current_metric
+            return
+
+        if self.mode == 'min':
+            improved = (self.best_metric - current_metric) > self.min_delta
+        else:  # mode == 'max'
+            improved = (current_metric - self.best_metric) > self.min_delta
+
+        if improved:
+            self.best_metric = current_metric
             self.counter = 0
-        elif self.best_loss - val_loss < self.min_delta:
+        else:
             self.counter += 1
             print(f"INFO: Early stopping counter {self.counter} of {self.patience}")
             if self.counter >= self.patience:
-                print('INFO: Early stopping')
+                print("INFO: Early stopping")
                 self.early_stop = True
 
 
@@ -83,15 +103,38 @@ def update_input_output(cfg):
 
     return cfg, feats, target
 
-def get_optimizazion_objects(model, cfg):
+def get_optimizazion_objects(cfg, model, opt_metric_dict):
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.opt.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 'min', factor=0.8, patience=cfg.opt.lr_patience, threshold=0.0001,
         threshold_mode='rel', cooldown=0,min_lr=9e-8, verbose=True)
     criterion = nn.MSELoss()
-    early_stopping = EarlyStopping(patience=cfg.opt.early_stopping_patience, min_delta=0.0001) if cfg.opt.early_stopping else None
+    early_stopping = EarlyStopping(patience=cfg.opt.es_patience, min_delta=0.0001, opt_metric_dict=opt_metric_dict) if cfg.opt.cfg.opt.es_patience and opt_metric_dict else None
 
-    return optimizer, scheduler, criterion
+    return optimizer, scheduler, criterion, early_stopping
+
+def get_opt_metric(cfg, metrics_loader=None):
+    opt_metric_dict = {}
+    metric_key, mode = list(cfg.opt.opt_metric.items())[0]
+
+    if metric_key is available_metrics and mode in ['min', 'max']:
+        pass
+    else:
+        print(f"Warning: opt_metric is set to {metric_key} but is not in available_metrics. Setting opt_metric to 'loss'.")
+        metric_key = 'loss'
+        mode = 'min'
+
+    if metric_key != 'loss' and metrics_loader is None:
+        print(f"Warning: opt_metric is set to {metric_key} but no metrics_loader is provided. Setting opt_metric to 'loss'.")
+        metric_key = 'loss'
+        mode = 'min'
+
+    best_metric = float("inf") if mode == "min" else -float("inf")
+    opt_metric_dict["metric_key"] = metric_key
+    opt_metric_dict["mode"] = mode
+    opt_metric_dict["best_metric"] = best_metric
+
+    return  opt_metric_dict
 
 def compute_errors(outputs: torch.Tensor, targets: torch.Tensor):
     return torch.abs(outputs.detach() - targets)
@@ -267,9 +310,9 @@ def test_anomaly_step(model, dataloader, device,
 
     results_per_std = {}
 
-    for n_std in n_std:
+    for curr_std in n_std:
         # Compute thresholds per channel
-        thresholds = channel_means + n_std * channel_stds  # [C]
+        thresholds = channel_means + curr_std * channel_stds  # [C]
 
         # Flatten for F1
         model_type, last_layer = infer_model_type(model)
@@ -281,7 +324,7 @@ def test_anomaly_step(model, dataloader, device,
         f1 = f1_score(y_true, y_pred)
 
         # Save results
-        results_per_std[n_std] = {
+        results_per_std[curr_std] = {
             "f1_score": f1,
             "thresholds": thresholds,
             "anomaly_mask_pred": anomaly_mask_pred_reduced,
@@ -290,7 +333,7 @@ def test_anomaly_step(model, dataloader, device,
         # Track best
         if f1 > best_f1:
             best_f1 = f1
-            best_n_std = n_std
+            best_n_std = curr_std
             best_pred_mask = anomaly_mask_pred_reduced
 
     return {"metrics_results":{
