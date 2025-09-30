@@ -1,5 +1,3 @@
-from ray.data.datasource import FileMetadataProvider
-
 from utils.load_model import get_model
 from utils.load_dataset import get_train_val_dataloader, get_metric_loader
 from trainer.utils import get_opt_metric, update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects

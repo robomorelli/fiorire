@@ -1,6 +1,6 @@
 from utils.load_model import get_model
 from utils.load_dataset import get_train_val_dataloader, get_metric_loader
-from trainer.utils import update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
+from trainer.utils import get_opt_metric, update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
 from omegaconf import ListConfig
 
 from config import *
@@ -11,15 +11,14 @@ class trainLSTM(tune.Trainable):
     def setup(self, config):
         # Load and set up the configuration
         self.cfg = model_setup(lstm_config_file, config, root)
-        self.cfg, _, _ = update_input_output(self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
+        self.cfg, _, _ = update_input_output(
+            self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.epochs = self.cfg.opt.epochs
         self.current_epoch = 0
-        self.metric_key, self.mode = list(self.cfg.opt.opt_metric.items())[0]
-        self.best_metric = float("inf") if self.mode == "min" else -float("inf")
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
 
         # Load data
-        # try to separate the anomalous sequences from the main dataset anyway. If they are not present, the dataset will be empty
+        # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
         self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
             self.cfg, filter_anomalies=True)
         # If the anomalous sequences are not present in the main dataset, the metrics_loader will be None. Try to load it from the path specified in the config file
@@ -27,6 +26,11 @@ class trainLSTM(tune.Trainable):
                                                 data_path=self.cfg.opt.metrics_dataset_path,
                                                 scale=True,
                                                 scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+
+        self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
+        self.metric_key = self.opt_metric_dict['metric_key']
+        self.mode = self.opt_metric_dict['mode']
+        self.best_metric = self.opt_metric_dict['best_metric']
 
         # Set up device
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
@@ -37,7 +41,9 @@ class trainLSTM(tune.Trainable):
         self.parameters_number = self.cfg.model.parameter_count
 
         # Optimizer and scheduler
-        self.optimizer, self.scheduler, self.criterion = get_optimizazion_objects(self.model, self.cfg)
+        self.optimizer, self.scheduler, self.criterion, self.early_stopping = get_optimizazion_objects(self.cfg,
+                                                                                                       self.model,
+                                                                                                       self.opt_metric_dict)
 
     def step(self):
         self.current_ip()
@@ -97,6 +103,8 @@ class trainLSTM(tune.Trainable):
         current_metric = result.get(self.metric_key)
         result["should_checkpoint"], result[f"best_{self.metric_key}"] = self.check_improvements(current_metric)
         result["best_n_std"] = self.val_results.get("best_n_std", 0.0)  # 👈 Always included
+
+        self.early_stopping(current_metric)
 
         return result
 
