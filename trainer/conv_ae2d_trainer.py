@@ -1,3 +1,5 @@
+from ray.data.datasource import FileMetadataProvider
+
 from utils.load_model import get_model
 from utils.load_dataset import get_train_val_dataloader, get_metric_loader
 from trainer.utils import update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
@@ -6,12 +8,12 @@ from omegaconf import ListConfig
 from config import *
 from models.utils.losses import *
 
-class trainLSTM(tune.Trainable):
+class trainCONVAE2D(tune.Trainable):
 
     def setup(self, config):
         # Load and set up the configuration
-        self.cfg = model_setup(lstm_config_file, config, root)
-        self.cfg, _, _ = update_input_output(self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
+        self.cfg = model_setup(conv_ae_2D_config_file, config, root)
+        self.cfg, _, _ = update_input_output(self.cfg)    # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.epochs = self.cfg.opt.epochs
         self.current_epoch = 0
         self.metric_key, self.mode = list(self.cfg.opt.opt_metric.items())[0]
@@ -19,14 +21,17 @@ class trainLSTM(tune.Trainable):
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
 
         # Load data
-        # try to separate the anomalous sequences from the main dataset anyway. If they are not present, the dataset will be empty
-        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
-            self.cfg, filter_anomalies=True)
+        # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
+        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(self.cfg, filter_anomalies=True)
         # If the anomalous sequences are not present in the main dataset, the metrics_loader will be None. Try to load it from the path specified in the config file
-        self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader,
-                                                data_path=self.cfg.opt.metrics_dataset_path,
-                                                scale=True,
-                                                scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+        self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader, data_path=self.cfg.opt.metrics_dataset_path,
+                                                scale=True, scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+
+        ### TO DO:
+        # if opt_metric: {'val_f1':'max'} -> set self.metric_key = 'val_f1' and self.mode = 'max'
+        # if opt_metric: {'val_loss':'min'} -> set self.metric_key = 'val_loss' and self.mode = 'min'
+        # if opt_metric: {'val_f1':'max'} ut self.metrics_loader = oe
+
 
         # Set up device
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
@@ -68,6 +73,7 @@ class trainLSTM(tune.Trainable):
             dataloader=self.valloader,
             metric_loader=self.metrics_loader,
             criterion=self.criterion,
+            early_stoppig= self.early_stoppig,
             device=self.device,
             desc=f"Epoch {self.current_epoch} [Val]",
             evaluate_metrics=evaluate_metrics,
@@ -78,6 +84,7 @@ class trainLSTM(tune.Trainable):
         print(f"Epoch {self.current_epoch} - Avg Val Loss: {val_loss:.6f}")
 
         self.scheduler.step(val_loss)
+        self.early_stoppig.step(val_loss)
 
         # Combine loggable metrics
         result = {
@@ -95,7 +102,7 @@ class trainLSTM(tune.Trainable):
         # example of self.cfg.opt_metric: {'val_loss': 'min'}
         # Step 2: Save model only if current metric is better
         current_metric = result.get(self.metric_key)
-        result["should_checkpoint"], result[f"best_{self.metric_key}"] = self.check_improvements(current_metric)
+        result["should_checkpoint"],  result[f"best_{self.metric_key}"]= self.check_improvements(current_metric)
         result["best_n_std"] = self.val_results.get("best_n_std", 0.0)  # 👈 Always included
 
         return result
@@ -106,12 +113,12 @@ class trainLSTM(tune.Trainable):
     def save_checkpoint(self, checkpoint_dir):
         print("this is the checkpoint dir {}".format(checkpoint_dir))
         torch.save({
-            'epoch': self.current_epoch, 'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(), 'loss': self.metric_key,
-            'cfg': self.cfg, 'scaler_params': self.scaler_params,
-            'parameters_number': self.parameters_number, 'param_conf': self.parameters_number,
-            'metric_score': self.val_results if "metric_score" in self.val_results else None,
-        }, f"{checkpoint_dir}/model.pt")
+                'epoch': self.current_epoch, 'model_state_dict': self.model.state_dict(),
+                'optimizer_state_dict': self.optimizer.state_dict(), 'loss': self.metric_key,
+                'cfg': self.cfg, 'scaler_params': self.scaler_params,
+                'parameters_number': self.parameters_number,'param_conf': self.parameters_number,
+                'metric_score': self.val_results if "metric_score" in self.val_results else None,
+            }, f"{checkpoint_dir}/model.pt")
         return os.path.join(checkpoint_dir, "model.pt")
 
     def load_checkpoint(self, checkpoint_path):
@@ -134,3 +141,4 @@ class trainLSTM(tune.Trainable):
             return True, current_metric
         else:
             return False, self.best_metric
+

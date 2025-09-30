@@ -1,6 +1,6 @@
 import torch.nn as nn
 from config import activation_dict
-from models.utils.layers import conv_block, deconv_block, conv_block1D, deconv_block1D
+from models.utils.layers import conv_block1D, deconv_block1D
 import torch
 
 torch.manual_seed(0)
@@ -11,6 +11,7 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
 
         self.nn_enc = nn.Sequential()
+
         if filter_num_list is None:
             self.filter_num_list = [1, 32, 64]
 
@@ -36,6 +37,7 @@ class Encoder(nn.Module):
                                                                       pool=self.pool, stride=self.stride, padding=self.padding))
 
         self.flattened_size, self.l_enc = self._get_final_flattened_size()
+
         if self.flattened:
             self.encoder_layer = nn.Linear(self.flattened_size, self.latent_dim)
 

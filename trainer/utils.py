@@ -38,6 +38,7 @@ class EarlyStopping():
                 print('INFO: Early stopping')
                 self.early_stop = True
 
+
 def model_setup(config_file_name, config, root):
 
     cfg = OmegaConf.load(config_path + config_file_name)  # here use only vae conf file
@@ -88,13 +89,27 @@ def get_optimizazion_objects(model, cfg):
         optimizer, 'min', factor=0.8, patience=cfg.opt.lr_patience, threshold=0.0001,
         threshold_mode='rel', cooldown=0,min_lr=9e-8, verbose=True)
     criterion = nn.MSELoss()
+    early_stopping = EarlyStopping(patience=cfg.opt.early_stopping_patience, min_delta=0.0001) if cfg.opt.early_stopping else None
 
     return optimizer, scheduler, criterion
+
+def compute_errors(outputs: torch.Tensor, targets: torch.Tensor):
+    return torch.abs(outputs.detach() - targets)
+
+def mean_std_per_channel(errors: torch.Tensor, model_type: str):
+    if model_type == "cnn":
+        mean = errors.mean(dim=(0, 2)).numpy()
+        std = errors.std(dim=(0, 2)).numpy()
+    elif model_type == "lstm":
+        mean = errors.mean(dim=(0, 1)).numpy()
+        std = errors.std(dim=(0, 1)).numpy()
+    else:
+        raise ValueError(f"Unknown model type {model_type}")
+    return mean, std
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train"):
     model.train()
     epoch_loss = 0
-    steps = 0
     all_errors = []
 
     pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc=desc, leave=False)
@@ -108,28 +123,20 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train
         optimizer.step()
 
         # Compute absolute error (reconstruction error)
-        error = torch.abs(outputs.detach() - targets)  # [B, C, L]
-        all_errors.append(error.cpu())
+        errors = compute_errors(outputs, targets)
+        all_errors.append(errors.cpu())
 
         epoch_loss += loss.item()
-        steps += 1
         pbar.set_postfix(loss=loss.item())
 
     # Stack all errors: [N, C, L]
     all_errors = torch.cat(all_errors, dim=0)
     model_type, last_layer = infer_model_type(model)
+    channel_mean_errors, channel_std_errors = mean_std_per_channel(all_errors, model_type)
 
-    if model_type == "cnn":
-        channel_mean_errors = all_errors.mean(dim=(0, 2)).numpy()  # [C]
-        channel_std_errors = all_errors.std(dim=(0, 2)).numpy()
-    elif model_type == "lstm":
-        channel_mean_errors = all_errors.mean(dim=(0, 1)).numpy()  # [C]
-        channel_std_errors = all_errors.std(dim=(0, 1)).numpy()
-    else:
-        raise ValueError("Unknown model type")
 
     return {
-        "train_loss": epoch_loss / steps,
+        "train_loss": epoch_loss / len(dataloader),
         "anomaly_threshold": {
             "channel_means": channel_mean_errors,  # shape: [C]
             "channel_stds": channel_std_errors  # shape: [C]
@@ -150,7 +157,6 @@ def validate_one_epoch(
 
     model.eval()
     epoch_loss = 0
-    steps = 0
     all_errors = []
 
     with torch.no_grad():
@@ -161,28 +167,19 @@ def validate_one_epoch(
             outputs = model(inputs).to(device)
             loss = criterion(outputs, targets)
 
-            error = torch.abs(outputs - targets)  # [B, C, L]
-            all_errors.append(error.cpu())
+            errors = compute_errors(outputs, targets)
+            all_errors.append(errors.cpu())
 
             epoch_loss += loss.item()
-            steps += 1
             pbar.set_postfix(loss=loss.item())
 
     all_errors = torch.cat(all_errors, dim=0)  # [N, C, L]
     model_type, last_layer = infer_model_type(model)
-
-    if model_type == "cnn":
-        channel_mean_errors = all_errors.mean(dim=(0, 2)).numpy()  # [C]
-        channel_std_errors = all_errors.std(dim=(0, 2)).numpy()
-    elif model_type == "lstm":
-        channel_mean_errors = all_errors.mean(dim=(0, 1)).numpy()  # [C]
-        channel_std_errors = all_errors.std(dim=(0, 1)).numpy()
-    else:
-        raise ValueError("Unknown model type")
+    channel_mean_errors, channel_std_errors = mean_std_per_channel(all_errors, model_type)
 
     # Core validation results
     results = {
-        "val_loss": epoch_loss / steps,
+        "val_loss": epoch_loss / len(dataloader),
         "val_channel_mean_errors": channel_mean_errors,
         "val_channel_std_errors": channel_std_errors,
     }

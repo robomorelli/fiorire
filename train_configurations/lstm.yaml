@@ -1,14 +1,15 @@
 # Optimization
 tune_config:
-      #intermediate_dim: tune.choice([1, 2, 5, 10, 20])
+      #intermediate_dim: tune.choice([1, 2, 5, 10, 20]))
+      model.embedding_dim: tune.choice([10, 16, 20, 32, 40, 48])
+      model.n_layers: tune.choice([1,2,3])
+      model.n_cells: tune.choice([1,2])
+
       opt.epochs: tune.choice([200])
       opt.lr: tune.choice([0.0006, 0.0003, 0.001])
       opt.batch_size: tune.choice([100, 500])
       opt.lr_patience: tune.choice([5, 10])
-
-      model.embedding_dim: tune.choice([10, 16, 20, 32, 40, 48])
-      model.n_layers: tune.choice([1,2,3])
-      model.n_cells: tune.choice([1,2])
+      opt.es_patience: tune.choice([10]
 
       dataset.scaler: tune.choice(['RobustScaler-0.05-0.95', 'StandardScaler'])  # other choices {StandardScaler: None}, None
       dataset.perc_overlap: tune.choice([0, 0.3, 0.7])
@@ -19,7 +20,6 @@ tune_config:
 dataset:
   name: 'fiorire'
   data_path: './data/fiorire/sentinel/dataset_4s/all_2016-2018_clean_4s.pkl'
-  perc_overlap: 0.0
   chunks_num: 10
   seq_in_length: 16
   seq_out_length: null

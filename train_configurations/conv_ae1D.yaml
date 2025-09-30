@@ -15,16 +15,16 @@ tune_config:
   opt.batch_size: tune.choice([100, 500])
   opt.epochs: tune.choice([200])
   opt.lr_patience: tune.choice([5, 10])
+  opt.es_patience: tune.choice([10])
 
   dataset.scaler: tune.choice(['RobustScaler-0.05-0.95', 'StandardScaler'])
   dataset.seq_in_length: tune.choice([40])
-  dataset.perc_overlap: tune.choice([0, 0.3, 0.7])
+  dataset.perc_overlap: tune.choice([0, 0.3, 0.8])
 
 # Dataset
 dataset:
   name: 'fiorire'
   data_path: './data/fiorire_2/FIORIRE_TrainingSet_6h/Pkt_FIORIRE.xls'
-  perc_overlap: 0.0
   chunks_num: 10
   seq_in_length: 16
   seq_out_length: null

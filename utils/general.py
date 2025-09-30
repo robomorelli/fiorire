@@ -155,6 +155,8 @@ def infer_model_type(model: torch.nn.Module) -> Tuple[str, str]:
             return "lstm", "LSTM"
         elif isinstance(mod, torch.nn.Conv1d):
             return "cnn", "Conv1d"
+        elif isinstance(mod, torch.nn.Conv2d):
+            return "cnn", "Conv2d"
 
     # Fallbacks
     for mod in model.modules():

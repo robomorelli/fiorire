@@ -161,7 +161,7 @@ def create_train_val_df_indexes(cfg, df, return_anomalies=False, ano_col='is_ano
     # Validation set chunk selection
     chunks = np.arange(num_chunks)
     chunk_size = len(df) // num_chunks
-    val_chunk_num = int(num_chunks * val_ratio)
+    val_chunk_num = int(np.ceil(num_chunks * val_ratio))
     np.random.shuffle(chunks)
     val_chunk_idxs = chunks[:val_chunk_num]
 
