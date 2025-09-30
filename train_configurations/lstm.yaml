@@ -46,8 +46,8 @@ resources:
   cpu_trial: 12
 
 opt:
-  opt_metric: {'f1_score':'max'} #{'val_loss':'min'}
-  metrics_to_report: ['train_loss', 'f1_score']
+  opt_metric: {'val_f1_score':'max'} #{'val_loss':'min'}
+  metrics_to_report: ['train_loss', 'val_f1_score']
   other_reports: ['parameters_number']
   order_by: 'val_loss'    # summary of the results is ordered by this value
   num_workers: 12
@@ -56,3 +56,4 @@ opt:
   metrics_dataset_path: './data/fiorire/sentinel/dataset_4s/all_2016-2018_clean_4s_test.pkl'   # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
   detect_anomaly_epoch_freq: 1
   exp_name: 'lstm_fiorire'
+  limit_epochs: 100

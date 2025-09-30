@@ -1,4 +1,6 @@
 import os
+
+from fastai.metrics import optim_metric
 from ray import tune
 import torch.nn as nn
 
@@ -17,7 +19,9 @@ conv_ae_config_file = 'conv_ae.yaml'
 conv_ae_1D_config_file = 'conv_ae1D.yaml'
 conv_ae_2D_config_file = 'conv_ae2D.yaml'
 
-available_metrics = ['loss', 'f1']
+available_metrics = ['val_loss', 'val_f1_score']
+available_modes = ['min', 'max']
+opt_metric_dict_keys = ["metric_key", "mode", "best_metric"]
 
 # sentinel
 sentinel_path = root + '/data/fiorire/sentinel/'

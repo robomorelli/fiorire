@@ -2,6 +2,7 @@ from utils.load_model import get_model
 from utils.load_dataset import get_train_val_dataloader, get_metric_loader
 from trainer.utils import get_opt_metric, update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
 from omegaconf import ListConfig
+import numpy as np
 
 from config import *
 from models.utils.losses import *
@@ -11,8 +12,7 @@ class trainLSTM(tune.Trainable):
     def setup(self, config):
         # Load and set up the configuration
         self.cfg = model_setup(lstm_config_file, config, root)
-        self.cfg, _, _ = update_input_output(
-            self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
+        self.cfg, _, _ = update_input_output(self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.epochs = self.cfg.opt.epochs
         self.current_epoch = 0
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
@@ -28,9 +28,9 @@ class trainLSTM(tune.Trainable):
                                                 scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
-        self.metric_key = self.opt_metric_dict['metric_key']
-        self.mode = self.opt_metric_dict['mode']
-        self.best_metric = self.opt_metric_dict['best_metric']
+        self.metric_key, self.mode, self.best_metric = (
+            self.opt_metric_dict[k] for k in opt_metric_dict_keys
+        )
 
         # Set up device
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
@@ -84,27 +84,34 @@ class trainLSTM(tune.Trainable):
         print(f"Epoch {self.current_epoch} - Avg Val Loss: {val_loss:.6f}")
 
         self.scheduler.step(val_loss)
-
         # Combine loggable metrics
         result = {
             "epoch": self.current_epoch,
             "train_loss": train_loss,
             "val_loss": val_loss,
-            'f1_score': self.val_results.get('f1_score', 0.0),  # 👈 Always included
+            'val_f1_score': self.val_results.get('val_f1_score', -float(np.inf)),  # 👈 Always included
             "parameters_number": self.parameters_number,
         }
 
         if self.metric_key in self.val_results:
-            result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, 0.0)  # 👈 Always included
+            result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, -float(np.inf))  # 👈 Always included
 
         # Track best model
         # example of self.cfg.opt_metric: {'val_loss': 'min'}
         # Step 2: Save model only if current metric is better
-        current_metric = result.get(self.metric_key)
-        result["should_checkpoint"], result[f"best_{self.metric_key}"] = self.check_improvements(current_metric)
-        result["best_n_std"] = self.val_results.get("best_n_std", 0.0)  # 👈 Always included
+        # 🔑 Unified improvement + early stopping
+        current_metric = result[self.metric_key]
+        improved, best_metric = self.early_stopping(current_metric)
 
-        self.early_stopping(current_metric)
+        result["should_checkpoint"] = improved
+        result[f"best_{self.metric_key}"] = best_metric
+        result["best_n_std"] = self.val_results.get("best_n_std", 0.0)
+
+        if self.early_stopping.early_stop:
+            print("INFO: Early stopping triggered. Stopping trial.")
+            tune.report(**result)
+            self.stop()  # 👈 clean stop, no error
+            return result
 
         return result
 
@@ -132,13 +139,4 @@ class trainLSTM(tune.Trainable):
         self._local_ip = socket.gethostbyname(hostname)
         return self._local_ip
 
-    def check_improvements(self, current_metric):
-        """
-        Check if the current metric is better than the best metric.
-        """
-        if (self.mode == "min" and current_metric < self.best_metric) or \
-                (self.mode == "max" and current_metric > self.best_metric):
-            self.best_metric = current_metric
-            return True, current_metric
-        else:
-            return False, self.best_metric
+

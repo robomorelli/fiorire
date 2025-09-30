@@ -10,42 +10,37 @@ from config import *
 class EarlyStopping:
     """
     Early stopping to stop the training when a monitored metric does not improve after
-    certain epochs. Works for both minimizing loss or maximizing a metric.
+    a given patience. Supports both 'min' (loss) and 'max' (accuracy/F1).
     """
     def __init__(self, patience=5, min_delta=0, opt_metric_dict=None):
-        """
-        :param patience: Number of epochs to wait before stopping when metric is
-                         not improving.
-        :param min_delta: Minimum difference between new metric and best metric to
-                          qualify as an improvement.
-        :param opt_metric_dict: Dictionary with keys:
-            - 'metric_key': name of the metric to monitor (e.g., 'val_loss', 'val_f1')
-            - 'mode': 'min' (for loss) or 'max' (for accuracy/F1)
-            - 'best_metric': initial best metric value (-inf for max, +inf for min)
-        """
         self.patience = patience
         self.min_delta = min_delta
 
-        self.metric_key = opt_metric_dict.get('metric_key', 'loss') if opt_metric_dict else 'loss'
-        self.mode = opt_metric_dict.get('mode', 'min') if opt_metric_dict else 'min'
-        self.best_metric = opt_metric_dict.get('best_metric', float('inf') if self.mode == 'min' else -float('inf')) if opt_metric_dict else None
+        self.metric_key = opt_metric_dict.get("metric_key", "val_loss")
+        self.mode = opt_metric_dict.get("mode", "min")
+        self.best_metric = opt_metric_dict.get(
+            "best_metric",
+            float("inf") if self.mode == "min" else -float("inf")
+        )
+
+        if self.mode not in ["min", "max"]:
+            raise ValueError("mode must be 'min' or 'max'")
 
         self.counter = 0
         self.early_stop = False
 
-        # For comparison
-        if self.mode not in ['min', 'max']:
-            raise ValueError("mode must be 'min' or 'max'")
-
     def __call__(self, current_metric):
-        # Determine if improvement happened
-        if self.best_metric is None:
-            self.best_metric = current_metric
-            return
+        """
+        Update state with current metric.
+        Returns:
+            improved (bool): True if metric improved, False otherwise
+            best_metric (float): Updated best metric so far
+        """
+        improved = False
 
-        if self.mode == 'min':
+        if self.mode == "min":
             improved = (self.best_metric - current_metric) > self.min_delta
-        else:  # mode == 'max'
+        else:  # mode == "max"
             improved = (current_metric - self.best_metric) > self.min_delta
 
         if improved:
@@ -58,6 +53,7 @@ class EarlyStopping:
                 print("INFO: Early stopping")
                 self.early_stop = True
 
+        return improved, self.best_metric
 
 def model_setup(config_file_name, config, root):
 
@@ -109,7 +105,8 @@ def get_optimizazion_objects(cfg, model, opt_metric_dict):
         optimizer, 'min', factor=0.8, patience=cfg.opt.lr_patience, threshold=0.0001,
         threshold_mode='rel', cooldown=0,min_lr=9e-8, verbose=True)
     criterion = nn.MSELoss()
-    early_stopping = EarlyStopping(patience=cfg.opt.es_patience, min_delta=0.0001, opt_metric_dict=opt_metric_dict) if cfg.opt.cfg.opt.es_patience and opt_metric_dict else None
+    early_stopping = EarlyStopping(patience=cfg.opt.es_patience, min_delta=0.0000001,
+                                   opt_metric_dict=opt_metric_dict) if cfg.opt.es_patience and opt_metric_dict else None
 
     return optimizer, scheduler, criterion, early_stopping
 
@@ -117,16 +114,16 @@ def get_opt_metric(cfg, metrics_loader=None):
     opt_metric_dict = {}
     metric_key, mode = list(cfg.opt.opt_metric.items())[0]
 
-    if metric_key is available_metrics and mode in ['min', 'max']:
+    if metric_key in available_metrics and mode in available_modes:
         pass
     else:
         print(f"Warning: opt_metric is set to {metric_key} but is not in available_metrics. Setting opt_metric to 'loss'.")
-        metric_key = 'loss'
+        metric_key = 'val_loss'
         mode = 'min'
 
-    if metric_key != 'loss' and metrics_loader is None:
+    if metric_key != 'val_loss' and metrics_loader is None:
         print(f"Warning: opt_metric is set to {metric_key} but no metrics_loader is provided. Setting opt_metric to 'loss'.")
-        metric_key = 'loss'
+        metric_key = 'val_loss'
         mode = 'min'
 
     best_metric = float("inf") if mode == "min" else -float("inf")
@@ -176,7 +173,6 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train
     all_errors = torch.cat(all_errors, dim=0)
     model_type, last_layer = infer_model_type(model)
     channel_mean_errors, channel_std_errors = mean_std_per_channel(all_errors, model_type)
-
 
     return {
         "train_loss": epoch_loss / len(dataloader),
@@ -241,7 +237,7 @@ def validate_one_epoch(
         if "metrics_results" in test_results:
             metrics = test_results["metrics_results"]
             results.update({
-                "f1_score": metrics["best_f1_score"],
+                "val_f1_score": metrics["best_f1_score"],
                 "best_n_std": metrics["best_n_std"],
                 "channel_means": metrics["channel_means"],
                 "channel_stds": metrics["channel_stds"],
@@ -325,7 +321,7 @@ def test_anomaly_step(model, dataloader, device,
 
         # Save results
         results_per_std[curr_std] = {
-            "f1_score": f1,
+            "val_f1_score": f1,
             "thresholds": thresholds,
             "anomaly_mask_pred": anomaly_mask_pred_reduced,
         }

@@ -13,9 +13,9 @@ tune_config:
 
   opt.lr: tune.choice([0.0009, 0.0003, 0.001])
   opt.batch_size: tune.choice([100, 500])
-  opt.epochs: tune.choice([200])
+  opt.epochs: tune.choice([50])
   opt.lr_patience: tune.choice([5, 10])
-  opt.es_patience: tune.choice([10])
+  opt.es_patience: tune.choice([3])
 
   dataset.scaler: tune.choice(['RobustScaler-0.05-0.95', 'StandardScaler'])
   dataset.seq_in_length: tune.choice([40])
@@ -59,8 +59,8 @@ resources:
 
 opt:
   opt_metric: {'val_loss':'min'}
-  metrics_to_report: ['train_loss', 'f1_score']
-  other_reports: ['parameters_number']
+  metrics_to_report: ['train_loss', 'val_f1_score']
+  other_reports: ['parameters_number']    # overwrite with all hyperparameters to display everything
   order_by: 'val_loss'    # summary of the results is ordered by this value
   num_workers: 12
   evaluate_metrics: False
@@ -68,4 +68,5 @@ opt:
   metrics_dataset_path: null   # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
   detect_anomaly_epoch_freq: 1
   exp_name: 'conv_ae1D_fiorire'
+  limit_epochs: 100
 
