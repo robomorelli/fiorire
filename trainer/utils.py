@@ -136,10 +136,20 @@ def get_opt_metric(cfg, metrics_loader=None):
 def compute_errors(outputs: torch.Tensor, targets: torch.Tensor):
     return torch.abs(outputs.detach() - targets)
 
-def mean_std_per_channel(errors: torch.Tensor, model_type: str):
+def mean_std_per_channel(errors: torch.Tensor, model_type: str, last_layer:str = None):
     if model_type == "cnn":
-        mean = errors.mean(dim=(0, 2)).numpy()
-        std = errors.std(dim=(0, 2)).numpy()
+        if last_layer == "Conv2d":
+            if errors.dim() == 4:
+                if errors.shape[1] == 1:
+                    errors = errors.squeeze(1)
+                    mean = errors.mean(dim=(0, 2)).numpy()
+                    std = errors.std(dim=(0, 2)).numpy()
+                else:
+                    mean = errors.mean(dim=(0, 3)).numpy()
+                    std = errors.std(dim=(0, 3)).numpy()
+        else:
+            mean = errors.mean(dim=(0, 2)).numpy()
+            std = errors.std(dim=(0, 2)).numpy()
     elif model_type == "lstm":
         mean = errors.mean(dim=(0, 1)).numpy()
         std = errors.std(dim=(0, 1)).numpy()
@@ -172,7 +182,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train
     # Stack all errors: [N, C, L]
     all_errors = torch.cat(all_errors, dim=0)
     model_type, last_layer = infer_model_type(model)
-    channel_mean_errors, channel_std_errors = mean_std_per_channel(all_errors, model_type)
+    channel_mean_errors, channel_std_errors = mean_std_per_channel(all_errors, model_type, last_layer)
 
     return {
         "train_loss": epoch_loss / len(dataloader),
