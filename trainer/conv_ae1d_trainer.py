@@ -15,7 +15,7 @@ class trainCONVAE1D(tune.Trainable):
         # Load and set up the configuration
         self.cfg = model_setup(conv_ae_1D_config_file, config, root)
         self.cfg, _, _ = update_input_output(self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
-        self.epochs = self.cfg.opt.epochs
+        self.max_epochs = self.cfg.opt.epochs
         self.current_epoch = 0
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
 
@@ -53,16 +53,6 @@ class trainCONVAE1D(tune.Trainable):
         return result
 
     def train_step(self, checkpoint_dir=None):
-
-        if self.early_stopping.early_stop:
-            print(f"INFO: Early stopping triggered at epoch {self.current_epoch}. Ending trial.")
-            session.report({"epoch": self.current_epoch, "early_stop": True})
-            sys.exit(0)  # clean exit
-
-        if self.current_epoch >= self.epochs:
-            print(f"INFO: Max epochs {self.epochs} reached. Ending trial.")
-            session.report({"epoch": self.current_epoch, "done": True})
-            sys.exit(0)  # clean exit
 
         self.current_epoch += 1
 
@@ -120,9 +110,26 @@ class trainCONVAE1D(tune.Trainable):
         result[f"best_{self.metric_key}"] = best_metric
         result["best_n_std"] = self.val_results.get("best_n_std", 0.0)
 
+        # Check early stopping conditions
+        stop_training = False
+        stop_reason = None
+
+        # Check if early stopping triggered
         if self.early_stopping.early_stop:
             print(f"INFO: Early stopping triggered at epoch {self.current_epoch}.")
-            return {"early_stop": True, **result}
+            stop_training = True
+            stop_reason = "early_stopping"
+
+        # Check if max epochs reached
+        elif self.current_epoch >= self.max_epochs:
+            print(f"INFO: Maximum epochs ({self.max_epochs}) reached at epoch {self.current_epoch}.")
+            stop_training = True
+            stop_reason = "max_epochs"
+
+        # Add stopping information to result
+        result["done"] = stop_training
+        if stop_reason:
+            result["stop_reason"] = stop_reason
 
         return result
 

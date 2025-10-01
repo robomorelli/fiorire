@@ -5,11 +5,11 @@ tune_config:
       model.n_layers: tune.choice([1,2,3])
       model.n_cells: tune.choice([1,2])
 
-      opt.epochs: tune.choice([200])
       opt.lr: tune.choice([0.0006, 0.0003, 0.001])
       opt.batch_size: tune.choice([100, 500])
+      opt.epochs: tune.choice([200])
       opt.lr_patience: tune.choice([5, 10])
-      opt.es_patience: tune.choice([10]
+      opt.es_patience: tune.choice([25, 35])
 
       dataset.scaler: tune.choice(['RobustScaler-0.05-0.95', 'StandardScaler'])  # other choices {StandardScaler: None}, None
       dataset.perc_overlap: tune.choice([0, 0.3, 0.7])
@@ -19,23 +19,25 @@ tune_config:
 # Dataset
 dataset:
   name: 'fiorire'
-  data_path: './data/fiorire/sentinel/dataset_4s/all_2016-2018_clean_4s.pkl'
-  chunks_num: 10
+  data_path: './data/fiorire_2/FIORIRE_TrainingSet_6h/Pkt_FIORIRE.xls'
+  chunks_num: 2
   seq_in_length: 16
   seq_out_length: null
   train_val_split: 0.8
   shuffle_train: True #shuffle the idx of the train
-  feats: ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr']   #['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
-                  # 'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
-                  #'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
-                  #'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
+  feats: [
+    "AMT20100(MGM1_X)", "AMT20101(MGM1_Y)", "AMT20102(MGM1_Z)", "AMT20103(MGM2_X)", "AMT20104(MGM2_Y)",
+    "AMT20105(MGM2_Z)", "AFT20100(FSS0_V1)", "AFT20101(FSS0_V2)", "AFT20102(FSS0_V3)", "AFT20103(FSS0_V4)",
+    "AFT20104(FSS1_V1)", "AFT20105(FSS1_V2)", "AFT20106(FSS1_V3)", "AFT20107(FSS1_V4)", "AFT20108(FSS2_V1)",
+    "AFT20109(FSS2_V2)", "AFT20110(FSS2_V3)", "AFT20111(FSS2_V4)", "AFT20112(FSS3_V1)", "AFT20113(FSS3_V2)",
+    "AFT20114(FSS3_V3)", "AFT20115(FSS3_V4)"]
   target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
   dataset_subset: 120000
   scaler: 'RobustScaler-0.05-0.95'  # other coiches {StandarcScaler: None}, None
   save_dataloaders: False
   forecast: False
-  is_anomaly_column: 'is_anomaly'
+  is_anomaly_column: null
 
 # Model
 model:
@@ -46,14 +48,14 @@ resources:
   cpu_trial: 12
 
 opt:
-  opt_metric: {'val_f1_score':'max'} #{'val_loss':'min'}
+  opt_metric: {'val_loss':'min'}   #val_loss; val_f1_score This is the metric key used to rank the models (the optimization is still on the loss)
   metrics_to_report: ['train_loss', 'val_f1_score']
   other_reports: ['parameters_number']
   order_by: 'val_loss'    # summary of the results is ordered by this value
   num_workers: 12
-  evaluate_metrics: True
+  evaluate_metrics: False
   n_std: [1, 3]
-  metrics_dataset_path: './data/fiorire/sentinel/dataset_4s/all_2016-2018_clean_4s_test.pkl'   # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
+  metrics_dataset_path: null   # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
   detect_anomaly_epoch_freq: 1
   exp_name: 'lstm_fiorire'
-  limit_epochs: 100
+  max_epochs: 500

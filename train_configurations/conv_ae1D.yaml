@@ -13,9 +13,9 @@ tune_config:
 
   opt.lr: tune.choice([0.0009, 0.0003, 0.001])
   opt.batch_size: tune.choice([100, 500])
-  opt.epochs: tune.choice([50])
+  opt.epochs: tune.choice([200])
   opt.lr_patience: tune.choice([5, 10])
-  opt.es_patience: tune.choice([3])
+  opt.es_patience: tune.choice([25, 35])
 
   dataset.scaler: tune.choice(['RobustScaler-0.05-0.95', 'StandardScaler'])
   dataset.seq_in_length: tune.choice([40])
@@ -68,5 +68,5 @@ opt:
   metrics_dataset_path: null   # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
   detect_anomaly_epoch_freq: 1
   exp_name: 'conv_ae1D_fiorire'
-  limit_epochs: 100
+  max_epochs: 500
 

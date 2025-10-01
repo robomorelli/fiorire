@@ -53,7 +53,7 @@ def main(args):
                         progress_reporter=progress_reporter,   # <-- add this here
                         sync_config=sync_config,
                         config=ray_config, callbacks=callbacks,
-                        stop = {"training_iteration": cfg.opt.limit_epochs},)
+                        stop = {"training_iteration": cfg.opt.max_epochs},)
 
     print("Best config is:", analysis.get_best_config(metric="val_loss", mode="min"))
 
@@ -65,9 +65,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default = '10.141.1.28:6379', help="adress of master")
     parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='conv_ae1D', help="[conv_ae1D, lstm]")
+    parser.add_argument("--config_file", default='conv_ae1D', help="[conv_ae1D, conv_ae2D, lstm]")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
-    parser.add_argument("--wandb", default=1, type=int, help="the model you want to hpo")
+    parser.add_argument("--wandb", default=0, type=int, help="the model you want to hpo")
     parser.add_argument("--project_name", default='fiorire_zbook_testing_automatic', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
