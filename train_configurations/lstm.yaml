@@ -19,8 +19,8 @@ tune_config:
 # Dataset
 dataset:
   name: 'fiorire'
-  data_path: './data/fiorire_2/FIORIRE_TrainingSet_6h/Pkt_FIORIRE.xls'
-  chunks_num: 2
+  data_path: './data/fiorire_2/nominal_merged.csv'
+  chunks_num: 6    # number of chunks the dataset is divided into (cannot be less than 3); if null the dataset is not chunked
   seq_in_length: 16
   seq_out_length: null
   train_val_split: 0.8

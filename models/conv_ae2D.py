@@ -171,7 +171,7 @@ class CONV_AE2D(nn.Module):
 
         self.in_channel = cfg.model.aux_channels  # or cfg.model.in_channel if set there
         self.kernel_size = model_cfg.kernel_size
-        self.filter_num = model_cfg.filter_num
+        self.filter_num = model_cfg.filter_num if not isinstance(model_cfg.filter_num, str) else cfg.dataset.n_features
         self.n_layers = model_cfg.n_layers
         self.act = activation_dict[model_cfg.activation]
         self.pool = model_cfg.pool

@@ -153,7 +153,7 @@ def create_train_val_df_indexes(cfg, df, return_anomalies=False, ano_col='is_ano
           one anomaly — i.e., these are *not* safe for training the model.
     """
     seq_len = cfg.dataset.seq_in_length
-    num_chunks = cfg.dataset.chunks_num
+    num_chunks = min(cfg.dataset.chunks_num, 3)
     val_ratio = 1 - cfg.dataset.train_val_split
     np.random.seed(seed)
     df = df.reset_index(drop=True)
