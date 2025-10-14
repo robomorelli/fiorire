@@ -3,6 +3,8 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+file_from_consortium
+
 data/
 dataloader/
 # C extensions
