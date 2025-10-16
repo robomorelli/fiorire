@@ -43,12 +43,36 @@ class Encoder(nn.Module):
                                                                           activation=self.act,
                                                                           padding=self.padding))
                 break
-            self.nn_enc.add_module('enc_lay_{}'.format(i+1), conv_block(num, self.filter_num_list[i+1],
-                                                                  self.kernel_size, dilation=dilation,
-                                                                      pool_ks=self.pool_ks,
-                                                                      pool_stride=self.pool_stride,
-                                                                      activation=self.act,
-                                                                      padding=self.padding))
+            elif i == 0:
+                self.nn_enc.add_module(
+                    f'enc_lay_{i + 1}',
+                    nn.Sequential(
+                        nn.Conv2d(
+                            in_channels=num,
+                            out_channels=self.filter_num_list[i + 1],
+                            kernel_size=1,
+
+                        ),
+                        conv_block(
+                            self.filter_num_list[i + 1],  # input to conv_block
+                            self.filter_num_list[i + 1],
+                            kernel_size=self.kernel_size,
+                            dilation=dilation,
+                            pool_ks=self.pool_ks,
+                            pool_stride=self.pool_stride,
+                            activation=self.act,
+                            padding=self.padding
+                        )
+                    )
+                )
+
+            else:
+                self.nn_enc.add_module('enc_lay_{}'.format(i+1), conv_block(num, self.filter_num_list[i+1],
+                                                                      self.kernel_size, dilation=dilation,
+                                                                          pool_ks=self.pool_ks,
+                                                                          pool_stride=self.pool_stride,
+                                                                          activation=self.act,
+                                                                          padding=self.padding))
 
         self.flattened_size, self.h_enc, self.w_enc = self._get_final_flattened_size()
         self.latent_dim = int(self.flattened_size // self.compression_factor)
@@ -131,7 +155,8 @@ class Decoder(nn.Module):
                     f'dec_lay_{i + 1}',
                     deconv_block(
                         in_f=num,
-                        out_f=self.filter_num_list[i + 1],
+                        #out_f=self.filter_num_list[i + 1],
+                        out_f=num,
                         kernel_size=self.kernel_size,
                         stride=self.stride,
                         activation=self.act,
@@ -161,7 +186,7 @@ class Decoder(nn.Module):
                 )
             )
 
-        self.decoder_layer = nn.Conv2d(self.filter_num_list[i+1], self.in_channel, kernel_size=1)
+        self.decoder_layer = nn.Conv2d(self.filter_num_list[-2], self.in_channel, kernel_size=1)
         self.init_kaiming_normal()
 
     def _compute_output_padding(self, Lb, L_target, n_layers, stride):
@@ -189,8 +214,8 @@ class Decoder(nn.Module):
             weight_h = stride_h ** (n_layers - 1 - i)
             weight_w = stride_w ** (n_layers - 1 - i)
 
-            op_h = diff_h // weight_h
-            op_w = diff_w // weight_w
+            op_h = max(diff_h // weight_h, 0)
+            op_w = max(diff_w // weight_w, 0)
 
             ops.append((int(op_h), int(op_w)))
 
@@ -287,14 +312,14 @@ class CONV_AE2D(nn.Module):
         self.padding = (self.padding_h, self.padding_w)
 
         if self.increasing:
-            self.filter_num_list = [int(self.filter_num * ((ix + 1) * 2)) for ix in range(self.n_layers)]
+            self.filter_num_list = [int(self.filter_num * ((ix + 1) * 2)) for ix in range(self.n_layers-1)]
         else:
-            self.filter_num_list = [int(self.filter_num / ((ix + 1)*2)) for ix in range(self.n_layers)]
+            self.filter_num_list = [int(self.filter_num / ((ix + 1)*2)) for ix in range(self.n_layers-1)]
 
-        if self.filter_num == cfg.dataset.n_features:
-            self.filter_num_list = [self.in_channel] + [self.filter_num*2] + self.filter_num_list[1:]
-        else:
-            self.filter_num_list = [self.in_channel] + [self.filter_num] + self.filter_num_list
+        #if self.filter_num == cfg.dataset.n_features:
+        #    self.filter_num_list = [self.in_channel] + [self.filter_num*2] + self.filter_num_list[1:]
+        #else:
+        self.filter_num_list = [self.in_channel] + [self.filter_num] + self.filter_num_list
 
         self.encoder = Encoder(self.in_channel, kernel_size=self.kernel_size,
                                pool_ks = self.pool_ks, pool_stride = self.pool_stride,
