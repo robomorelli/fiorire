@@ -1,7 +1,7 @@
 # Optimization
 tune_config:
-  model.n_layers: tune.choice([2])
-  model.filter_num: tune.choice(['input_feats'])
+  model.num_layers: tune.choice([2])
+  model.base_filters: tune.choice([32])    # "inputs feats" option to set equal to number of features
   model.activation: tune.choice(['Relu'])
   model.kernel_size: tune.choice([5])
   model.double_deconv: tune.choice([1])
@@ -28,7 +28,7 @@ tune_config:
 # Dataset
 dataset:
   name: 'fiorire'
-  data_path: './data/fiorire_2/data_windows.pkl'
+  data_path: './data/fiorire_2/nominal_merged.csv'
   chunks_num: 3    # number of chunks the dataset is divided into (cannot be less than 3); if null the dataset is not chunked
   seq_out_length: null
   train_val_split: 0.8

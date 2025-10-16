@@ -24,16 +24,17 @@ class trainCONVAE2D(tune.Trainable):
         self.current_epoch = 0
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
 
+
         # Load data
         # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
-        #self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
-        #    self.cfg, filter_anomalies=True)
+        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
+            self.cfg, filter_anomalies=True)
         # If the anomalous sequences are not present in the main dataset, the metrics_loader will be None. Try to load it from the path specified in the config file
-        #self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader,
-        #                                        data_path=self.cfg.opt.metrics_dataset_path,
-        #                                        scale=True,
-        #                                        scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
-
+        self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader,
+                                                data_path=self.cfg.opt.metrics_dataset_path,
+                                                scale=True,
+                                                scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+        '''
         with open(self.cfg.dataset.data_path, "rb") as f:
             data_loaded = pickle.load(f)
 
@@ -59,6 +60,8 @@ class trainCONVAE2D(tune.Trainable):
         self.metrics_loader = None
         self.cfg.dataset.n_features = X_train.shape[2]
         self.cfg.dataset.seq_len = X_train.shape[1]
+        '''
+
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (
