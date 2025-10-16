@@ -100,7 +100,7 @@ class TimeSeriesDataset(Dataset):
         target = self.data[idx]  # same as data
 
         # Anomaly labels: shape (seq_len, 1)
-        anomaly_labels = torch.full((self.seq_len, 1), float('nan'))
+        anomaly_labels = np.full((self.seq_len, 1), float('nan'))
 
         if self.transform is not None:
             data = self.transform(data)

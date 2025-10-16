@@ -46,8 +46,7 @@ def get_transform(cfg):
         elif cfg.model.name == 'conv_ae2D':
             transform = T.Compose([
                 T.ToTensor(),
-                Lambda(lambda x: x.permute((0, 2, 1))),
-                Lambda(lambda x: x.squeeze(0))])
+                Lambda(lambda x: x.permute((0, 2, 1)))])
         else:
             transform = T.Compose([
                 T.ToTensor(),
