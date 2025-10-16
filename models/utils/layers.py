@@ -137,8 +137,6 @@ def conv_block(
     return nn.Sequential(*layers)
 
 
-
-
 def deconv_block(in_f, out_f, kernel_size=2, stride=2, dilation=1, output_padding=None,
                  activation=nn.ReLU(), batch_norm=True, double_deconv=False,
                  conv_kernel_size=3, conv_padding=0, conv_stride=1, conv_dilation=1, *args, **kwargs):

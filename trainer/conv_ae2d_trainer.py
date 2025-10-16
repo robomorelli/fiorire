@@ -3,6 +3,13 @@ from utils.load_dataset import get_train_val_dataloader, get_metric_loader
 from trainer.utils import get_opt_metric, update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
 from omegaconf import ListConfig
 import numpy as np
+import pickle
+
+from dataset.sentinel import TimeSeriesDataset
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, Dataset
+from utils.load_dataset import get_transform
+from sklearn.preprocessing import StandardScaler, RobustScaler
 
 from config import *
 from models.utils.losses import *
@@ -19,13 +26,40 @@ class trainCONVAE2D(tune.Trainable):
 
         # Load data
         # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
-        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
-            self.cfg, filter_anomalies=True)
+        #self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
+        #    self.cfg, filter_anomalies=True)
         # If the anomalous sequences are not present in the main dataset, the metrics_loader will be None. Try to load it from the path specified in the config file
-        self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader,
-                                                data_path=self.cfg.opt.metrics_dataset_path,
-                                                scale=True,
-                                                scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+        #self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader,
+        #                                        data_path=self.cfg.opt.metrics_dataset_path,
+        #                                        scale=True,
+        #                                        scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+
+        with open(self.cfg.dataset.data_path, "rb") as f:
+            data_loaded = pickle.load(f)
+
+        self.scaler = StandardScaler()
+        self.scaler_params = None
+
+        X_train, X_test = train_test_split(
+            data_loaded,
+            train_size=self.cfg.dataset.train_val_split,
+            shuffle=True,
+            random_state=1234
+        )
+
+        X_train = X_train.astype(np.float32)
+        X_test = X_test.astype(np.float32)
+
+        transform = get_transform(self.cfg)
+
+        train_ds = TimeSeriesDataset(X_train, transform=transform)
+        test_ds = TimeSeriesDataset(X_test, transform=transform)
+        self.trainloader = DataLoader(train_ds, batch_size=self.cfg.opt.batch_size, shuffle=True)
+        self.valloader = DataLoader(test_ds, batch_size=self.cfg.opt.batch_size, shuffle=False)
+        self.metrics_loader = None
+        self.cfg.dataset.n_features = X_train.shape[2]
+        self.cfg.dataset.seq_len = X_train.shape[1]
+
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (

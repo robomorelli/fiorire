@@ -183,7 +183,10 @@ def get_train_val_dataloader(cfg, filter_anomalies=True,
 
     # Optional alignment and flag trimming
     if align_data or detect_flag:
-        df = df.drop(columns=[c for c in df.columns if c.startswith("ANT47") or c.startswith("Frame")])
+        col_to_rem = [c for c in df.columns if c.startswith("ANT47") or c.startswith("Frame")]
+        if col_to_rem:
+            print(f"🔧 Preprocessing: removing {len(col_to_rem)} ANT47 columns")
+            df = df.drop(columns=[c for c in df.columns if c.startswith("ANT47") or c.startswith("Frame")])
         print("🔧 Preprocessing: align_data =", align_data, ", detect_flag =", detect_flag)
         # --- 1️⃣ Align columns if required ---
         if align_data:
