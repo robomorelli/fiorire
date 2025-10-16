@@ -60,7 +60,6 @@ class trainCONVAE2D(tune.Trainable):
         self.cfg.dataset.n_features = X_train.shape[2]
         self.cfg.dataset.seq_len = X_train.shape[1]
 
-
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (
             self.opt_metric_dict[k] for k in opt_metric_dict_keys
