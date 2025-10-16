@@ -35,7 +35,7 @@ dataset:
     "ACT41058(ASSEMBLY_T_BRF_Z)"]
   target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
-  dataset_subset: 120000
+  dataset_subset: null
   scaler: 'RobustScaler-0.05-0.95'  # other coiches {StandarcScaler: None}, None
   save_dataloaders: False
   forecast: False

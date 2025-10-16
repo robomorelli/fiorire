@@ -76,3 +76,26 @@ class Dataset_seq(Dataset):
             anomaly_labels = self.transform(anomaly_labels)
 
         return data.float(), target.float(), anomaly_labels.float()
+
+
+# Suppose your data is loaded as a NumPy array or torch tensor
+# data_cleaned.shape -> (75428, 16, 19)
+
+class TimeSeriesDataset(Dataset):
+    def __init__(self, data):
+        """
+        data: numpy array or torch tensor of shape (num_windows, seq_len, num_features)
+        """
+        if isinstance(data, np.ndarray):
+            self.data = torch.tensor(data, dtype=torch.float32)
+        else:
+            self.data = data.float()
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        # Returns a single sequence (seq_len, num_features)
+        return self.data[idx]
+
+
