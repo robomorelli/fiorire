@@ -47,7 +47,7 @@ def get_transform(cfg):
             transform = T.Compose([
                 T.ToTensor(),
                 Lambda(lambda x: x.permute((0, 2, 1))),
-            ])
+                Lambda(lambda x: x.squeeze(0))])
         else:
             transform = T.Compose([
                 T.ToTensor(),

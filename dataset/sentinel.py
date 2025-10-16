@@ -88,12 +88,7 @@ class TimeSeriesDataset(Dataset):
         """
 
         self.transform = transform
-
-        if isinstance(data, np.ndarray):
-            self.data = torch.tensor(data, dtype=torch.float32)
-        else:
-            self.data = data.float()
-
+        self.data = data
         self.seq_len = self.data.shape[1]
 
     def __len__(self):
@@ -107,11 +102,11 @@ class TimeSeriesDataset(Dataset):
         # Anomaly labels: shape (seq_len, 1)
         anomaly_labels = torch.full((self.seq_len, 1), float('nan'))
 
-        #if self.transform is not None:
-            #data = self.transform(data)
-            #target = self.transform(target)
-            #anomaly_labels = self.transform(anomaly_labels)
+        if self.transform is not None:
+            data = self.transform(data)
+            target = self.transform(target)
+            anomaly_labels = self.transform(anomaly_labels)
 
-        return data, target, anomaly_labels
+        return data.float(), target.float(), anomaly_labels.float()
 
 
