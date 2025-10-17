@@ -4,7 +4,7 @@ tune_config:
   model.base_filters: tune.choice([32])    # "inputs feats" option to set equal to number of features
   model.activation: tune.choice(['Relu'])
   model.kernel_size: tune.choice([5])
-  model.double_deconv: tune.choice([1])
+  model.double_deconv: tune.choice([0])
   model.compression_factor: tune.choice([1])
   model.halve_both: tune.choice([0])
   model.halve_time: tune.choice([1])
