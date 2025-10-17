@@ -34,33 +34,6 @@ class trainCONVAE2D(tune.Trainable):
                                                 data_path=self.cfg.opt.metrics_dataset_path,
                                                 scale=True,
                                                 scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
-        '''
-        with open(self.cfg.dataset.data_path, "rb") as f:
-            data_loaded = pickle.load(f)
-
-        self.scaler = StandardScaler()
-        self.scaler_params = None
-
-        X_train, X_test = train_test_split(
-            data_loaded,
-            train_size=self.cfg.dataset.train_val_split,
-            shuffle=True,
-            random_state=1234
-        )
-
-        X_train = X_train.astype(np.float32)
-        X_test = X_test.astype(np.float32)
-
-        transform = get_transform(self.cfg)
-
-        train_ds = TimeSeriesDataset(X_train, transform=transform)
-        test_ds = TimeSeriesDataset(X_test, transform=transform)
-        self.trainloader = DataLoader(train_ds, batch_size=self.cfg.opt.batch_size, shuffle=True)
-        self.valloader = DataLoader(test_ds, batch_size=self.cfg.opt.batch_size, shuffle=False)
-        self.metrics_loader = None
-        self.cfg.dataset.n_features = X_train.shape[2]
-        self.cfg.dataset.seq_len = X_train.shape[1]
-        '''
 
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)

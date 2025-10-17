@@ -123,63 +123,88 @@ def deserialize_scaler(scaler_params):
     else:
         raise ValueError(f"Cannot deserialize unknown scaler type: {scaler_type}")
 
-def create_train_val_df_indexes(cfg, df, return_anomalies=False, ano_col='is_anomaly', seed=42):
+def create_train_val_df_indexes(
+    cfg,
+    df,
+    return_anomalies=False,
+    ano_col="ia_anomaly",
+    seed=42,
+    min_chunk_size=None,
+    max_chunks=200,
+    tolerance=0.01,
+):
     """
-    Splits a DataFrame into training and validation sets using a chunk-based split strategy,
-    while identifying and separating anomalous windows if target columns indicate anomalies.
-
-    This function returns the **index positions** (not the actual data) of clean (non-anomalous)
-    sequences for both training and validation and, if required, the training dartaframe to fit the scaler.
-    These train val and anomalous indexes correspond to **all data points**
-    and can be used to generate sequence windows with a given step size inside a custom Dataset
-    or DataLoader.
-
-    Anomalous sequences are defined as any window of `seq_len` points that contains at least
-    one anomaly (i.e., one row where `is_anomaly == 1`). These anomalous window indexes can be
-    used separately for evaluation or excluded from training.
-
-    Returns:
-        train_normal_idxs (np.ndarray): Indexes of clean data in the training set.
-        val_normal_idxs (np.ndarray): Indexes of clean data in the validation set.
-        df_train_values_for_scaling (pd.DataFrame): Clean (non-anomalous) training data, useful for fitting the scaler.
-        Remove also ano target column if it exists.
-        anomalous_window_idxs (List[int]): Indexes of all windows in the dataset affected by anomalies.
-
-    Notes:
-        - `train_normal_idxs` and `val_normal_idxs` refer to **individual rows**, not sequence windows.
-          They are intended to be used with a sliding window generator that samples sequences from
-          the full data using a step size.
-        - `anomalous_window_idxs` covers all indices that fall within a sequence containing at least
-          one anomaly — i.e., these are *not* safe for training the model.
+    Split a dataframe into training/validation sets by chunk sampling,
+    ensuring the validation ratio is near the target and that each chunk
+    is at least `min_chunk_size` samples long.
     """
+
+    def valid_chunk_splits(total_len, val_ratio=0.2, max_chunks=100, min_chunk_size=None, tolerance=0.01):
+        """Return first valid chunk config that meets desired val_ratio and min_chunk_size."""
+        for num_chunks in range(1, max_chunks + 1):
+            chunk_size = total_len // num_chunks
+            if chunk_size < min_chunk_size:
+                continue  # skip too-small chunks
+
+            val_chunks = int(np.ceil(num_chunks * val_ratio))
+            actual_ratio = val_chunks / num_chunks
+
+            if abs(actual_ratio - val_ratio) <= tolerance:
+                return {
+                    "num_chunks": num_chunks,
+                    "val_chunks": val_chunks,
+                    "chunk_size": chunk_size,
+                    "actual_ratio": actual_ratio,
+                }
+        raise ValueError("No valid chunk configuration found — increase max_chunks or reduce min_chunk_size.")
+
+    # ---------------------------------------------------------------------
+    # Prepare configuration
     seq_len = cfg.dataset.seq_in_length
-    num_chunks = min(cfg.dataset.chunks_num, 3)
     val_ratio = 1 - cfg.dataset.train_val_split
     np.random.seed(seed)
     df = df.reset_index(drop=True)
+    total_len = len(df)
 
-    # Validation set chunk selection
+    min_chunk_size = cfg.dataset.seq_in_length*cfg.dataset.seq_in_length_into_chunk if min_chunk_size is None else min_chunk_size
+
+    # Find a valid chunking configuration
+    solution = valid_chunk_splits(
+        total_len,
+        val_ratio=val_ratio,
+        max_chunks=max_chunks,
+        min_chunk_size=min_chunk_size,
+        tolerance=tolerance,
+    )
+
+    num_chunks = solution["num_chunks"]
+    val_chunk_num = solution["val_chunks"]
+    chunk_size = solution["chunk_size"]
+
+    # ---------------------------------------------------------------------
+    # Randomly choose validation chunks
     chunks = np.arange(num_chunks)
-    chunk_size = len(df) // num_chunks
-    val_chunk_num = int(np.ceil(num_chunks * val_ratio))
     np.random.shuffle(chunks)
     val_chunk_idxs = chunks[:val_chunk_num]
 
     val_indexes = []
     for i in val_chunk_idxs:
         start = i * chunk_size
-        end = (i + 1) * chunk_size if i < num_chunks - 1 else len(df)
+        end = (i + 1) * chunk_size if i < num_chunks - 1 else total_len
         val_indexes.extend(range(start, end))
 
-    all_indexes = np.arange(len(df))
     val_indexes = np.array(val_indexes)
+    all_indexes = np.arange(total_len)
     train_indexes = np.setdiff1d(all_indexes, val_indexes, assume_unique=True)
 
+    # ---------------------------------------------------------------------
+    # If anomalies not needed, return here
     if not return_anomalies:
         df_train_values_for_scaling = df.iloc[train_indexes].reset_index(drop=True)
         return train_indexes, val_indexes, df_train_values_for_scaling, None
 
-    # Otherwise, also compute anomalous windows
+    # ---------------------------------------------------------------------
+    # Handle anomaly-based indexing
     full_anomalous_idx = df[df[ano_col] == 1].index.to_numpy()
 
     def get_anomaly_window_indexes(anomalous_idx, total_len):
@@ -194,21 +219,19 @@ def create_train_val_df_indexes(cfg, df, return_anomalies=False, ano_col='is_ano
     train_anomalous_indexes = np.intersect1d(full_anomalous_idx, train_indexes)
     val_anomalous_indexes = np.intersect1d(full_anomalous_idx, val_indexes)
 
-    # search for anomalous windows in the training and validation sets
-    train_anomalous_windows = get_anomaly_window_indexes(train_anomalous_indexes, len(df))
-    val_anomalous_windows = get_anomaly_window_indexes(val_anomalous_indexes, len(df))
+    train_anomalous_windows = get_anomaly_window_indexes(train_anomalous_indexes, total_len)
+    val_anomalous_windows = get_anomaly_window_indexes(val_anomalous_indexes, total_len)
 
-    # Get indexes of clean data in train and val sets
     train_normal_indexes = np.setdiff1d(train_indexes, list(train_anomalous_windows), assume_unique=True)
-    val_normal_indexes= np.setdiff1d(val_indexes, list(val_anomalous_windows), assume_unique=True)
+    val_normal_indexes = np.setdiff1d(val_indexes, list(val_anomalous_windows), assume_unique=True)
 
-    # Get anomalous window indexes for the full dataset
-    anomalous_window_indexes = list(get_anomaly_window_indexes(full_anomalous_idx, len(df)))
-    # Create DataFrame for training values to fit the scaler
+    anomalous_window_indexes = list(get_anomaly_window_indexes(full_anomalous_idx, total_len))
+
     scaling_cols = df.columns.difference([ano_col]) if ano_col in df.columns else df.columns
     df_train_values_for_scaling = df[scaling_cols].iloc[train_normal_indexes].reset_index(drop=True)
 
     return train_normal_indexes, val_normal_indexes, df_train_values_for_scaling, anomalous_window_indexes
+
 
 
 def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, transform=None, ano_col=None
