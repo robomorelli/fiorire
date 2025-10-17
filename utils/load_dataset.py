@@ -46,8 +46,7 @@ def get_transform(cfg):
         elif cfg.model.name == 'conv_ae2D':
             transform = T.Compose([
                 T.ToTensor(),
-                Lambda(lambda x: x.permute((0, 2, 1))),
-            ])
+                Lambda(lambda x: x.permute((0, 2, 1)))])
         else:
             transform = T.Compose([
                 T.ToTensor(),
@@ -58,7 +57,7 @@ def get_transform(cfg):
 
     return transform
 
-def load_dataframe(cfg):
+def load_dataframe(cfg, aux_cols=None):
     """
     Load a pandas DataFrame from CSV, TSV, Excel, Parquet, Pickle, or text-like files.
     Automatically detects file type and delimiter for text files. Validates expected columns if provided.
@@ -156,13 +155,17 @@ def load_dataframe(cfg):
     except Exception as e:
         raise ValueError(f"Failed to load file '{file_path}': {e}")
 
-
-def get_train_val_dataloader(cfg, filter_anomalies=True, **kwargs):
+def get_train_val_dataloader(cfg, filter_anomalies=True,
+                             **kwargs):
     """
-    Get the dataset.
-    :param cfg:  configuration file
-    :param transform: transform to be applied to the dataset
-    :return: dataset train, dataset test
+    Load and prepare train/validation dataloaders.
+
+    Args:
+        cfg: configuration object
+        filter_anomalies (bool): whether to filter anomalies
+        align_data (bool): if True, align all DataFrame columns to the same length
+        detect_flag (bool): if True, detect first change in flag column and trim data
+        **kwargs: other optional arguments
     """
     transform = get_transform(cfg)
 
@@ -170,32 +173,62 @@ def get_train_val_dataloader(cfg, filter_anomalies=True, **kwargs):
     if not cfg.dataset.seq_out_length:
         cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
 
-    # Load the dataframe from the specified path
-    print("Loading dataset from:", cfg.dataset.data_path)
+    print("📂 Loading dataset from:", cfg.dataset.data_path)
     df = load_dataframe(cfg)
-    #
 
-    # get train and validation (and eventually metrics (anomalous+normal) sampler)
-    # TO DO: the normal part of metric dataloader should be a subset of the validation set but the threshold shouls
-    # be defined from a separate normal sample (train?)
-    trainloader, valloader, metric_loader, scaler, scaler_params = get_scaled_train_val_dataloader(cfg, df,
-                                                                                                   seq_len=cfg.dataset.seq_in_length,
-                                                                                                   filter_anomalies=filter_anomalies,
-                                                                                                   transform=transform,
-                                                                                                   ano_col=cfg.dataset.is_anomaly_column)
+    flag_col = getattr(cfg.dataset, "flag_col", None)
+    align_data = getattr(cfg.dataset, "align_data", False)
+    detect_flag = getattr(cfg.dataset, "detect_flag", False)
+
+    # Optional alignment and flag trimming
+    if align_data or detect_flag:
+        col_to_rem = [c for c in df.columns if c.startswith("ANT47") or c.startswith("Frame")]
+        if col_to_rem:
+            print(f"🔧 Preprocessing: removing {len(col_to_rem)} ANT47 columns")
+            df = df.drop(columns=[c for c in df.columns if c.startswith("ANT47") or c.startswith("Frame")])
+        print("🔧 Preprocessing: align_data =", align_data, ", detect_flag =", detect_flag)
+        # --- 1️⃣ Align columns if required ---
+        if align_data:
+            series_dict = {col: df[col] for col in df.columns}
+            min_len = min(len(s) for s in series_dict.values())
+            aligned_data = {col: s.iloc[:min_len].reset_index(drop=True) for col, s in series_dict.items()}
+            df = pd.DataFrame(aligned_data)
+            print(f"✅ Data aligned to {min_len} samples")
+
+        # --- 2️⃣ Detect flag and trim if required ---
+        if detect_flag:
+            if flag_col and flag_col in df.columns:
+                print(f"⚙️ Detecting first change in flag column: '{flag_col}'")
+                changes = df[flag_col].diff().fillna(0)
+                change_idxs = changes[changes != 0].index
+                if len(change_idxs) > 0:
+                    first_change_idx = change_idxs[0]
+                    df = df.loc[first_change_idx:].reset_index(drop=True)
+                    print(f"✅ Trimmed dataset from first flag change at index {first_change_idx}")
+                else:
+                    print("⚠️ No flag change detected — dataset not trimmed.")
+            else:
+                print("⚠️ No valid flag column found in cfg.dataset.flag_column.")
+
+    # --- Continue with normal scaling & dataloader creation ---
+    trainloader, valloader, metric_loader, scaler, scaler_params = get_scaled_train_val_dataloader(
+        cfg, df,
+        seq_len=cfg.dataset.seq_in_length,
+        filter_anomalies=filter_anomalies,
+        transform=transform,
+        ano_col=cfg.dataset.is_anomaly_column
+    )
 
     n_features = len(cfg.dataset.feats)
-    cfg.dataset.n_features = n_features  # Needed to specify the input channel of the model
-    cfg.model.output_size = n_features if not cfg.dataset.target else len(
-        cfg.dataset.target)  # Needed to specify the output channel of the model
+    cfg.dataset.n_features = n_features
+    cfg.model.output_size = n_features if not cfg.dataset.target else len(cfg.dataset.target)
 
+    # Optionally save dataloaders
     if cfg.dataset.save_dataloaders:
-        torch.save(trainloader, os.path.join(root, 'dataloader/train_dataloader_{}_ft_{}_length.pth'.format(
-            n_features, cfg.dataset.seq_in_length)))
-        torch.save(valloader, os.path.join(root, 'dataloader/val_dataloader_{}_ft_{}_length.pth'.format(
-            n_features, cfg.dataset.seq_in_length)))
-        torch.save(valloader, os.path.join(root, 'dataloader/metric_dataloader_{}_ft_{}_length.pth'.format(
-            n_features, cfg.dataset.seq_in_length)))
+        root = getattr(cfg, "root", ".")
+        torch.save(trainloader, os.path.join(root, f'dataloader/train_dataloader_{n_features}_ft_{cfg.dataset.seq_in_length}_length.pth'))
+        torch.save(valloader, os.path.join(root, f'dataloader/val_dataloader_{n_features}_ft_{cfg.dataset.seq_in_length}_length.pth'))
+        torch.save(metric_loader, os.path.join(root, f'dataloader/metric_dataloader_{n_features}_ft_{cfg.dataset.seq_in_length}_length.pth'))
 
     return trainloader, valloader, metric_loader, scaler, scaler_params
 

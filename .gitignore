@@ -5,6 +5,7 @@ __pycache__/
 
 file_from_consortium
 
+info/
 data/
 dataloader/
 # C extensions

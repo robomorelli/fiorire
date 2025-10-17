@@ -88,93 +88,92 @@ class CustomLinear(nn.Module):
         return x
 
 
-def conv_block(in_f, out_f, kernel_size =3, padding = 1, dilation=1, activation=nn.ReLU(), batch_norm=True,
-               pool=True, pool_ks=2, pool_stride=2, pool_pad=0, *args, **kwargs):
+def conv_block(
+        in_f,
+        out_f,
+        kernel_size=3,
+        padding=1,
+        dilation=1,
+        activation=nn.ReLU(),
+        batch_norm=True,
+        pool=True,
+        pool_ks=2,
+        pool_stride=2,
+        pool_pad=0,
+        *args, **kwargs
+    ):
+    """
+    Conv2d block with optional BatchNorm, activation, and pooling.
+    Supports pool_ks, pool_stride, pool_pad as int or tuple (H, W).
+    """
+    # Ensure pool parameters are tuples
+    if isinstance(pool_ks, int):
+        pool_ks = (pool_ks, pool_ks)
+    if isinstance(pool_stride, int):
+        pool_stride = (pool_stride, pool_stride)
+    if isinstance(pool_pad, int):
+        pool_pad = (pool_pad, pool_pad)
+    if isinstance(padding, int):
+        padding = (padding, padding)
+
+    layers = [nn.Conv2d(
+        in_f, out_f,
+        kernel_size=kernel_size,
+        padding=padding,
+        dilation=dilation,
+        *args, **kwargs
+    )]
 
     if batch_norm:
-        if pool:
-            return nn.Sequential(
-                nn.Conv2d(in_f, out_f, kernel_size, padding=padding, dilation=dilation, *args, **kwargs),
-                nn.BatchNorm2d(out_f),
-                #nn.MaxPool2d(kernel_size=(1, pool_ks), stride=(1, pool_stride), padding=(0, pool_pad)),
-                nn.MaxPool2d(kernel_size=pool_ks, stride=pool_stride, padding=pool_pad),
-                activation)
-        else:
-            return nn.Sequential(
-                nn.Conv2d(in_f, out_f, kernel_size, padding=padding,  dilation=dilation, *args, **kwargs),
-                nn.BatchNorm2d(out_f),
-                activation)
-    else:
-        if pool:
-            return nn.Sequential(
-                nn.Conv2d(in_f, out_f, kernel_size, padding=padding,  dilation=dilation, *args, **kwargs),
-                #nn.MaxPool2d(kernel_size=(1, pool_ks), stride=(1, pool_stride), padding=(0, pool_pad)),
-                nn.MaxPool2d(kernel_size=pool_ks, stride=pool_stride, padding=pool_pad),
-                activation)
-        else:
-            return nn.Sequential(
-                    nn.Conv2d(in_f, out_f, kernel_size, padding=padding,  dilation=dilation, *args, **kwargs),
-                    activation)
+        layers.append(nn.BatchNorm2d(out_f))
 
-def deconv_block(in_f, out_f, kernel_size=2, stride=2, dilation=1, output_padding=0,
-                 activation=nn.ReLU(), batch_norm=True, *args, **kwargs):
+    if pool:
+        layers.append(nn.MaxPool2d(kernel_size=pool_ks,
+            stride=pool_stride,padding=pool_pad))
+
+    if activation:
+        layers.append(activation)
+
+    return nn.Sequential(*layers)
+
+
+def deconv_block(in_f, out_f, kernel_size=2, stride=2, dilation=1, output_padding=None,
+                 activation=nn.ReLU(), batch_norm=True, double_deconv=False,
+                 conv_kernel_size=3, conv_padding=0, conv_stride=1, conv_dilation=1, *args, **kwargs):
     """
+    ConvTranspose2d block with optional BatchNorm and activation.
+    Supports kernel_size, stride, output_padding as int or tuple (H, W)
     """
+    # Ensure kernel_size, stride, output_padding are tuples
+    if isinstance(kernel_size, int):
+        kernel_size = (kernel_size, kernel_size)
+    if isinstance(stride, int):
+        stride = (stride, stride)
+    if isinstance(output_padding, int):
+        output_padding = (output_padding, output_padding)
+    if output_padding is None:
+        output_padding = (0, 0)
+
+    layers = [nn.ConvTranspose2d(
+        in_f, out_f,
+        kernel_size=kernel_size,
+        stride=stride,
+        output_padding=output_padding,
+        dilation=dilation,
+        *args, **kwargs
+    )]
+
+    if double_deconv:
+        layers.append(nn.Conv2d(out_f, out_f, kernel_size=conv_kernel_size, stride=conv_stride,
+                                padding=conv_padding, dilation=conv_dilation,*args, **kwargs))
+
     if batch_norm:
-        if activation:
-            return nn.Sequential(
-                nn.ConvTranspose2d(
-                    in_f, out_f,
-                    #kernel_size=(1, kernel_size),   # solo tempo
-                    #stride=(1, stride),             # upsample solo tempo
-                    kernel_size=kernel_size,   # solo tempo
-                    stride=stride,             # upsample solo tempo
-                    output_padding=output_padding,
-                    dilation=dilation,
-                    *args, **kwargs
-                ),
-                nn.BatchNorm2d(out_f),
-                activation
-            )
-        else:
-            return nn.Sequential(
-                nn.ConvTranspose2d(
-                    in_f, out_f,
-                    #kernel_size=(1, kernel_size),   # solo tempo
-                    #stride=(1, stride),             # upsample solo tempo
-                    kernel_size=kernel_size,   # solo tempo
-                    stride=stride,             # upsample solo tempo
-                    output_padding=output_padding,
-                    *args, **kwargs
-                ),
-                nn.BatchNorm2d(out_f)
-            )
-    else:
-        if activation:
-            return nn.Sequential(
-                nn.ConvTranspose2d(
-                    in_f, out_f,
-                    #kernel_size=(1, kernel_size),   # solo tempo
-                    #stride=(1, stride),             # upsample solo tempo
-                    kernel_size=kernel_size,   # solo tempo
-                    stride=stride,             # upsample solo tempo
-                    output_padding=output_padding,
-                    *args, **kwargs
-                ),
-                activation
-            )
-        else:
-            return nn.Sequential(
-                nn.ConvTranspose2d(
-                    in_f, out_f,
-                    #kernel_size=(1, kernel_size),   # solo tempo
-                    #stride=(1, stride),             # upsample solo tempo
-                    kernel_size=kernel_size,   # solo tempo
-                    stride=stride,             # upsample solo tempo
-                    output_padding=output_padding,
-                    *args, **kwargs
-                )
-            )
+        layers.append(nn.BatchNorm2d(out_f))
+    if activation:
+        layers.append(activation)
+
+    return nn.Sequential(*layers)
+
 
 
 def deconv_block1D(in_f, out_f, kernel_size = 2, stride = 2, activation=nn.ReLU(), batch_norm=True, *args, **kwargs):

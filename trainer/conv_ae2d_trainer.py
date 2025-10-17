@@ -3,6 +3,13 @@ from utils.load_dataset import get_train_val_dataloader, get_metric_loader
 from trainer.utils import get_opt_metric, update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
 from omegaconf import ListConfig
 import numpy as np
+import pickle
+
+from dataset.sentinel import TimeSeriesDataset
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, Dataset
+from utils.load_dataset import get_transform
+from sklearn.preprocessing import StandardScaler, RobustScaler
 
 from config import *
 from models.utils.losses import *
@@ -17,6 +24,7 @@ class trainCONVAE2D(tune.Trainable):
         self.current_epoch = 0
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
 
+
         # Load data
         # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
         self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
@@ -26,6 +34,7 @@ class trainCONVAE2D(tune.Trainable):
                                                 data_path=self.cfg.opt.metrics_dataset_path,
                                                 scale=True,
                                                 scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (

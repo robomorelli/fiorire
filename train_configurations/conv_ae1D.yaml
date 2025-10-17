@@ -6,7 +6,7 @@ tune_config:
   model.kernel_size: tune.choice([7, 9])
   model.latent_dim: tune.choice([100, 160, 320])
   model.flattened: tune.choice([0])
-  model.increasing: tune.choice([0])
+  model.increasing: tune.choice([1])
   model.pool: tune.choice([1])
   model.stride: tune.choice([1])
   model.dilation: tune.choice([1])
@@ -17,15 +17,15 @@ tune_config:
   opt.lr_patience: tune.choice([5, 10])
   opt.es_patience: tune.choice([25, 35])
 
-  dataset.scaler: tune.choice(['RobustScaler-0.05-0.95', 'StandardScaler'])
-  dataset.seq_in_length: tune.choice([40])
-  dataset.perc_overlap: tune.choice([0, 0.3, 0.8])
+  dataset.scaler: tune.choice(['StandardScaler'])
+  dataset.seq_in_length: tune.choice([16])
+  dataset.perc_overlap: tune.choice([0.3, 0.8])
 
 # Dataset
 dataset:
   name: 'fiorire'
-  data_path: './data/fiorire_2/FIORIRE_TrainingSet_6h/Pkt_FIORIRE.xls'
-  chunks_num: 10
+  data_path: './data/fiorire_2/nominal_merged.csv'
+  seq_in_length_into_chunk: 1000    # number of chunks the dataset is divided into (cannot be less than 3); if null the dataset is not chunked
   seq_in_length: 16
   seq_out_length: null
   train_val_split: 0.8
@@ -44,7 +44,7 @@ dataset:
     #'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
   target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
-  dataset_subset: 120_00000
+  dataset_subset: null
   scaler: 'RobustScaler-0.05-0.95'  # other coiches {StandarcScaler: None}, None
   save_dataloaders: False
   forecast: False

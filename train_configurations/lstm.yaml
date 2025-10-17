@@ -19,8 +19,8 @@ tune_config:
 # Dataset
 dataset:
   name: 'fiorire'
-  data_path: './data/fiorire_2/FIORIRE_TrainingSet_6h/Pkt_FIORIRE.xls'
-  chunks_num: 2
+  data_path: './data/fiorire_2/nominal_merged.csv'
+  seq_in_length_into_chunk: 1000    # number of chunks the dataset is divided into (cannot be less than 3); if null the dataset is not chunked
   seq_in_length: 16
   seq_out_length: null
   train_val_split: 0.8
@@ -35,7 +35,7 @@ dataset:
     "ACT41058(ASSEMBLY_T_BRF_Z)"]
   target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
-  dataset_subset: 120000
+  dataset_subset: null
   scaler: 'RobustScaler-0.05-0.95'  # other coiches {StandarcScaler: None}, None
   save_dataloaders: False
   forecast: False

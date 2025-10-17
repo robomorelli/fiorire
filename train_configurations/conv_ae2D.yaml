@@ -1,32 +1,35 @@
 # Optimization
 tune_config:
-  model.n_layers: tune.choice([1, 2])
-  model.filter_num: tune.choice([110, 120])
-  model.activation: tune.choice(['Elu', 'Relu'])
-  model.kernel_size: tune.choice([5,])
-  model.latent_dim: tune.choice([2, 4, 10])
+  model.num_layers: tune.choice([1,2,3])
+  model.base_filters: tune.choice([16,32,64])    # "inputs feats" option to set equal to number of features
+  model.activation: tune.choice(['Relu'])
+  model.kernel_size: tune.choice([3,5])
+  model.double_deconv: tune.choice([0,1])
+  model.compression_factor: tune.choice([1, 2])
+  model.halve_both: tune.choice([0])
+  model.halve_time: tune.choice([1])
+  model.halve_features: tune.choice([0])
   model.flattened: tune.choice([1])
-  model.increasing: tune.choice([0])
+  model.increasing: tune.choice([1])
   model.pool: tune.choice([1])
   model.stride: tune.choice([1])
   model.dilation: tune.choice([1])
 
-  opt.lr: tune.choice([0.001])
-  opt.batch_size: tune.choice([100, 500])
+  opt.lr: tune.choice([0.0009, 0.0001])
+  opt.batch_size: tune.choice([500])
   opt.epochs: tune.choice([200])
   opt.lr_patience: tune.choice([5, 10])
   opt.es_patience: tune.choice([25, 35])
 
-  dataset.scaler: tune.choice(['RobustScaler-0.05-0.95', 'StandardScaler'])
+  dataset.scaler: tune.choice(['StandardScaler'])
   dataset.seq_in_length: tune.choice([16])
-  dataset.perc_overlap: tune.choice([0.7])
+  dataset.perc_overlap: tune.choice([0.2, 0.5])
 
 # Dataset
 dataset:
   name: 'fiorire'
   data_path: './data/fiorire_2/nominal_merged.csv'
-  chunks_num: 2
-  seq_in_length: 16
+  seq_in_length_into_chunk: 1000    # number of chunks the dataset is divided into (cannot be less than 3); if null the dataset is not chunked
   seq_out_length: null
   train_val_split: 0.8
   shuffle_train: True #shuffle the idx of the train
@@ -38,15 +41,12 @@ dataset:
     "ACT41044(UNIT_GIMB_VEL_3)", "ACT41052(ASSEMBLY_H_BRF_X)", "ACT41053(ASSEMBLY_H_BRF_Y)",
     "ACT41054(ASSEMBLY_H_BRF_Z)", "ACT41056(ASSEMBLY_T_BRF_X)", "ACT41057(ASSEMBLY_T_BRF_Y)",
     "ACT41058(ASSEMBLY_T_BRF_Z)"]
-
-    #['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
-    # 'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
-    #'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
-    #'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
+  flag_col: "ACT40082(PREPRO_CMG_ENABLE)"
+  align_data: 1
+  detect_flag: 1
   target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
-  dataset_subset: 120000
-  scaler: 'RobustScaler-0.05-0.95'  # other coiches {StandarcScaler: None}, None
+  dataset_subset: null
   save_dataloaders: False
   forecast: False
   is_anomaly_column: null   # name of the anomaly column; if None there are no anomalous sequences
@@ -54,7 +54,7 @@ dataset:
 # Model
 model:
   name: 'conv_ae2D'
-  aux_channels: 1   # 1 if the input is (batch, channels, height, width); height=seq_in_length, width=features; channels=1 mono-channels
+  aux_channels: 1   # 1 if the input is (batch, channels, height, width); height=features, width=seq_in_length; channels=1 mono-channels
 
 resources:
   gpu_trial: 1
