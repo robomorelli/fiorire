@@ -1,11 +1,11 @@
 # Optimization
 tune_config:
-  model.num_layers: tune.choice([2])
-  model.base_filters: tune.choice([32])    # "inputs feats" option to set equal to number of features
+  model.num_layers: tune.choice([1,2,3])
+  model.base_filters: tune.choice([16,32,64])    # "inputs feats" option to set equal to number of features
   model.activation: tune.choice(['Relu'])
-  model.kernel_size: tune.choice([5])
-  model.double_deconv: tune.choice([0])
-  model.compression_factor: tune.choice([1])
+  model.kernel_size: tune.choice([3,5])
+  model.double_deconv: tune.choice([0,1])
+  model.compression_factor: tune.choice([1, 2])
   model.halve_both: tune.choice([0])
   model.halve_time: tune.choice([1])
   model.halve_features: tune.choice([0])
@@ -15,7 +15,7 @@ tune_config:
   model.stride: tune.choice([1])
   model.dilation: tune.choice([1])
 
-  opt.lr: tune.choice([0.001])
+  opt.lr: tune.choice([0.0009, 0.0001])
   opt.batch_size: tune.choice([500])
   opt.epochs: tune.choice([200])
   opt.lr_patience: tune.choice([5, 10])
@@ -23,7 +23,7 @@ tune_config:
 
   dataset.scaler: tune.choice(['StandardScaler'])
   dataset.seq_in_length: tune.choice([16])
-  dataset.perc_overlap: tune.choice([0.2])
+  dataset.perc_overlap: tune.choice([0.2, 0.5])
 
 # Dataset
 dataset:

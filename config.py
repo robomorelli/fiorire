@@ -1,6 +1,5 @@
 import os
 
-from fastai.metrics import optim_metric
 from ray import tune
 import torch.nn as nn
 
