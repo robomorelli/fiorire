@@ -176,9 +176,6 @@ def deconv_block(in_f, out_f, kernel_size=2, stride=2, dilation=1, output_paddin
     return nn.Sequential(*layers)
 
 
-
-import torch.nn as nn
-
 def conv_block1D(
         in_f,
         out_f,

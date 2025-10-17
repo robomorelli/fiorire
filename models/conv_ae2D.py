@@ -183,8 +183,8 @@ class Decoder(nn.Module):
         for i in range(num_layers):
             weight_h = stride_h ** (num_layers - 1 - i)
             weight_w = stride_w ** (num_layers - 1 - i)
-            op_h = max(diff_h // weight_h, 0)
-            op_w = max(diff_w // weight_w, 0)
+            op_h = diff_h // weight_h
+            op_w = diff_w // weight_w
             ops.append((int(op_h), int(op_w)))
             diff_h = diff_h % weight_h
             diff_w = diff_w % weight_w

@@ -3,6 +3,7 @@ from collections import OrderedDict
 from models.utils.layers import conv_block1D, deconv_block1D, bottleneck1D
 import torch
 
+from config import activation_dict
 torch.manual_seed(0)
 
 class Encoder1D(nn.Module):
@@ -99,6 +100,7 @@ class Decoder1D(nn.Module):
     def __init__(self,
                  in_channels=1,
                  base_filters=32,
+                 kernel_size=2,
                  num_layers=2,
                  stride=2,
                  latent_dim=None,
@@ -116,6 +118,7 @@ class Decoder1D(nn.Module):
         super().__init__()
         self.in_channels = in_channels
         self.base_filters = base_filters
+        self.kernel_size = kernel_size
         self.num_layers = num_layers
         self.seq_length = seq_length
         self.seq_enc = seq_enc
@@ -149,11 +152,11 @@ class Decoder1D(nn.Module):
                 f'dec_lay_{i+1}',
                 deconv_block1D(
                     in_f, out_f,
-                    kernel_size=stride,
+                    kernel_size=self.kernel_size,
                     stride=stride,
                     activation=self.act,
-                    output_padding=output_padding[i],
                     double_deconv=self.double_deconv,
+                    output_padding=output_padding[i],
                     conv_kernel_size=self.conv_kernel_size,
                     conv_padding=self.conv_padding,
                     conv_stride=self.conv_stride,
@@ -168,14 +171,37 @@ class Decoder1D(nn.Module):
         self.decoder_out = nn.Conv1d(base_filters, in_channels, kernel_size=1)
         self._init_weights()
 
-    def _compute_output_padding(self, Lb, L_target, num_layers, stride):
-        diff = L_target - (Lb * (stride ** num_layers))
-        ops = []
-        for i in range(num_layers):
-            weight = stride ** (num_layers - 1 - i)
-            op = max(diff // weight, 0)
-            ops.append(int(op))
-            diff = diff % weight
+    def _compute_output_padding(self, Lb, L_target, num_layers, stride, kernel_size=2, padding=0, dilation=1):
+        """
+        Compute per-layer output_padding for ConvTranspose1d so that
+        the final output length matches L_target.
+
+        Lb: encoded sequence length (from encoder)
+        L_target: original input sequence length
+        num_layers: number of decoder layers
+        stride, kernel_size, padding, dilation: ConvTranspose1d parameters
+        """
+
+        # Compute lengths forward without output_padding
+        lengths = [Lb]
+        for _ in range(num_layers):
+            L_in = lengths[-1]
+            L_out = (L_in - 1) * stride - 2 * padding + dilation * (kernel_size - 1) + 1
+            lengths.append(L_out)
+
+        diff = L_target - lengths[-1]
+
+        # Distribute output_padding from the last layer backwards
+        ops = [0] * num_layers
+        for i in reversed(range(num_layers)):
+            if diff <= 0:
+                break
+            # Output padding can't exceed stride - 1
+            op = min(diff, stride - 1)
+            ops[i] = op
+            # Each output padding at layer i increases output length by op * (stride ** i)
+            diff -= op * (stride ** (num_layers - 1 - i))
+
         return ops
 
     def _init_weights(self):
@@ -209,7 +235,7 @@ class CONV_AE1D(nn.Module):
         self.base_filters = model_cfg.base_filters
         self.double_deconv = model_cfg.double_deconv
         self.num_layers = model_cfg.num_layers
-        self.act = model_cfg.activation
+        self.act = activation_dict[model_cfg.activation]
         self.stride = model_cfg.stride
         self.pool = model_cfg.pool
         self.increasing = model_cfg.increasing
@@ -217,12 +243,17 @@ class CONV_AE1D(nn.Module):
         self.flattened = model_cfg.flattened
         self.compression_factor = model_cfg.compression_factor
         self.seq_length = cfg.dataset.seq_in_length
+        self.pool_ks = 2
+        self.pool_stride = 2
+
+        self.padding = (self.kernel_size - 1) // 2  # automatic "same" padding
 
         # Encoder
         self.encoder = Encoder1D(
             in_channels=self.in_channels,
             base_filters=self.base_filters,
             kernel_size=self.kernel_size,
+            padding=self.padding,
             num_layers=self.num_layers,
             seq_length=self.seq_length,
             activation=self.act,
@@ -238,14 +269,17 @@ class CONV_AE1D(nn.Module):
             in_channels=self.in_channels,
             base_filters=self.base_filters,
             num_layers=self.num_layers,
-            stride=self.stride,
+            kernel_size=self.pool_ks,
+            stride=self.pool_stride,
             latent_dim=self.latent_dim,
             flattened_size=self.flattened_size,
             seq_length=self.seq_length,
             seq_enc=self.encoder.seq_enc,
             activation=self.act,
             flattened=self.flattened,
-            bottleneck_out_channels=self.encoder.bottleneck_out_channels
+            double_deconv=self.double_deconv, conv_padding=self.padding,
+            conv_kernel_size=self.kernel_size, conv_stride=self.stride, conv_dilation=self.dilation,
+            bottleneck_out_channels=self.encoder.bottleneck_out_channels,
         )
 
     def forward(self, x):
