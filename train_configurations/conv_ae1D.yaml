@@ -1,11 +1,12 @@
 # Optimization
 tune_config:
-  model.n_layers: tune.choice([1, 2])
-  model.filter_num: tune.choice([110, 120])
+  model.num_layers: tune.choice([1,2,3])
+  model.base_filters: tune.choice([16,32,64])    # "inputs feats" option to set equal to number of features
   model.activation: tune.choice(['Elu', 'Relu'])
   model.kernel_size: tune.choice([7, 9])
-  model.latent_dim: tune.choice([100, 160, 320])
-  model.flattened: tune.choice([0])
+  model.double_deconv: tune.choice([0,1])
+  model.flattened: tune.choice([0])       # If true, compression factor dim became effective
+  model.compression_factor: tune.choice([1, 2])
   model.increasing: tune.choice([1])
   model.pool: tune.choice([1])
   model.stride: tune.choice([1])

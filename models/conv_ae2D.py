@@ -1,7 +1,7 @@
 import torch.nn as nn
 import torch
 from config import activation_dict
-from models.utils.layers import conv_block, deconv_block
+from models.utils.layers import conv_block, deconv_block, bottleneck2D
 from typing import Union, Tuple
 import math
 from collections import OrderedDict
@@ -53,11 +53,7 @@ class Encoder(nn.Module):
 
         # ✅ Add bottleneck: 1×1 conv doubling the channels
         self.bottleneck_out_channels = in_f * 2  # <--- store output filter count
-        self.bottleneck = nn.Sequential(OrderedDict([
-            ("bottleneck_conv", nn.Conv2d(in_f, self.bottleneck_out_channels, kernel_size=1)),
-            ("bottleneck_bn", nn.BatchNorm2d(self.bottleneck_out_channels)),
-            ("bottleneck_act", self.act)
-        ]))
+        self.bottleneck = bottleneck2D(in_f, self.bottleneck_out_channels, activation=self.act, batch_norm=True)
 
         # compute flattened size *after* bottleneck
         self.flattened_size, self.h_enc, self.w_enc = self._get_final_flattened_size()

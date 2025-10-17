@@ -2,6 +2,7 @@ from torch import nn
 import torch
 import torch.nn.functional as F
 import math
+from collections import OrderedDict
 
 clip_x_to0 = 1e-4
 
@@ -176,53 +177,133 @@ def deconv_block(in_f, out_f, kernel_size=2, stride=2, dilation=1, output_paddin
 
 
 
-def deconv_block1D(in_f, out_f, kernel_size = 2, stride = 2, activation=nn.ReLU(), batch_norm=True, *args, **kwargs):
+import torch.nn as nn
+
+def conv_block1D(
+        in_f,
+        out_f,
+        kernel_size=3,
+        padding=1,
+        dilation=1,
+        activation=nn.ReLU(),
+        batch_norm=True,
+        pool=True,
+        pool_ks=2,
+        pool_stride=2,
+        pool_pad=0,
+        *args, **kwargs
+    ):
+    """
+    Conv1d block mirroring conv_block (2D version) for consistency.
+    """
+    # Ensure parameters are ints
+    if isinstance(pool_ks, (tuple, list)):
+        pool_ks = pool_ks[0]
+    if isinstance(pool_stride, (tuple, list)):
+        pool_stride = pool_stride[0]
+    if isinstance(pool_pad, (tuple, list)):
+        pool_pad = pool_pad[0]
+    if isinstance(padding, (tuple, list)):
+        padding = padding[0]
+
+    layers = [nn.Conv1d(
+        in_f, out_f,
+        kernel_size=kernel_size,
+        padding=padding,
+        dilation=dilation,
+        *args, **kwargs
+    )]
 
     if batch_norm:
-        if activation:
-            return nn.Sequential(
-                    nn.ConvTranspose1d(in_f, out_f, kernel_size, stride, *args, **kwargs),
-                    nn.BatchNorm1d(out_f),
-                    activation)
-        else:
-            return nn.Sequential(
-                    nn.ConvTranspose1d(in_f, out_f, kernel_size, stride, *args, **kwargs),
-                    nn.BatchNorm1d(out_f))
-    else:
-        if activation:
-            return nn.Sequential(
-                    nn.ConvTranspose1d(in_f, out_f, kernel_size, stride, *args, **kwargs),
-                    activation)
-        else:
-            return nn.Sequential(
-                    nn.ConvTranspose1d(in_f, out_f, kernel_size, stride, *args, **kwargs))
+        layers.append(nn.BatchNorm1d(out_f))
 
-def conv_block1D(in_f, out_f, kernel_size =3, padding = 1, stride=1, activation=nn.ReLU(), batch_norm=True,
-               pool=True, pool_ks=2, pool_stride=2, pool_pad=0, *args, **kwargs):
+    if pool:
+        layers.append(nn.MaxPool1d(kernel_size=pool_ks, stride=pool_stride, padding=pool_pad))
+
+    if activation:
+        layers.append(activation)
+
+    return nn.Sequential(*layers)
+
+
+def deconv_block1D(
+        in_f,
+        out_f,
+        kernel_size=2,
+        stride=2,
+        dilation=1,
+        output_padding=None,
+        activation=nn.ReLU(),
+        batch_norm=True,
+        double_deconv=False,
+        conv_kernel_size=3,
+        conv_padding=0,
+        conv_stride=1,
+        conv_dilation=1,
+        *args, **kwargs
+    ):
+    """
+    ConvTranspose1d block mirroring deconv_block (2D version).
+    """
+    if isinstance(kernel_size, (tuple, list)):
+        kernel_size = kernel_size[0]
+    if isinstance(stride, (tuple, list)):
+        stride = stride[0]
+    if isinstance(output_padding, (tuple, list)):
+        output_padding = output_padding[0]
+    if output_padding is None:
+        output_padding = 0
+
+    layers = [nn.ConvTranspose1d(
+        in_f, out_f,
+        kernel_size=kernel_size,
+        stride=stride,
+        output_padding=output_padding,
+        dilation=dilation,
+        *args, **kwargs
+    )]
+
+    if double_deconv:
+        layers.append(nn.Conv1d(out_f, out_f,
+                                kernel_size=conv_kernel_size,
+                                stride=conv_stride,
+                                padding=conv_padding,
+                                dilation=conv_dilation,
+                                *args, **kwargs))
 
     if batch_norm:
-        if pool:
-            return nn.Sequential(
-                nn.Conv1d(in_f, out_f, kernel_size, padding=padding, stride=stride, *args, **kwargs),
-                nn.BatchNorm1d(out_f),
-                nn.MaxPool1d(pool_ks, pool_stride, pool_pad),
-                activation)
-        else:
-            return nn.Sequential(
-                nn.Conv1d(in_f, out_f, kernel_size, padding=padding, stride=stride, *args, **kwargs),
-                nn.BatchNorm1d(out_f),
-                activation)
-    else:
-        if pool:
-            return nn.Sequential(
-                nn.Conv1d(in_f, out_f, kernel_size, padding=padding, stride=stride, *args, **kwargs),
-                nn.BatchNorm1d(out_f),
-                nn.MaxPool1d(pool_ks, pool_stride, pool_pad),
-                activation)
-        else:
-            return nn.Sequential(
-                    nn.Conv1d(in_f, out_f, kernel_size, padding=padding, stride=stride, *args, **kwargs),
-                    activation)
+        layers.append(nn.BatchNorm1d(out_f))
+    if activation:
+        layers.append(activation)
+
+    return nn.Sequential(*layers)
+
+
+
+def bottleneck1D(in_channels, out_channels, activation=nn.ReLU(), batch_norm=True):
+    """
+    Crea un bottleneck 1D con conv 1x1, optional BatchNorm e attivazione.
+    """
+    layers = OrderedDict()
+    layers["bottleneck_conv"] = nn.Conv1d(in_channels, out_channels, kernel_size=1)
+    if batch_norm:
+        layers["bottleneck_bn"] = nn.BatchNorm1d(out_channels)
+    if activation:
+        layers["bottleneck_act"] = activation
+    return nn.Sequential(layers)
+
+
+def bottleneck2D(in_channels, out_channels, activation=nn.ReLU(), batch_norm=True):
+    """
+    Crea un bottleneck 2D con conv 1x1, optional BatchNorm e attivazione.
+    """
+    layers = OrderedDict()
+    layers["bottleneck_conv"] = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+    if batch_norm:
+        layers["bottleneck_bn"] = nn.BatchNorm2d(out_channels)
+    if activation:
+        layers["bottleneck_act"] = activation
+    return nn.Sequential(layers)
 
 
 class EarlyStopping():
