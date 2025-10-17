@@ -134,29 +134,56 @@ def create_train_val_df_indexes(
     tolerance=0.01,
 ):
     """
-    Split a dataframe into training/validation sets by chunk sampling,
-    ensuring the validation ratio is near the target and that each chunk
-    is at least `min_chunk_size` samples long.
-    """
+     Split a dataframe into training/validation sets by chunk sampling,
+     ensuring the validation ratio is near the target and that each chunk
+     is at least `min_chunk_size` samples long.
+     """
 
-    def valid_chunk_splits(total_len, val_ratio=0.2, max_chunks=100, min_chunk_size=None, tolerance=0.01):
-        """Return first valid chunk config that meets desired val_ratio and min_chunk_size."""
+    def valid_chunk_splits(
+            total_len,
+            val_ratio=0.2,
+            max_chunks=100,
+            min_chunk_size=None,
+            tolerance=0.01,
+    ):
+        """
+        Trova la configurazione di chunking che:
+        - rispetta la dimensione minima del chunk
+        - produce un rapporto di validation vicino al target entro la tolleranza
+        - massimizza il numero di chunk (validation più sparsa)
+        """
+
+        best_solution = None
+
         for num_chunks in range(1, max_chunks + 1):
             chunk_size = total_len // num_chunks
-            if chunk_size < min_chunk_size:
-                continue  # skip too-small chunks
+            if min_chunk_size and chunk_size < min_chunk_size:
+                continue
 
             val_chunks = int(np.ceil(num_chunks * val_ratio))
             actual_ratio = val_chunks / num_chunks
 
             if abs(actual_ratio - val_ratio) <= tolerance:
-                return {
+                candidate = {
                     "num_chunks": num_chunks,
                     "val_chunks": val_chunks,
                     "chunk_size": chunk_size,
                     "actual_ratio": actual_ratio,
                 }
-        raise ValueError("No valid chunk configuration found — increase max_chunks or reduce min_chunk_size.")
+
+                # Mantieni la soluzione con il numero massimo di chunk validi
+                if (
+                        best_solution is None
+                        or candidate["num_chunks"] > best_solution["num_chunks"]
+                ):
+                    best_solution = candidate
+
+        if best_solution is None:
+            raise ValueError(
+                "Nessuna configurazione valida trovata — aumenta max_chunks o riduci min_chunk_size/tolerance."
+            )
+
+        return best_solution
 
     # ---------------------------------------------------------------------
     # Prepare configuration
