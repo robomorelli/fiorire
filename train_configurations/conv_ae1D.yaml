@@ -25,24 +25,25 @@ tune_config:
 # Dataset
 dataset:
   name: 'fiorire'
-  data_path: './data/fiorire_2/nominal_merged.csv'
+  data_path: './data/fiorire_1/all_2016-2018_clean_4s.pkl'    #'./data/fiorire_2/nominal_merged.csv'
   seq_in_length_into_chunk: 2000    # number of chunks the dataset is divided into (cannot be less than 3); if null the dataset is not chunked
   seq_in_length: 16
   seq_out_length: null
   train_val_split: 0.8
   shuffle_train: True #shuffle the idx of the train
-  feats: [
-    "ACT40001(PREPRO_CMG_LEVEL)", "ACT40101(MODEMNG_CMG_TORQUE_REQ_X)", "ACT40102(MODEMNG_CMG_TORQUE_REQ_Y)",
-    "ACT40103(MODEMNG_CMG_TORQUE_REQ_Z)", "ACT41027(UNIT_FW_VEL_1)", "ACT41028(UNIT_FW_VEL_2)",
-    "ACT41029(UNIT_FW_VEL_3)", "ACT41037(UNIT_GIMB_POS_1)", "ACT41038(UNIT_GIMB_POS_2)",
-    "ACT41039(UNIT_GIMB_POS_3)", "ACT41042(UNIT_GIMB_VEL_1)", "ACT41043(UNIT_GIMB_VEL_2)",
-    "ACT41044(UNIT_GIMB_VEL_3)", "ACT41052(ASSEMBLY_H_BRF_X)", "ACT41053(ASSEMBLY_H_BRF_Y)",
-    "ACT41054(ASSEMBLY_H_BRF_Z)", "ACT41056(ASSEMBLY_T_BRF_X)", "ACT41057(ASSEMBLY_T_BRF_Y)",
-    "ACT41058(ASSEMBLY_T_BRF_Z)"]
-    #['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
-    # 'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
-    #'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
-    #'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
+  feats:
+  #[
+  #  "ACT40001(PREPRO_CMG_LEVEL)", "ACT40101(MODEMNG_CMG_TORQUE_REQ_X)", "ACT40102(MODEMNG_CMG_TORQUE_REQ_Y)",
+  #  "ACT40103(MODEMNG_CMG_TORQUE_REQ_Z)", "ACT41027(UNIT_FW_VEL_1)", "ACT41028(UNIT_FW_VEL_2)",
+  #  "ACT41029(UNIT_FW_VEL_3)", "ACT41037(UNIT_GIMB_POS_1)", "ACT41038(UNIT_GIMB_POS_2)",
+  #  "ACT41039(UNIT_GIMB_POS_3)", "ACT41042(UNIT_GIMB_VEL_1)", "ACT41043(UNIT_GIMB_VEL_2)",
+  #  "ACT41044(UNIT_GIMB_VEL_3)", "ACT41052(ASSEMBLY_H_BRF_X)", "ACT41053(ASSEMBLY_H_BRF_Y)",
+  #  "ACT41054(ASSEMBLY_H_BRF_Z)", "ACT41056(ASSEMBLY_T_BRF_X)", "ACT41057(ASSEMBLY_T_BRF_Y)",
+  #  "ACT41058(ASSEMBLY_T_BRF_Z)"]
+    ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
+     'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
+    'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
+    'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
   target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
   dataset_subset: null
