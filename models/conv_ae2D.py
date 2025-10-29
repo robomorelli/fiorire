@@ -21,6 +21,7 @@ class Encoder(nn.Module):
         self.in_channels = in_channels
         self.base_filters = base_filters
         self.kernel_size = kernel_size
+        self.dilation = dilation
         self.num_layers = num_layers
         self.padding = padding
         self.pool_ks = pool_ks
@@ -31,6 +32,8 @@ class Encoder(nn.Module):
         self.act = activation
         self.flattened = flattened
 
+
+        out_f = None
         encoder_layers = []
         in_f = self.in_channels
         for i in range(self.num_layers):
@@ -40,7 +43,7 @@ class Encoder(nn.Module):
                 conv_block(
                     in_f, out_f,
                     kernel_size=self.kernel_size,
-                    dilation=dilation,
+                    dilation=self.dilation,
                     pool_ks=self.pool_ks,
                     pool_stride=self.pool_stride,
                     activation=self.act,
@@ -52,16 +55,16 @@ class Encoder(nn.Module):
         self.encoder = nn.Sequential(OrderedDict(encoder_layers))
 
         # ✅ Add bottleneck: 1×1 conv doubling the channels
-        self.bottleneck_out_channels = in_f * 2  # <--- store output filter count
-        self.bottleneck = bottleneck2D(in_f, self.bottleneck_out_channels, activation=self.act, batch_norm=True)
-
+        #self.bottleneck_out_channels = in_f * 2  # <--- store output filter count
+        #self.bottleneck = bottleneck2D(in_f, self.bottleneck_out_channels, activation=self.act, batch_norm=True)
         # compute flattened size *after* bottleneck
+        self.last_layers_channels = out_f * 2
+        self.bottleneck_conv = nn.Conv2d(in_f, self.last_layers_channels, kernel_size=kernel_size, padding=padding, dilation=dilation)
         self.flattened_size, self.h_enc, self.w_enc = self._get_final_flattened_size()
         self.latent_dim = int(self.flattened_size // self.compression_factor)
 
-        if self.flattened:
-            self.flatten = nn.Flatten()
-            self.encoder_layer = nn.Linear(self.flattened_size, self.latent_dim)
+        self.bottleneck = bottleneck2D(self.bottleneck_conv,
+                                       flattened=self.flattened, flattened_size= self.flattened_size, latent_dim=self.latent_dim, activation=self.act)
 
         self.init_kaiming_normal()
 
@@ -78,40 +81,37 @@ class Encoder(nn.Module):
         with torch.no_grad():
             x = torch.zeros((1, self.in_channels, self.h, self.w))
             x = self.encoder(x)
-            x = self.bottleneck(x)  # ✅ include bottleneck in size computation
+            x = self.bottleneck_conv(x)
+ # ✅ include bottleneck in size computation
             _, c, h, w = x.size()
         return c * w * h, h, w
 
     def forward(self, x):
         enc = self.encoder(x)
         enc = self.bottleneck(enc)  # ✅ pass through bottleneck
-        if self.flattened:
-            enc = self.flatten(enc)
-            enc = self.encoder_layer(enc)
+
         return enc
 
 
 class Decoder(nn.Module):
-    def __init__(self, in_channels=1, base_filters=32, kernel_size: Union[int, Tuple[int, int]] = 2, num_layers=2,
+    def __init__(self, in_channels=1, first_deconv_channels = None, base_filters=32, kernel_size: Union[int, Tuple[int, int]] = 2, num_layers=2,
                  stride: Union[int, Tuple[int, int]] = 2,
                  latent_dim=None, flattened_size=None,
                  img_heigth=16, img_width=16, h_enc=2, w_enc=2, activation=nn.ReLU(),
                  flattened=True, double_deconv=False, conv_padding: Union[int, Tuple[int, int]] = 0, conv_kernel_size=3,
-                 conv_stride=1, conv_dilation=1,
-                 bottleneck_out_channels=None):
+                 conv_stride=1, conv_dilation=1, batch_norm=True):
         super(Decoder, self).__init__()
 
         self.in_channels = in_channels
+        self.first_deconv_channels = first_deconv_channels
         self.kernel_size = kernel_size
         self.base_filters = base_filters
         self.num_layers = num_layers
-        self.flattened_size = flattened_size
         self.h = img_heigth
         self.w = img_width
         self.h_enc = h_enc
         self.w_enc = w_enc
         self.act = activation
-        self.flattened = flattened
         self.stride = stride
         self.latent_dim = latent_dim
         self.conv_stride = conv_stride
@@ -119,35 +119,49 @@ class Decoder(nn.Module):
         self.conv_kernel_size = conv_kernel_size
         self.conv_padding = conv_padding
         self.double_deconv = double_deconv
-
-        if bottleneck_out_channels is None:
-            raise ValueError("You must provide bottleneck_out_channels from the encoder.")
-        self.bottleneck_out_channels = bottleneck_out_channels
-
-        # Linear reshape if latent vector
-        if self.flattened:
-            self.reshape = nn.Linear(self.latent_dim, self.flattened_size)
+        self.flattened = flattened
+        self.flattened_size = flattened_size
+        self.batch_norm = batch_norm
 
         # Compute output paddings for deconv
         output_paddings = self._compute_output_padding(
             Lb=[self.h_enc, self.w_enc], L_target=[self.h, self.w],
-            num_layers=self.num_layers, stride=self.stride
-        )
+            num_layers=self.num_layers, stride=self.stride)
 
         # Build decoder layers
         decoder_layers = []
-        in_f = self.bottleneck_out_channels  # start from bottleneck channels
-        out_f = in_f // 2  # halve each step
+        in_f = self.first_deconv_channels  # start from bottleneck channels
+        ''' 
+        if self.flattened:
+            decoder_layers.append(( f'reshape_dec_lay',  reshape2D(flattened=self.flattened, latent_dim=self.latent_dim,
+                                     flattened_size=self.flattened_size,
+                                     first_deconv_channels=self.first_deconv_channels, h_enc=self.h_enc,
+                                     w_enc=self.w_enc,
+                                     conv_kernel_size=self.conv_kernel_size, conv_stride=self.conv_stride,
+                                     conv_padding=self.conv_padding,
+                                     conv_dilation=self.conv_dilation,
+                                     activation=self.act, batch_norm=True)))
+        '''
 
         for i in range(self.num_layers):
-            # Last layer before reconstruction
+
             if i == self.num_layers - 1:
                 out_f = self.base_filters
+            else:
+                out_f = in_f // 2
+
+            reshape = (i == 0)
+
             decoder_layers.append((
                 f'dec_lay_{i+1}',
                 deconv_block(
                     in_f=in_f,
-                    out_f=out_f,
+                    out_f=out_f, # General rule: halve the number of filters at each layer
+
+                    flattened=flattened, latent_dim=latent_dim, flattened_size=flattened_size,
+                    first_deconv_channels=first_deconv_channels,
+                    h_enc=h_enc, w_enc=w_enc,    # For the reshape layer if reshape=True
+
                     kernel_size=self.kernel_size,
                     stride=self.stride,
                     activation=self.act,
@@ -156,12 +170,11 @@ class Decoder(nn.Module):
                     conv_kernel_size=self.conv_kernel_size,
                     conv_padding=self.conv_padding,
                     conv_stride=self.conv_stride,
-                    conv_dilation=self.conv_dilation
+                    conv_dilation=self.conv_dilation,
+                    reshape = reshape
                 )
             ))
             in_f = out_f
-            if i != self.num_layers - 1:
-                out_f = max(in_f // 2, self.base_filters)  # keep halving until base
 
         self.decoder = nn.Sequential(OrderedDict(decoder_layers))
 
@@ -200,11 +213,8 @@ class Decoder(nn.Module):
                 m.bias.data.zero_()
 
     def forward(self, x):
-        if self.flattened:
-            x = self.reshape(x)
-            x = x.view((-1, self.bottleneck_out_channels, self.h_enc, self.w_enc))
-        dec = self.decoder(x)
-        out = self.decoder_out(dec)
+        out = self.decoder(x)
+        out = self.decoder_out(out)
         return out
 
 # define the NN architecture
@@ -287,14 +297,14 @@ class CONV_AE2D(nn.Module):
                                dilation=self.dilation)
         self.flattened_size = self.encoder.flattened_size
         self.latent_dim = int(self.encoder.flattened_size // self.compression_factor)
-        self.decoder = Decoder(self.in_channels, base_filters= self.base_filters, kernel_size=self.pool_ks, num_layers=self.num_layers,
+        self.decoder = Decoder(in_channels=self.in_channels, first_deconv_channels=self.encoder.last_layers_channels,
+                               base_filters= self.base_filters, kernel_size=self.pool_ks, num_layers=self.num_layers,
                                stride=self.pool_stride,
                                latent_dim=self.latent_dim, flattened_size=self.flattened_size,
                                img_heigth=self.h, img_width=self.w, h_enc=self.encoder.h_enc, w_enc=self.encoder.w_enc,
                                activation=self.act, flattened=self.flattened,
                                double_deconv=self.double_deconv, conv_padding=self.padding,
-                               conv_kernel_size=self.kernel_size, conv_stride=self.stride, conv_dilation=self.dilation,
-                               bottleneck_out_channels = self.encoder.bottleneck_out_channels)
+                               conv_kernel_size=self.kernel_size, conv_stride=self.stride, conv_dilation=self.dilation)
 
 
     def _compute_same_padding(self, in_size, kernel_size, stride=1, dilation=1):

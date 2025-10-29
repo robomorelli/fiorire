@@ -1,3 +1,5 @@
+from typing import Union, Tuple
+
 from torch import nn
 import torch
 import torch.nn.functional as F
@@ -88,92 +90,6 @@ class CustomLinear(nn.Module):
         x = F.linear(x, self.weight, self.bias)
         return x
 
-
-def conv_block(
-        in_f,
-        out_f,
-        kernel_size=3,
-        padding=1,
-        dilation=1,
-        activation=nn.ReLU(),
-        batch_norm=True,
-        pool=True,
-        pool_ks=2,
-        pool_stride=2,
-        pool_pad=0,
-        *args, **kwargs
-    ):
-    """
-    Conv2d block with optional BatchNorm, activation, and pooling.
-    Supports pool_ks, pool_stride, pool_pad as int or tuple (H, W).
-    """
-    # Ensure pool parameters are tuples
-    if isinstance(pool_ks, int):
-        pool_ks = (pool_ks, pool_ks)
-    if isinstance(pool_stride, int):
-        pool_stride = (pool_stride, pool_stride)
-    if isinstance(pool_pad, int):
-        pool_pad = (pool_pad, pool_pad)
-    if isinstance(padding, int):
-        padding = (padding, padding)
-
-    layers = [nn.Conv2d(
-        in_f, out_f,
-        kernel_size=kernel_size,
-        padding=padding,
-        dilation=dilation,
-        *args, **kwargs
-    )]
-
-    if batch_norm:
-        layers.append(nn.BatchNorm2d(out_f))
-
-    if pool:
-        layers.append(nn.MaxPool2d(kernel_size=pool_ks,
-            stride=pool_stride,padding=pool_pad))
-
-    if activation:
-        layers.append(activation)
-
-    return nn.Sequential(*layers)
-
-
-def deconv_block(in_f, out_f, kernel_size=2, stride=2, dilation=1, output_padding=None,
-                 activation=nn.ReLU(), batch_norm=True, double_deconv=False,
-                 conv_kernel_size=3, conv_padding=0, conv_stride=1, conv_dilation=1, *args, **kwargs):
-    """
-    ConvTranspose2d block with optional BatchNorm and activation.
-    Supports kernel_size, stride, output_padding as int or tuple (H, W)
-    """
-    # Ensure kernel_size, stride, output_padding are tuples
-    if isinstance(kernel_size, int):
-        kernel_size = (kernel_size, kernel_size)
-    if isinstance(stride, int):
-        stride = (stride, stride)
-    if isinstance(output_padding, int):
-        output_padding = (output_padding, output_padding)
-    if output_padding is None:
-        output_padding = (0, 0)
-
-    layers = [nn.ConvTranspose2d(
-        in_f, out_f,
-        kernel_size=kernel_size,
-        stride=stride,
-        output_padding=output_padding,
-        dilation=dilation,
-        *args, **kwargs
-    )]
-
-    if double_deconv:
-        layers.append(nn.Conv2d(out_f, out_f, kernel_size=conv_kernel_size, stride=conv_stride,
-                                padding=conv_padding, dilation=conv_dilation,*args, **kwargs))
-
-    if batch_norm:
-        layers.append(nn.BatchNorm2d(out_f))
-    if activation:
-        layers.append(activation)
-
-    return nn.Sequential(*layers)
 
 
 def conv_block1D(
@@ -290,7 +206,7 @@ def bottleneck1D(in_channels, out_channels, activation=nn.ReLU(), batch_norm=Tru
     return nn.Sequential(layers)
 
 
-def bottleneck2D(in_channels, out_channels, activation=nn.ReLU(), batch_norm=True):
+def bottleneck2DOldVersion(in_channels, out_channels, activation=nn.ReLU(), batch_norm=True):
     """
     Crea un bottleneck 2D con conv 1x1, optional BatchNorm e attivazione.
     """
@@ -301,6 +217,177 @@ def bottleneck2D(in_channels, out_channels, activation=nn.ReLU(), batch_norm=Tru
     if activation:
         layers["bottleneck_act"] = activation
     return nn.Sequential(layers)
+
+
+def conv_block(
+        in_f,
+        out_f,
+        kernel_size=3,
+        padding=1,
+        dilation=1,
+        activation=nn.ReLU(),
+        batch_norm=True,
+        pool=True,
+        pool_ks=2,
+        pool_stride=2,
+        pool_pad=0,
+        *args, **kwargs
+    ):
+    """
+    Conv2d block with optional BatchNorm, activation, and pooling.
+    Supports pool_ks, pool_stride, pool_pad as int or tuple (H, W).
+    """
+    # Ensure pool parameters are tuples
+    if isinstance(pool_ks, int):
+        pool_ks = (pool_ks, pool_ks)
+    if isinstance(pool_stride, int):
+        pool_stride = (pool_stride, pool_stride)
+    if isinstance(pool_pad, int):
+        pool_pad = (pool_pad, pool_pad)
+    if isinstance(padding, int):
+        padding = (padding, padding)
+
+    layers = [nn.Conv2d(
+        in_f, out_f,
+        kernel_size=kernel_size,
+        padding=padding,
+        dilation=dilation,
+        *args, **kwargs
+    )]
+
+    if batch_norm:
+        layers.append(nn.BatchNorm2d(out_f))
+
+    if pool:
+        layers.append(nn.MaxPool2d(kernel_size=pool_ks,
+            stride=pool_stride,padding=pool_pad))
+
+    if activation:
+        layers.append(activation)
+
+    return nn.Sequential(*layers)
+
+
+def bottleneck2D(bottleneck_conv_layer, flattened=True, flattened_size=None, latent_dim=None,
+                 activation=nn.ReLU(), batch_norm=True):
+    """
+    Crea un bottleneck 2D: Flatten → Dense → Dense → Unflatten.
+    """
+
+    layers = OrderedDict()
+
+    layers['bottleneck_conv'] = bottleneck_conv_layer
+
+    if batch_norm:
+        layers['batch_norm_conv'] = nn.BatchNorm2d(bottleneck_conv_layer.out_channels)
+    if activation is not None:
+        layers['activation'] = activation
+
+    if flattened:
+        layers["flatten"] = nn.Flatten()
+        layers["to_latent"] = nn.Linear(flattened_size, latent_dim)
+        if activation is not None:
+            layers["act1"] = activation
+        if batch_norm is not None:
+            layers["batch_norm_latent"] = nn.BatchNorm1d(latent_dim)
+    else:
+        raise NotImplementedError("Non-flattened bottleneck not implemented yet.")
+
+    return nn.Sequential(layers)
+
+
+
+def deconv_block(in_f, out_f,
+                 kernel_size=2, stride=2, dilation=1, output_padding=None,
+                 activation=nn.ReLU(), batch_norm=True, double_deconv=False,
+                 conv_kernel_size=3, conv_padding=0, conv_stride=1, conv_dilation=1,
+                 reshape=False, flattened=True, latent_dim=None, flattened_size=None,
+                 first_deconv_channels=None, h_enc=None, w_enc=None,
+                 *args, **kwargs):
+    """
+    ConvTranspose2d block with optional reshape prepending, BatchNorm and activation.
+
+    Args:
+        in_f: Input channels for ConvTranspose2d
+        out_f: Output channels for ConvTranspose2d
+        kernel_size: Kernel size for ConvTranspose2d
+        stride: Stride for ConvTranspose2d
+        dilation: Dilation for ConvTranspose2d
+        output_padding: Output padding for ConvTranspose2d
+        activation: Activation function (default: ReLU)
+        batch_norm: Whether to use BatchNorm
+        double_deconv: Whether to add refinement Conv2d after ConvTranspose2d
+        conv_kernel_size: Kernel size for refinement conv
+        conv_padding: Padding for refinement conv
+        conv_stride: Stride for refinement conv
+        conv_dilation: Dilation for refinement conv
+        reshape: If True, prepend reshape operations (Linear → Unflatten → Conv)
+        flattened: Whether input is flattened (used when reshape=True)
+        latent_dim: Latent dimension size (used when reshape=True)
+        flattened_size: Size after Linear layer (used when reshape=True)
+        first_deconv_channels: Channels after unflattening (used when reshape=True)
+        h_enc: Height after unflattening (used when reshape=True)
+        w_enc: Width after unflattening (used when reshape=True)
+    """
+    # Ensure kernel_size, stride, output_padding are tuples
+    if isinstance(kernel_size, int):
+        kernel_size = (kernel_size, kernel_size)
+    if isinstance(stride, int):
+        stride = (stride, stride)
+    if output_padding is None:
+        output_padding = (0, 0)
+    elif isinstance(output_padding, int):
+        output_padding = (output_padding, output_padding)
+
+    layers = OrderedDict()
+
+    # Prepend reshape operations if requested
+    if reshape:
+        if flattened:
+            layers['latent_to_flatten'] = nn.Linear(latent_dim, flattened_size)
+            if batch_norm:
+                layers['batch_norm_1d'] = nn.BatchNorm1d(flattened_size)
+            if activation is not None:
+                layers['act_reshape'] = activation
+            layers['unflatten'] = nn.Unflatten(1, (first_deconv_channels, h_enc, w_enc))
+            #layers['reshape_deconv'] = nn.ConvTranspose2d(in_f, out_f,
+            #                                                kernel_size=kernel_size,
+            #                                                stride=stride,
+            #                                                output_padding=output_padding,
+            #                                                dilation=dilation,
+            #                                                *args, **kwargs)
+
+
+
+    # Main ConvTranspose2d layer
+    layers['deconv'] = nn.ConvTranspose2d(
+        in_f, out_f,
+        kernel_size=kernel_size,
+        stride=stride,
+        output_padding=output_padding,
+        dilation=dilation,
+        *args, **kwargs
+    )
+
+    # Optional refinement conv
+    if double_deconv:
+        layers['refine_conv'] = nn.Conv2d(
+            out_f, out_f,
+            kernel_size=conv_kernel_size,
+            padding=conv_padding,
+            stride=conv_stride,
+            dilation=conv_dilation
+        )
+
+    # BatchNorm and activation after deconv
+    if batch_norm:
+        layers['batch_norm'] = nn.BatchNorm2d(out_f)
+    if activation is not None:
+        layers['activation'] = activation
+
+    return nn.Sequential(layers)
+
+
 
 
 class EarlyStopping():
