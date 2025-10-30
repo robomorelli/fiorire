@@ -62,7 +62,7 @@ def extract_config(cfg_path=None, cfg=None, fine_tuning=False):
         checkpoint_path = config.get('opt.checkpoint_path')
         fine_tuning = config.get('opt.fine_tuning')
 
-        cfg['model']['checkpoint_path'] = '/'.join(checkpoint_path.categories)
+        cfg['model']['checkpoint_path'] = ','.join(checkpoint_path.categories)
         cfg['opt']['fine_tuning'] = fine_tuning.categories[0]
 
     return config, cfg
@@ -81,6 +81,12 @@ def extract_fixed_config(cfg_path=None, cfg=None):
             config[k] = v[0]  # Use first value for testing
         elif isinstance(v, str) and v.startswith("tune.choice"):
             # Handle cases where string parsing is needed
+            '''
+            if k in enabled_comma_names:
+                values = v[v.find("[") + 1: v.find("]")]
+                config[k] = eval(values[0].strip())
+            else:
+            '''
             values = v[v.find("[")+1 : v.find("]")].split(",")
             config[k] = eval(values[0].strip())
         else:
@@ -384,3 +390,140 @@ def get_sync_config():
     else:
         print(f"Multiple nodes detected ({num_nodes}) - enabling default syncer.")
         return SyncConfig()  # Default sync config, enables syncing
+
+
+def trial_dirname_creator(trial, max_params=5):
+    """
+    Custom trial directory name creator that uses underscores instead of commas
+
+    For fine-tuning: creates trial directories under the pretrained model's directory
+    For pre-training: creates trial directories normally
+
+    Args:
+        trial: Ray Tune trial object
+        max_params: Maximum number of parameters to include in directory name (default: 5)
+    """
+    config = trial.config
+
+    # Short names mapping for common parameters
+    short_names = {
+        'opt.lr': 'lr',
+        'opt.batch_size': 'bs',
+        'opt.epochs': 'ep',
+        'opt.lr_patience': 'lrp',
+        'opt.es_patience': 'esp',
+        'dataset.perc_overlap': 'overlap',
+        'dataset.scaler': 'scaler',
+        'dataset.seq_in_length': 'seqlen',
+        'model.activation': 'act',
+        'model.bottleneck_activation': 'btl_act',
+        'model.num_layers': 'layers',
+        'model.base_filters': 'filters',
+        'model.kernel_size': 'kernel',
+        'model.compression_factor': 'comp',
+        'model.double_deconv': 'dbl_deconv',
+        'model.halve_time': 'halve_t',
+        'model.halve_features': 'halve_f',
+        'model.flattened': 'flat',
+        'model.increasing': 'incr',
+        'model.pool': 'pool',
+        'model.stride': 'stride',
+        'model.dilation': 'dilation',
+    }
+
+    # Check if fine-tuning mode
+    is_fine_tuning = config.get('opt.fine_tuning', 0) == 1
+    checkpoint_path = config.get('opt.checkpoint_path', '')
+
+    # Build parameter string
+    params = []
+    for key, value in sorted(config.items()):
+        # Skip Ray internal keys and non-varying parameters
+        if key.startswith('_') or key in ['opt.checkpoint_path', 'opt.fine_tuning']:
+            continue
+
+        # Use short name if available, otherwise replace dots with underscores
+        key_short = short_names.get(key, key.replace('.', '_'))
+
+        # Format value based on type
+        if isinstance(value, float):
+            value_str = f"{value:.4f}"
+        elif isinstance(value, str):
+            value_str = value[:10]  # Truncate strings to 10 chars
+        else:
+            value_str = str(value)
+
+        params.append(f"{key_short}={value_str}")
+
+        # Stop once we reach max_params
+        if len(params) >= max_params:
+            break
+
+    # Create base trial name
+    param_string = "_".join(params) if params else "trial"
+    base_name = f"{trial.trial_id}_{param_string}"
+
+    # If fine-tuning, prepend the pretrained checkpoint directory
+    if is_fine_tuning and checkpoint_path:
+        import os
+        checkpoint_dir = os.path.dirname(checkpoint_path)
+        pretrained_trial_dir = os.path.dirname(checkpoint_dir)
+        pretrained_trial_name = os.path.basename(pretrained_trial_dir)
+
+        # Extract just the trial ID from pretrained name (last part after last underscore)
+        pretrained_id = pretrained_trial_name.split('_')[-1]
+
+        # Shorter prefix with just the pretrained trial ID
+        return f"FT_{pretrained_id}__{base_name}"
+
+    return base_name
+
+
+def get_finetuning_local_dir(checkpoint_path, date_str):
+    """
+    Extract the local directory for fine-tuning based on pretrained checkpoint path
+
+    Args:
+        checkpoint_path: Path to pretrained checkpoint
+                        Example: .../8efbc_00000_params/checkpoint_000001/model.pt
+        date_str: Date string for unique directory naming
+
+    Returns:
+        local_dir: Path where fine-tuning experiments will be saved
+                   Example: .../8efbc_00000_params/fine_tuning_from_8efbc_00000_2025-10-31
+        pretrained_trial_id: ID of the pretrained trial
+    """
+    import os
+
+    # Extract directory structure from checkpoint path
+    checkpoint_dir = os.path.dirname(checkpoint_path)  # Remove model.pt
+    pretrained_trial_dir = os.path.dirname(checkpoint_dir)  # Remove checkpoint_000001
+    pretrained_trial_name = os.path.basename(pretrained_trial_dir)  # Get trial name
+
+    # Extract trial ID (first two parts: hash_id)
+    pretrained_trial_id = "_".join(pretrained_trial_name.split('_')[:2])
+
+    # Create fine-tuning directory INSIDE the pretrained trial directory
+    local_dir = os.path.join(pretrained_trial_dir, f'fine_tuning_from_{pretrained_trial_id}_{date_str}')
+
+    return local_dir, pretrained_trial_id
+
+
+'''
+
+## Struttura risultante:
+```
+ray_results/
+└── conv_ae2D_fiorire_2025-10-30_15-41-45/
+    └── conv_ae2D_fiorire/
+        └── 8efbc_00000_overlap=0.5000_scaler=StandardSc_seqlen=16_act=Relu_filters=32/
+            ├── checkpoint_000001/
+            │   └── model.pt
+            ├── checkpoint_000002/
+            │   └── model.pt
+            └── fine_tuning_from_8efbc_00000_2025-10-30_17-00-56/  # 👈 Dentro il trial!
+                └── conv_ae2D_fiorire_fine_tuning/
+                    ├── 5f309_00000_lr=0.0009_lrp=5_overlap=0.2/
+                    ├── 5f309_00001_lr=0.0001_lrp=10_overlap=0.5/
+                    └── 5f309_00002_lr=0.0009_lrp=10_overlap=0.2/
+'''

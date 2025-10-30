@@ -2,7 +2,7 @@ import argparse
 import ray
 from ray.tune.schedulers import ASHAScheduler
 from utils.load_trainer import get_trainer
-from utils.general import extract_config, extract_fixed_config, get_sync_config
+from utils.general import extract_config, extract_fixed_config, get_sync_config, trial_dirname_creator
 from datetime import datetime
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import CLIReporter
@@ -54,6 +54,7 @@ def main(args):
                         progress_reporter=progress_reporter,   # <-- add this here
                         sync_config=sync_config,
                         config=ray_config, callbacks=callbacks,
+                        trial_dirname_creator=lambda trial: trial_dirname_creator(trial, max_params=5),
                         stop = {"training_iteration": cfg.opt.max_epochs},)
 
     print("Best config is:", analysis.get_best_config(metric="val_loss", mode="min"))

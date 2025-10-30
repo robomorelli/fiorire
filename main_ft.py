@@ -3,7 +3,8 @@ import ray
 import torch
 from ray.tune.schedulers import ASHAScheduler
 from utils.load_trainer import get_trainer
-from utils.general import extract_config, extract_fixed_config, get_sync_config, merge_pretraining_finetuning_configs
+from utils.general import (extract_config, extract_fixed_config, get_sync_config,
+                           merge_pretraining_finetuning_configs, trial_dirname_creator, get_finetuning_local_dir)
 from datetime import datetime
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import CLIReporter
@@ -18,29 +19,37 @@ def main(args):
 
     # Set the path to the configuration file
     cfg_path_ft = os.path.join(config_path, args.config_file + '.yaml')
-    ray_config_ft, cfg_ft = extract_config(cfg_path_ft, fine_tuning=True)   #load ray_config_ft to take fine_tuning the model_checkpoint path (_ is to ignore for now)
+    ray_config_ft, cfg_ft = extract_config(cfg_path_ft, fine_tuning=True)   #load ray_config_ft to take fine_tuning the model_checkpoint path
 
-    assert cfg_ft.opt.get('fine_tuning') and cfg_ft.model.get('checkpoint_path')   # Keys to load and fine tune a model
+    assert cfg_ft.opt.get('fine_tuning') and cfg_ft.model.get('checkpoint_path')
+
+    checkpoint_path = os.path.abspath(cfg_ft.model.checkpoint_path)  # Converti in assoluto
+    cfg_ft.model.checkpoint_path = checkpoint_path  # Aggiorna cfg
+
+    if not os.path.exists(checkpoint_path):  # Verifica che esista
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    # Keys to load and fine tune a model
 
     loaded_cfg = torch.load(cfg_ft.model.checkpoint_path)['cfg']    # This includes both the original multiple-choices tune_confing and the single value across the opt,model,dataset section
-    _, cfg = extract_config(cfg_path=None, cfg=loaded_cfg)    #seprate the multiple ray_config from cfg itself, we need cfg to compare with cfg_ft
+    _, cfg_pre = extract_config(cfg_path=None, cfg=loaded_cfg)    #seprate the multiple ray_config from cfg itself, we need cfg of pre-trained to merge with cfg_ft
     # merge cfg with fine_tuning parameters
-    cfg = merge_pretraining_finetuning_configs(
-        pretraining_cfg=cfg,  # Out[2]
-        finetuning_cfg=cfg_ft)
-    ray_config, cfg = extract_config(cfg_path=None, cfg=cfg)
+    cfg = merge_pretraining_finetuning_configs(pretraining_cfg=cfg_pre,  finetuning_cfg=cfg_ft)
     # Debug mode: simulate one training iteration to check if the config is correct
-    if args.debug_mode:
+    if args.debug_mode: # seprate the multiple ray_config from cfg itself, we need cfg of pre-trained to merge with cfg_ft
+        # merge cfg with fine_tuning parameters
         ray_config, cfg = extract_fixed_config(cfg_path=None, cfg=cfg)    # extract one specific conf (the first element of each possible selection)
         trainer_test = get_trainer(cfg.model.name)(config=ray_config)
-        #weights = torch.load(cfg_ft.model.checkpoint_path)['model_state_dict']
-        #trainer_test.model.load_state_dict(weights, strict=True)
         result = trainer_test.step()  # this simulates one training iteration
         print("Debug mode training result:", result)
         return
 
+    local_dir, pretrained_trial_id = get_finetuning_local_dir(cfg_ft.model.checkpoint_path, date_str)
+    print(f"\nFine-tuning from trial: {pretrained_trial_id}")
+    print(f"Saving to: {local_dir}\n")
+
     # Test loading the checkpoint, after inizialing ray model load the checkpoint witht he traineg method or the model one? (i think the first one)
 
+    ray_config, cfg = extract_config(cfg_path=None, cfg=cfg)
     # Set the trainer
     trainer = get_trainer(cfg.model.name)
 
@@ -63,12 +72,13 @@ def main(args):
                         scheduler=sched, resources_per_trial=resources_per_trial,
                         num_samples=int(args.num_samples), checkpoint_at_end=True, #otherwise it fails on multinode?
                         #local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
-                        local_dir='./ray_results/{}_{}'.format(cfg.opt.exp_name, date_str),
+                        local_dir=local_dir,
                         #sync_config=tune.SyncConfig(syncer=None),
                         name="{}".format(cfg.opt.exp_name),
                         progress_reporter=progress_reporter,   # <-- add this here
                         sync_config=sync_config,
                         config=ray_config, callbacks=callbacks,
+                        trial_dirname_creator=lambda trial: trial_dirname_creator(trial, max_params=5),
                         stop = {"training_iteration": cfg.opt.max_epochs},)
 
     print("Best config is:", analysis.get_best_config(metric="val_loss", mode="min"))
@@ -87,7 +97,7 @@ if __name__ == "__main__":
     parser.add_argument("--project_name", default='fiorire_hpc_conv_2d', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
-    parser.add_argument("--debug_mode", default=1, help="the model you want to hpo")
+    parser.add_argument("--debug_mode", default=0, help="the model you want to hpo")
     args = parser.parse_args()
 
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"

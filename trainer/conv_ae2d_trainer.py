@@ -47,7 +47,7 @@ class trainCONVAE2D(tune.Trainable):
         # ==========================================
         self.model, self.pretrained_loaded = load_pretrained_checkpoint(
             model=self.model,
-            config=config,
+            config=self.cfg,
             device=self.device
         )
 
@@ -65,11 +65,9 @@ class trainCONVAE2D(tune.Trainable):
 
         self.current_epoch += 1
 
-        #tensor([ 0.2248, -0.4644,  0.1199, -0.0219,  0.1879], device='cuda:0')
-
-        loaded_state = self.model.state_dict()
-        loaded_param_sample = list(loaded_state.values())[0]
-        print(f"Epoch {self.current_epoch} - Model parameters sample: {loaded_param_sample.flatten()[:5]}")
+        #loaded_state = self.model.state_dict()
+        #loaded_param_sample = list(loaded_state.values())[0]
+        #print(f"Epoch {self.current_epoch} - Model parameters sample: {loaded_param_sample.flatten()[:5]}")
 
         train_results = train_one_epoch(
             model=self.model,

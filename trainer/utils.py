@@ -354,7 +354,6 @@ def test_anomaly_step(model, dataloader, device,
     }}
 
 
-
 def load_pretrained_checkpoint(model, config, device):
     """
     Load pretrained weights into model for fine-tuning
@@ -369,18 +368,17 @@ def load_pretrained_checkpoint(model, config, device):
         loaded: Boolean indicating if weights were loaded successfully
     """
     # Check if fine-tuning is enabled and checkpoint path is provided
-    if not config.get('opt.fine_tuning', False):
+    if not config.opt.get('fine_tuning', False):
         print("ℹ️ Training from scratch (no fine-tuning)")
         return model, False
 
-    if not config.get('checkpoint_path'):
+    if not config.opt.get('checkpoint_path', False):
         print("⚠️ WARNING: fine_tuning=True but no checkpoint_path provided!")
         return model, False
 
-    checkpoint_path = config['checkpoint_path']
+    checkpoint_path = config.opt.get('checkpoint_path')
 
     print(f"\n{'=' * 60}")
-    print(f"[TRIAL {tune.get_trial_id() if hasattr(tune, 'get_trial_id') else 'N/A'}] LOADING PRETRAINED WEIGHTS")
     print(f"{'=' * 60}")
     print(f"Checkpoint: {checkpoint_path}")
 

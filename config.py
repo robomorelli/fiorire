@@ -38,3 +38,5 @@ all_feats_dict = {'fiorire': ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_
 activation_dict = {'Relu': nn.ReLU(), 'Elu': nn.ELU(), 'Selu': nn.SELU(), 'LRelu': nn.LeakyReLU(), 'Tanh': nn.Tanh(), 'Sigmoid': nn.Sigmoid()}
 
 fiorire_family = ['fiorire_1', 'fiorire_2', 'fiorire']
+
+enabled_comma_names = ['opt.checkpoint_path']
