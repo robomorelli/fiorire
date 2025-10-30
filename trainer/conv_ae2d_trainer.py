@@ -58,16 +58,12 @@ class trainCONVAE2D(tune.Trainable):
 
     def step(self):
         self.current_ip()
-        result = self.train_step(checkpoint_dir=None)
-        return result
+        self.result = self.train_step(checkpoint_dir=None)
+        return self.result
 
     def train_step(self, checkpoint_dir=None):
 
         self.current_epoch += 1
-
-        #loaded_state = self.model.state_dict()
-        #loaded_param_sample = list(loaded_state.values())[0]
-        #print(f"Epoch {self.current_epoch} - Model parameters sample: {loaded_param_sample.flatten()[:5]}")
 
         train_results = train_one_epoch(
             model=self.model,
@@ -154,7 +150,9 @@ class trainCONVAE2D(tune.Trainable):
         torch.save({
             'epoch': self.current_epoch, 'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(), 'loss': self.metric_key,
-            'cfg': self.cfg, 'scaler_params': self.scaler_params,
+            'loss_value': self.result[f"best_{self.metric_key}"] ,
+            'cfg': self.cfg, 'scaler_params_pretraing': self.scaler_params if not(self.cfg.opt.get('fine_tuning', False)) else None,
+            'scaler_params_fine_tuning': self.scaler_params if self.cfg.opt.get('fine_tuning', False) else None,
             'parameters_number': self.parameters_number, 'param_conf': self.parameters_number,
             'metric_score': self.val_results if "metric_score" in self.val_results else None,
         }, f"{checkpoint_dir}/model.pt")
