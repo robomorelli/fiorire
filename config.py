@@ -17,6 +17,12 @@ conv_ae_config_file = 'conv_ae.yaml'
 conv_ae_1D_config_file = 'conv_ae1D.yaml'
 conv_ae_2D_config_file = 'conv_ae2D.yaml'
 
+lstm_ae_ft_config_file = 'lstm_ae_ft.yaml'
+lstm_ft_config_file = 'lstm_ft.yaml'
+conv_ae_ft_config_file = 'conv_ae_ft.yaml'
+conv_ae_1D_ft_config_file = 'conv_ae1D_ft.yaml'
+conv_ae_2D_ft_config_file = 'conv_ae2D_ft.yaml'
+
 available_metrics = ['val_loss', 'val_f1_score']
 available_modes = ['min', 'max']
 opt_metric_dict_keys = ["metric_key", "mode", "best_metric"]

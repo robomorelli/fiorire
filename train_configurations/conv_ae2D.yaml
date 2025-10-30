@@ -1,7 +1,7 @@
 # Optimization
 tune_config:
   model.num_layers: tune.choice([1,2,3])
-  model.base_filters: tune.choice([8, 16])
+  model.base_filters: tune.choice([8, 16, 32])
   model.activation: tune.choice(['Relu'])
   model.bottleneck_activation: tune.choice(['Tanh'])
   model.kernel_size: tune.choice([5])
@@ -29,6 +29,9 @@ tune_config:
 # Dataset
 dataset:
   name: 'fiorire_1'
+  flag_col: null    #"ACT40082(PREPRO_CMG_ENABLE)"
+  align_data: 0
+  detect_flag: 0
   data_path: './data/fiorire_1/all_2016-2018_clean_4s.pkl' #'./data/fiorire_1/all_2016-2018_clean_4s.pkl'    #'./data/fiorire_2/nominal_merged.csv'
   seq_in_length_into_chunk: 2000    # number of chunks the dataset is divided into (cannot be less than 3); if null the dataset is not chunked
   seq_out_length: null
@@ -38,9 +41,6 @@ dataset:
           'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
           'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
           'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
-  flag_col: null    #"ACT40082(PREPRO_CMG_ENABLE)"
-  align_data: 0
-  detect_flag: 0
   target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
   dataset_subset: null

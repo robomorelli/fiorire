@@ -354,3 +354,138 @@ def test_anomaly_step(model, dataloader, device,
     }}
 
 
+
+def load_pretrained_checkpoint(model, config, device):
+    """
+    Load pretrained weights into model for fine-tuning
+
+    Args:
+        model: PyTorch model instance
+        config: Ray Tune config dictionary containing 'checkpoint_path' and 'fine_tuning'
+        device: torch.device
+
+    Returns:
+        model: Model with loaded weights
+        loaded: Boolean indicating if weights were loaded successfully
+    """
+    # Check if fine-tuning is enabled and checkpoint path is provided
+    if not config.get('opt.fine_tuning', False):
+        print("ℹ️ Training from scratch (no fine-tuning)")
+        return model, False
+
+    if not config.get('checkpoint_path'):
+        print("⚠️ WARNING: fine_tuning=True but no checkpoint_path provided!")
+        return model, False
+
+    checkpoint_path = config['checkpoint_path']
+
+    print(f"\n{'=' * 60}")
+    print(f"[TRIAL {tune.get_trial_id() if hasattr(tune, 'get_trial_id') else 'N/A'}] LOADING PRETRAINED WEIGHTS")
+    print(f"{'=' * 60}")
+    print(f"Checkpoint: {checkpoint_path}")
+
+    try:
+        # Capture initial state (for verification)
+        initial_keys = list(model.state_dict().keys())[:3]
+        initial_state = {k: model.state_dict()[k].clone() for k in initial_keys}
+        initial_sample = list(initial_state.values())[0].flatten()[:5]
+        print(f"Initial weights sample (random): {initial_sample}")
+
+        # Load checkpoint
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+        # Extract model state dict
+        if 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+            pretrained_epoch = checkpoint.get('epoch', '?')
+            pretrained_loss = checkpoint.get('loss', '?')
+            pretrained_params = checkpoint.get('parameters_number', None)
+
+            print(f"Checkpoint info:")
+            print(f"  - Epoch: {pretrained_epoch}")
+            print(f"  - Loss metric: {pretrained_loss}")
+            if pretrained_params:
+                print(f"  - Parameters: {pretrained_params:,}")
+        else:
+            state_dict = checkpoint
+            pretrained_epoch = '?'
+            pretrained_params = None
+
+        # Load weights into model
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=True)
+
+        if missing_keys:
+            print(f"⚠️ Missing keys: {missing_keys}")
+        if unexpected_keys:
+            print(f"⚠️ Unexpected keys: {unexpected_keys}")
+
+        print(f"✅ Loaded pretrained weights from epoch {pretrained_epoch}")
+
+        # Verify weights changed
+        loaded_state = model.state_dict()
+        loaded_sample = list(loaded_state.values())[0].flatten()[:5]
+        print(f"Loaded weights sample: {loaded_sample}")
+
+        weights_changed = not torch.allclose(initial_sample.cpu(), loaded_sample.cpu(), rtol=1e-5)
+        if weights_changed:
+            print("✅ Weights successfully loaded and different from random initialization")
+        else:
+            print("⚠️ WARNING: Weights appear unchanged!")
+
+        # Verify parameter count matches (if available)
+        current_params = sum(p.numel() for p in model.parameters())
+        if pretrained_params and pretrained_params != current_params:
+            print(f"⚠️ WARNING: Parameter count mismatch!")
+            print(f"   Pretrained: {pretrained_params:,}")
+            print(f"   Current: {current_params:,}")
+
+        print(f"{'=' * 60}\n")
+
+        return model, True
+
+    except Exception as e:
+        print(f"❌ Error loading checkpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+
+def verify_pretrained_loading(model, checkpoint_path, device):
+    """
+    Detailed verification that checkpoint matches current model
+
+    Args:
+        model: PyTorch model
+        checkpoint_path: Path to checkpoint
+        device: torch.device
+
+    Returns:
+        dict: Verification results
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    current_state = model.state_dict()
+
+    if 'model_state_dict' in checkpoint:
+        pretrained_state = checkpoint['model_state_dict']
+    else:
+        pretrained_state = checkpoint
+
+    results = {
+        'all_keys_match': set(current_state.keys()) == set(pretrained_state.keys()),
+        'num_params_current': sum(p.numel() for p in model.parameters()),
+        'num_params_pretrained': checkpoint.get('parameters_number', None),
+        'matched_layers': 0,
+        'total_layers': 0,
+    }
+
+    # Check layer-by-layer matching
+    for key in list(current_state.keys())[:10]:  # Check first 10 layers
+        if key in pretrained_state:
+            results['total_layers'] += 1
+            if torch.allclose(current_state[key], pretrained_state[key], rtol=1e-5):
+                results['matched_layers'] += 1
+
+    results['match_percentage'] = (results['matched_layers'] / results['total_layers'] * 100) if results[
+                                                                                                     'total_layers'] > 0 else 0
+
+    return results

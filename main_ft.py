@@ -3,7 +3,7 @@ import ray
 import torch
 from ray.tune.schedulers import ASHAScheduler
 from utils.load_trainer import get_trainer
-from utils.general import extract_config, extract_fixed_config, get_sync_config
+from utils.general import extract_config, extract_fixed_config, get_sync_config, merge_pretraining_finetuning_configs
 from datetime import datetime
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import CLIReporter
@@ -17,19 +17,29 @@ def main(args):
     date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
     # Set the path to the configuration file
-    cfg_path = os.path.join(config_path, args.config_file + '.yaml')
-    _, cfg = extract_config(cfg_path) # Extract fixed config parameters to avoid failure in get_trainer(cfg.model.name)(config=config) * the config is the problem
-    assert cfg.opt.get('fine_tuning') and cfg.model.get('checkpoint_path')   # Keys to load and fine tune a model
-    loaded_cfg = torch.load(cfg.model.checkpoint_path)['cfg']
-    ray_config, cfg = extract_config(cfg_path=None, cfg=loaded_cfg)
+    cfg_path_ft = os.path.join(config_path, args.config_file + '.yaml')
+    ray_config_ft, cfg_ft = extract_config(cfg_path_ft, fine_tuning=True)   #load ray_config_ft to take fine_tuning the model_checkpoint path (_ is to ignore for now)
+
+    assert cfg_ft.opt.get('fine_tuning') and cfg_ft.model.get('checkpoint_path')   # Keys to load and fine tune a model
+
+    loaded_cfg = torch.load(cfg_ft.model.checkpoint_path)['cfg']    # This includes both the original multiple-choices tune_confing and the single value across the opt,model,dataset section
+    _, cfg = extract_config(cfg_path=None, cfg=loaded_cfg)    #seprate the multiple ray_config from cfg itself, we need cfg to compare with cfg_ft
+    # merge cfg with fine_tuning parameters
+    cfg = merge_pretraining_finetuning_configs(
+        pretraining_cfg=cfg,  # Out[2]
+        finetuning_cfg=cfg_ft)
+    ray_config, cfg = extract_config(cfg_path=None, cfg=cfg)
     # Debug mode: simulate one training iteration to check if the config is correct
     if args.debug_mode:
-        loaded_cfg = torch.load(cfg.model.checkpoint_path)['cfg']
-        ray_config, cfg = extract_fixed_config(cfg_path=None, cfg=loaded_cfg)    # extract one specific conf (the first element of each possible selection)
+        ray_config, cfg = extract_fixed_config(cfg_path=None, cfg=cfg)    # extract one specific conf (the first element of each possible selection)
         trainer_test = get_trainer(cfg.model.name)(config=ray_config)
+        #weights = torch.load(cfg_ft.model.checkpoint_path)['model_state_dict']
+        #trainer_test.model.load_state_dict(weights, strict=True)
         result = trainer_test.step()  # this simulates one training iteration
         print("Debug mode training result:", result)
         return
+
+    # Test loading the checkpoint, after inizialing ray model load the checkpoint witht he traineg method or the model one? (i think the first one)
 
     # Set the trainer
     trainer = get_trainer(cfg.model.name)

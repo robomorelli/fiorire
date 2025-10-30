@@ -1,6 +1,7 @@
 from utils.load_model import get_model
 from utils.load_dataset import get_train_val_dataloader, get_metric_loader
-from trainer.utils import get_opt_metric, update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
+from trainer.utils import (get_opt_metric, update_input_output, model_setup, train_one_epoch,
+                           validate_one_epoch, get_optimizazion_objects, load_pretrained_checkpoint)
 from omegaconf import ListConfig
 import numpy as np
 
@@ -11,12 +12,11 @@ class trainCONVAE2D(tune.Trainable):
 
     def setup(self, config):
         # Load and set up the configuration
-        self.cfg = model_setup(conv_ae_2D_config_file, config, root)
+        self.cfg = model_setup(conv_ae_2D_ft_config_file, config, root) if config.get('opt.fine_tuning') else model_setup(conv_ae_2D_config_file, config, root)
         self.cfg, _, _ = update_input_output(self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.max_epochs = self.cfg.opt.epochs
         self.current_epoch = 0
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
-
 
         # Load data
         # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
@@ -42,6 +42,15 @@ class trainCONVAE2D(tune.Trainable):
         self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         self.parameters_number = self.cfg.model.parameter_count
 
+        # ==========================================
+        # LOAD PRETRAINED WEIGHTS IF FINE-TUNING
+        # ==========================================
+        self.model, self.pretrained_loaded = load_pretrained_checkpoint(
+            model=self.model,
+            config=config,
+            device=self.device
+        )
+
         # Optimizer and scheduler
         self.optimizer, self.scheduler, self.criterion, self.early_stopping = get_optimizazion_objects(self.cfg,
                                                                                                        self.model,
@@ -55,6 +64,12 @@ class trainCONVAE2D(tune.Trainable):
     def train_step(self, checkpoint_dir=None):
 
         self.current_epoch += 1
+
+        #tensor([ 0.2248, -0.4644,  0.1199, -0.0219,  0.1879], device='cuda:0')
+
+        loaded_state = self.model.state_dict()
+        loaded_param_sample = list(loaded_state.values())[0]
+        print(f"Epoch {self.current_epoch} - Model parameters sample: {loaded_param_sample.flatten()[:5]}")
 
         train_results = train_one_epoch(
             model=self.model,
