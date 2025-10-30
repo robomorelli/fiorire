@@ -36,25 +36,13 @@ def resolve_paths(cfg: DictConfig, root_dir: str=root) -> DictConfig:
     return cfg
 
 
-def extract_config_bkp(cfg_path):
-    cfg = OmegaConf.load(cfg_path)
-    config = {}
-    for k, v in cfg.tune_config.items():
-        try:
-            config[k] = ray_mapper[v.split('(')[0]]([float(s) if '.' in s else int(s) for s in v.split(v.split('(')[0])[1].\
-                                                strip("()").strip("[]").split(',')])
-            print([float(s) if '.' in s else int(s) for s in v.split(v.split('(')[0])[1].\
-                                                strip("()").strip("[]").split(',')])
-        except:
-            config[k] = ray_mapper[v.split('(')[0]]([s.strip(' ').strip("''") for s in v.split(v.split('(')[0])[1]\
-                                                    .strip("()").strip("[]").split(',')])
-            print([s.strip(' ').strip("''") for s in v.split(v.split('(')[0])[1].strip("()")\
-                  .strip("[]").split(',')])
-    return config, cfg
+def extract_config(cfg_path=None, cfg=None):
 
-def extract_config(cfg_path):
-    from omegaconf import OmegaConf
-    cfg = OmegaConf.load(cfg_path)
+    assert cfg_path is not None or cfg is not None
+
+    if cfg is None:
+        cfg = OmegaConf.load(cfg_path)
+
     config = {}
 
     for k, v in cfg.tune_config.items():
@@ -71,8 +59,13 @@ def extract_config(cfg_path):
     return config, cfg
 
 
-def extract_fixed_config(cfg_path):
-    cfg = OmegaConf.load(cfg_path)
+def extract_fixed_config(cfg_path=None, cfg=None):
+
+    assert cfg_path is not None or cfg is not None
+
+    if cfg is None:
+        cfg = OmegaConf.load(cfg_path)
+
     config = {}
     for k, v in cfg.tune_config.items():
         if isinstance(v, (list, ListConfig)):  # e.g. [0.001, 0.003]

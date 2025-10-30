@@ -3,7 +3,6 @@ import os
 from ray import tune
 import torch.nn as nn
 
-
 module_dir = os.path.dirname(os.path.abspath(__file__))  # path to the current Python file
 root = os.path.abspath(os.path.join(module_dir))   # go up one level (repo root)
 
@@ -31,3 +30,5 @@ all_feats_dict = {'fiorire': ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_
                   'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']}
 
 activation_dict = {'Relu': nn.ReLU(), 'Elu': nn.ELU(), 'Selu': nn.SELU(), 'LRelu': nn.LeakyReLU(), 'Tanh': nn.Tanh(), 'Sigmoid': nn.Sigmoid()}
+
+fiorire_family = ['fiorire_1', 'fiorire_2', 'fiorire']

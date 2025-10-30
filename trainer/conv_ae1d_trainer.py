@@ -3,8 +3,6 @@ from utils.load_dataset import get_train_val_dataloader, get_metric_loader
 from trainer.utils import get_opt_metric, update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
 from omegaconf import ListConfig
 import numpy as np
-from ray.air import session
-import sys
 
 from config import *
 from models.utils.losses import *

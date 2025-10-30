@@ -1,5 +1,6 @@
 import argparse
 import ray
+import torch
 from ray.tune.schedulers import ASHAScheduler
 from utils.load_trainer import get_trainer
 from utils.general import extract_config, extract_fixed_config, get_sync_config
@@ -17,10 +18,14 @@ def main(args):
 
     # Set the path to the configuration file
     cfg_path = os.path.join(config_path, args.config_file + '.yaml')
-    ray_config, cfg = extract_config(cfg_path)  # Extract fixed config parameters to avoid failure in get_trainer(cfg.model.name)(config=config) * the config is the problem
+    _, cfg = extract_config(cfg_path) # Extract fixed config parameters to avoid failure in get_trainer(cfg.model.name)(config=config) * the config is the problem
+    assert cfg.opt.get('fine_tuning') and cfg.model.get('checkpoint_path')   # Keys to load and fine tune a model
+    loaded_cfg = torch.load(cfg.model.checkpoint_path)['cfg']
+    ray_config, cfg = extract_config(cfg_path=None, cfg=loaded_cfg)
     # Debug mode: simulate one training iteration to check if the config is correct
     if args.debug_mode:
-        ray_config, cfg = extract_fixed_config(cfg_path)
+        loaded_cfg = torch.load(cfg.model.checkpoint_path)['cfg']
+        ray_config, cfg = extract_fixed_config(cfg_path=None, cfg=loaded_cfg)    # extract one specific conf (the first element of each possible selection)
         trainer_test = get_trainer(cfg.model.name)(config=ray_config)
         result = trainer_test.step()  # this simulates one training iteration
         print("Debug mode training result:", result)
@@ -66,13 +71,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default = '10.141.1.28:6379', help="adress of master")
     parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='conv_ae2D', help="[conv_ae1D, conv_ae2D, lstm]")
+    parser.add_argument("--config_file", default='conv_ae2D_ft', help="[conv_ae1D_ft, conv_ae2D_ft, lstm_ft]")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
     parser.add_argument("--wandb", default=0, type=int, help="the model you want to hpo")
     parser.add_argument("--project_name", default='fiorire_hpc_conv_2d', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
-    parser.add_argument("--debug_mode", default=0, help="the model you want to hpo")
+    parser.add_argument("--debug_mode", default=1, help="the model you want to hpo")
     args = parser.parse_args()
 
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"

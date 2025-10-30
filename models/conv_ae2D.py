@@ -279,7 +279,6 @@ class CONV_AE2D(nn.Module):
         )
         self.padding = (self.padding_h, self.padding_w)
 
-
         self.encoder = Encoder(self.in_channels, base_filters= self.base_filters, kernel_size=self.kernel_size,
                                num_layers=self.num_layers,
                                pool_ks = self.pool_ks, pool_stride = self.pool_stride,
@@ -309,4 +308,3 @@ class CONV_AE2D(nn.Module):
         enc = self.encoder(x)
         out = self.decoder(enc)
         return out
-

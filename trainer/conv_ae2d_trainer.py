@@ -3,13 +3,6 @@ from utils.load_dataset import get_train_val_dataloader, get_metric_loader
 from trainer.utils import get_opt_metric, update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
 from omegaconf import ListConfig
 import numpy as np
-import pickle
-
-from dataset.sentinel import TimeSeriesDataset
-from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Dataset
-from utils.load_dataset import get_transform
-from sklearn.preprocessing import StandardScaler, RobustScaler
 
 from config import *
 from models.utils.losses import *

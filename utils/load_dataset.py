@@ -37,7 +37,7 @@ class ConcatSampler(Sampler):
 
 def get_transform(cfg):
     # Define the dataset name to apply specific transformations
-    if cfg.dataset.name == "fiorire":
+    if cfg.dataset.name in fiorire_family:
         if cfg.model.name == "conv_ae1D":
             transform = T.Compose([
                 T.ToTensor(),
