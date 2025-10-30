@@ -397,11 +397,13 @@ def load_pretrained_checkpoint(model, config, device):
             state_dict = checkpoint['model_state_dict']
             pretrained_epoch = checkpoint.get('epoch', '?')
             pretrained_loss = checkpoint.get('loss', '?')
+            pretrained_value_loss = checkpoint.get('loss_value', '?')
             pretrained_params = checkpoint.get('parameters_number', None)
 
             print(f"Checkpoint info:")
             print(f"  - Epoch: {pretrained_epoch}")
             print(f"  - Loss metric: {pretrained_loss}")
+            print(f"  - Loss value: {pretrained_value_loss}")
             if pretrained_params:
                 print(f"  - Parameters: {pretrained_params:,}")
         else:

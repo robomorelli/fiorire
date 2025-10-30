@@ -23,13 +23,6 @@ def main(args):
 
     assert cfg_ft.opt.get('fine_tuning') and cfg_ft.model.get('checkpoint_path')
 
-    checkpoint_path = os.path.abspath(cfg_ft.model.checkpoint_path)  # Converti in assoluto
-    cfg_ft.model.checkpoint_path = checkpoint_path  # Aggiorna cfg
-
-    if not os.path.exists(checkpoint_path):  # Verifica che esista
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    # Keys to load and fine tune a model
-
     loaded_cfg = torch.load(cfg_ft.model.checkpoint_path)['cfg']    # This includes both the original multiple-choices tune_confing and the single value across the opt,model,dataset section
     _, cfg_pre = extract_config(cfg_path=None, cfg=loaded_cfg)    #seprate the multiple ray_config from cfg itself, we need cfg of pre-trained to merge with cfg_ft
     # merge cfg with fine_tuning parameters
@@ -97,7 +90,7 @@ if __name__ == "__main__":
     parser.add_argument("--project_name", default='fiorire_hpc_conv_2d', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
-    parser.add_argument("--debug_mode", default=1, help="the model you want to hpo")
+    parser.add_argument("--debug_mode", default=0, help="the model you want to hpo")
     args = parser.parse_args()
 
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"

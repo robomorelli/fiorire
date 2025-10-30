@@ -17,6 +17,10 @@ class trainLSTM(tune.Trainable):
         self.max_epochs = self.cfg.opt.epochs
         self.current_epoch = 0
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
+        if  config.get('opt.fine_tuning') and 'scaler_params_pre_training' in torch.load(self.cfg.opt.get('checkpoint_path')).keys():
+            self.scaler_pre_training_params = None if not(self.cfg.opt.get('fine_tuning', False)) else torch.load(self.cfg.opt.get('checkpoint_path'))['scaler_params_pre_training']
+        else:
+            self.scaler_pre_training_params = None
 
         # Load data
         # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
@@ -150,7 +154,7 @@ class trainLSTM(tune.Trainable):
             'epoch': self.current_epoch, 'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(), 'loss': self.metric_key,
             'loss_value': self.result[f"best_{self.metric_key}"] ,
-            'cfg': self.cfg, 'scaler_params_pretraing': self.scaler_params if not(self.cfg.opt.get('fine_tuning', False)) else None,
+            'cfg': self.cfg, 'scaler_params_pre_training': self.scaler_pre_training_params if self.scaler_pre_training_params else self.scaler_params,
             'scaler_params_fine_tuning': self.scaler_params if self.cfg.opt.get('fine_tuning', False) else None,
             'parameters_number': self.parameters_number, 'param_conf': self.parameters_number,
             'metric_score': self.val_results if "metric_score" in self.val_results else None,
