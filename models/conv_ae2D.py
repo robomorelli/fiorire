@@ -15,7 +15,7 @@ class Encoder(nn.Module):
                  pool_ks: Union[int, Tuple[int, int]] = 2,
                  pool_stride: Union[int, Tuple[int, int]] = 2, activation=nn.ReLU(),
                  compression_factor=2,
-                 img_heigth=16, img_width=16, flattened=True):
+                 img_heigth=16, img_width=16, flattened=True,  bottleneck_act=nn.Tanh()):
         super(Encoder, self).__init__()
 
         self.in_channels = in_channels
@@ -31,6 +31,7 @@ class Encoder(nn.Module):
         self.w = img_width
         self.act = activation
         self.flattened = flattened
+        self.bottleneck_act = bottleneck_act
 
 
         out_f = None
@@ -64,7 +65,9 @@ class Encoder(nn.Module):
         self.latent_dim = int(self.flattened_size // self.compression_factor)
 
         self.bottleneck = bottleneck2D(self.bottleneck_conv,
-                                       flattened=self.flattened, flattened_size= self.flattened_size, latent_dim=self.latent_dim, activation=self.act)
+                                       flattened=self.flattened, flattened_size= self.flattened_size,
+                                       latent_dim=self.latent_dim, activation=self.act,
+                                       bottleneck_activation=self.bottleneck_act, batch_norm=True)
 
         self.init_kaiming_normal()
 
@@ -91,7 +94,6 @@ class Encoder(nn.Module):
         enc = self.bottleneck(enc)  # ✅ pass through bottleneck
 
         return enc
-
 
 class Decoder(nn.Module):
     def __init__(self, in_channels=1, first_deconv_channels = None, base_filters=32, kernel_size: Union[int, Tuple[int, int]] = 2, num_layers=2,
@@ -131,17 +133,6 @@ class Decoder(nn.Module):
         # Build decoder layers
         decoder_layers = []
         in_f = self.first_deconv_channels  # start from bottleneck channels
-        ''' 
-        if self.flattened:
-            decoder_layers.append(( f'reshape_dec_lay',  reshape2D(flattened=self.flattened, latent_dim=self.latent_dim,
-                                     flattened_size=self.flattened_size,
-                                     first_deconv_channels=self.first_deconv_channels, h_enc=self.h_enc,
-                                     w_enc=self.w_enc,
-                                     conv_kernel_size=self.conv_kernel_size, conv_stride=self.conv_stride,
-                                     conv_padding=self.conv_padding,
-                                     conv_dilation=self.conv_dilation,
-                                     activation=self.act, batch_norm=True)))
-        '''
 
         for i in range(self.num_layers):
 
@@ -230,7 +221,8 @@ class CONV_AE2D(nn.Module):
         self.kernel_size = model_cfg.kernel_size
         self.base_filters = model_cfg.base_filters if not isinstance(model_cfg.base_filters, str) else cfg.dataset.n_features
         self.num_layers = model_cfg.num_layers
-        self.act = activation_dict[model_cfg.activation]
+        self.act = activation_dict.get(model_cfg.activation, None)
+        self.bottleneck_act = activation_dict.get(model_cfg.bottleneck_activation, None)
         self.pool = model_cfg.pool
         self.flattened = model_cfg.flattened
         self.compression_factor = model_cfg.compression_factor
@@ -294,7 +286,7 @@ class CONV_AE2D(nn.Module):
                                compression_factor = self.compression_factor,
                                img_heigth=self.h, img_width=self.w, activation=self.act,
                                padding=self.padding, flattened=self.flattened,
-                               dilation=self.dilation)
+                               dilation=self.dilation, bottleneck_act=self.bottleneck_act)
         self.flattened_size = self.encoder.flattened_size
         self.latent_dim = int(self.encoder.flattened_size // self.compression_factor)
         self.decoder = Decoder(in_channels=self.in_channels, first_deconv_channels=self.encoder.last_layers_channels,

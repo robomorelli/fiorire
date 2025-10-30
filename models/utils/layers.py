@@ -269,7 +269,7 @@ def conv_block(
 
 
 def bottleneck2D(bottleneck_conv_layer, flattened=True, flattened_size=None, latent_dim=None,
-                 activation=nn.ReLU(), batch_norm=True):
+                 activation=nn.ReLU(), bottleneck_activation=nn.ReLU(), batch_norm=True):
     """
     Crea un bottleneck 2D: Flatten → Dense → Dense → Unflatten.
     """
@@ -286,15 +286,14 @@ def bottleneck2D(bottleneck_conv_layer, flattened=True, flattened_size=None, lat
     if flattened:
         layers["flatten"] = nn.Flatten()
         layers["to_latent"] = nn.Linear(flattened_size, latent_dim)
-        if activation is not None:
-            layers["act1"] = activation
+        if bottleneck_activation is not None:
+            layers["act1"] = bottleneck_activation
         if batch_norm is not None:
             layers["batch_norm_latent"] = nn.BatchNorm1d(latent_dim)
     else:
         raise NotImplementedError("Non-flattened bottleneck not implemented yet.")
 
     return nn.Sequential(layers)
-
 
 
 def deconv_block(in_f, out_f,
@@ -350,13 +349,6 @@ def deconv_block(in_f, out_f,
             if activation is not None:
                 layers['act_reshape'] = activation
             layers['unflatten'] = nn.Unflatten(1, (first_deconv_channels, h_enc, w_enc))
-            #layers['reshape_deconv'] = nn.ConvTranspose2d(in_f, out_f,
-            #                                                kernel_size=kernel_size,
-            #                                                stride=stride,
-            #                                                output_padding=output_padding,
-            #                                                dilation=dilation,
-            #                                                *args, **kwargs)
-
 
 
     # Main ConvTranspose2d layer
@@ -386,8 +378,6 @@ def deconv_block(in_f, out_f,
         layers['activation'] = activation
 
     return nn.Sequential(layers)
-
-
 
 
 class EarlyStopping():
