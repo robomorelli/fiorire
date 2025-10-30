@@ -1,6 +1,7 @@
 from utils.load_model import get_model
 from utils.load_dataset import get_train_val_dataloader, get_metric_loader
-from trainer.utils import get_opt_metric, update_input_output, model_setup, train_one_epoch, validate_one_epoch, get_optimizazion_objects
+from trainer.utils import (get_opt_metric, update_input_output, model_setup, train_one_epoch, validate_one_epoch,
+                           load_pretrained_checkpoint, get_optimizazion_objects)
 from omegaconf import ListConfig
 import numpy as np
 
@@ -40,6 +41,15 @@ class trainCONVAE1D(tune.Trainable):
         self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         self.parameters_number = self.cfg.model.parameter_count
 
+        # ==========================================
+        # LOAD PRETRAINED WEIGHTS IF FINE-TUNING
+        # ==========================================
+        self.model, self.pretrained_loaded = load_pretrained_checkpoint(
+            model=self.model,
+            config=self.cfg,
+            device=self.device
+        )
+
         # Optimizer and scheduler
         self.optimizer, self.scheduler, self.criterion, self.early_stopping = get_optimizazion_objects(self.cfg,
                                                                                                        self.model,
@@ -47,8 +57,8 @@ class trainCONVAE1D(tune.Trainable):
 
     def step(self):
         self.current_ip()
-        result = self.train_step(checkpoint_dir=None)
-        return result
+        self.result = self.train_step(checkpoint_dir=None)
+        return self.result
 
     def train_step(self, checkpoint_dir=None):
 
@@ -139,7 +149,9 @@ class trainCONVAE1D(tune.Trainable):
         torch.save({
             'epoch': self.current_epoch, 'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(), 'loss': self.metric_key,
-            'cfg': self.cfg, 'scaler_params': self.scaler_params,
+            'loss_value': self.result[f"best_{self.metric_key}"] ,
+            'cfg': self.cfg, 'scaler_params_pretraing': self.scaler_params if not(self.cfg.opt.get('fine_tuning', False)) else None,
+            'scaler_params_fine_tuning': self.scaler_params if self.cfg.opt.get('fine_tuning', False) else None,
             'parameters_number': self.parameters_number, 'param_conf': self.parameters_number,
             'metric_score': self.val_results if "metric_score" in self.val_results else None,
         }, f"{checkpoint_dir}/model.pt")
