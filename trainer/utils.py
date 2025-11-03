@@ -5,6 +5,7 @@ import numpy as np
 from sklearn.metrics import f1_score
 from tqdm import tqdm
 from typing import List, Optional
+import math
 from config import *
 
 class EarlyStopping:
@@ -354,6 +355,141 @@ def test_anomaly_step(model, dataloader, device,
     }}
 
 
+def adjust_model_for_finetuning(model, pre_feats, fine_feats, pre_seq_len, fine_seq_len,
+                                conv_type="conv_ae2D", device='cuda:0', halve_both=True,  halve_feats=True, halve_time=True):
+    """
+    Adatta la struttura del modello per il fine-tuning se cambiano le dimensioni di input.
+
+    Args:
+        model: modello PyTorch
+        pre_feats: numero di feature nel pre-training
+        fine_feats: numero di feature nel fine-tuning
+        pre_seq_len: lunghezza sequenza nel pre-training
+        fine_seq_len: lunghezza sequenza nel fine-tuning
+        conv_type: "conv1d" o "conv2d"
+    """
+    features_changed = pre_feats != fine_feats
+    seq_changed = pre_seq_len != fine_seq_len
+
+    halve_feats = halve_both or halve_feats
+    halve_time = halve_both or halve_time
+
+    print(f"🔍 Pre-training: feats={pre_feats}, seq={pre_seq_len}")
+    print(f"🔍 Fine-tuning: feats={fine_feats}, seq={fine_seq_len}")
+
+    # -------------------------------
+    # 1️⃣ Caso Conv1D
+    # -------------------------------
+    if conv_type.lower() == "conv_ae1d":
+        print(f"🧩 Detected Conv1D model")
+
+        if features_changed:
+            print(f"🔧 Adding Conv1D adapter: {pre_feats} → {fine_feats}")
+            adapter = nn.Conv1d(
+                in_channels=pre_feats,
+                out_channels=fine_feats,
+                kernel_size=1
+            )
+            model.adapter_layer = adapter.to(device)
+
+        if seq_changed or features_changed:
+            print(f"🔧 Adjusting latent space for Conv1D (sequence/feature mismatch)")
+
+            # Calcolo nuova dimensione latente in base ai parametri del modello
+            old_flattened = model.encoder.flattened_size
+            compression_factor = getattr(model.encoder, "compression_factor", 1)
+            feats_factor = (fine_feats / pre_feats)
+            time_factor = (fine_seq_len / pre_seq_len)
+
+            new_flattened = int(old_flattened * feats_factor * time_factor) if halve_time else int(old_flattened * feats_factor)
+            new_latent_dim = int(new_flattened // compression_factor)
+
+            print(f"  - old_flattened: {old_flattened}")
+            print(f"  - new_flattened: {new_flattened}")
+            print(f"  - new_latent_dim: {new_latent_dim}")
+
+            # Aggiorna bottleneck
+            model.encoder.bottleneck.to_latent = nn.Linear(new_flattened, new_latent_dim).to(device)
+            model.encoder.bottleneck.batch_norm_latent = nn.BatchNorm1d(new_latent_dim).to(device)
+
+            # Aggiorna decoder
+            model.decoder.decoder[0].latent_to_flatten = nn.Linear(new_latent_dim, new_flattened).to(device)
+            model.decoder.decoder[0].batch_norm_1d = nn.BatchNorm1d(new_flattened).to(device)
+
+            # Aggiorna attributi
+            model.encoder.flattened_size = new_flattened
+            model.latent_dim = new_latent_dim
+            model.encoder.latent_dim = new_latent_dim
+            model.decoder.latent_dim = new_latent_dim
+
+            print("✅ Latent layers updated for Conv1D")
+
+        return model
+
+    # -------------------------------
+    # 2️⃣ Caso Conv2D
+    # -------------------------------
+    elif conv_type.lower() == "conv_ae2d":
+        print(f"🧩 Detected Conv2D model")
+
+        if features_changed or seq_changed:
+            print(f"🔧 Adjusting latent space for Conv2D (features or sequence changed)")
+
+            # Recupera shape interne
+            old_flattened = model.encoder.flattened_size
+            old_h, old_w = model.encoder.h_enc, model.encoder.w_enc
+            compression_factor = getattr(model.encoder, "compression_factor", 1)
+
+            # Approssima nuova shape in base ai rapporti di scala
+            new_h = math.ceil(old_h * (fine_feats / pre_feats)) if halve_feats else fine_feats
+            new_w = math.ceil(old_w * (fine_seq_len / pre_seq_len)) if halve_time else fine_seq_len
+            new_flattened = new_h * new_w * (old_flattened // (old_h * old_w))
+            new_latent_dim = int(new_flattened // compression_factor)
+
+            print(f"  - old_flattened: {old_flattened}")
+            print(f"  - new_flattened: {new_flattened}")
+            print(f"  - new_latent_dim: {new_latent_dim}")
+            print(f"  - new_h: {new_h}, new_w: {new_w}")
+
+            # Aggiorna layer nel bottleneck
+            model.encoder.bottleneck.to_latent = nn.Linear(new_flattened, new_latent_dim).to(device)
+            model.encoder.bottleneck.batch_norm_latent = nn.BatchNorm1d(new_latent_dim).to(device)
+
+            # Aggiorna decoder
+            model.decoder.decoder[0].latent_to_flatten = nn.Linear(new_latent_dim, new_flattened).to(device)
+            model.decoder.decoder[0].batch_norm_1d = nn.BatchNorm1d(new_flattened).to(device)
+
+            # Aggiorna attributi del modello
+            model.encoder.flattened_size = new_flattened
+            model.latent_dim = new_latent_dim
+            model.encoder.h_enc, model.encoder.w_enc = new_h, new_w
+            model.encoder.latent_dim = new_latent_dim
+            model.decoder.latent_dim = new_latent_dim
+
+
+            print("✅ Latent layers updated for Conv2D")
+
+        return model
+
+    else:
+        raise ValueError(f"Unsupported conv_type '{conv_type}' (expected 'conv_ae1D' or 'conv_ae2D')")
+
+def load_compatible_weights(model, checkpoint_state_dict):
+    model_dict = model.state_dict()
+    compatible_dict = {}
+
+    for k, v in checkpoint_state_dict.items():
+        if k in model_dict and v.size() == model_dict[k].size():
+            compatible_dict[k] = v
+        else:
+            print(f"⚠️ Skipping {k} (shape mismatch {v.size()} vs {model_dict.get(k, 'MISSING')})")
+
+    model_dict.update(compatible_dict)
+    model.load_state_dict(model_dict)
+
+    print(f"✅ Loaded {len(compatible_dict)} / {len(model_dict)} layers from checkpoint")
+
+
 def load_pretrained_checkpoint(model, config, device):
     """
     Load pretrained weights into model for fine-tuning
@@ -377,7 +513,6 @@ def load_pretrained_checkpoint(model, config, device):
         return model, False
 
     checkpoint_path = config.opt.get('checkpoint_path')
-
     print(f"\n{'=' * 60}")
     print(f"{'=' * 60}")
     print(f"Checkpoint: {checkpoint_path}")
@@ -391,6 +526,33 @@ def load_pretrained_checkpoint(model, config, device):
 
         # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device)
+        pre_trained_number_of_feats = list(checkpoint['model_state_dict'].items())[0][1].shape[0]
+        fine_tuning_number_of_feats = config.dataset.n_features
+
+        pre_training_seq_len = checkpoint['cfg'].dataset.seq_in_length
+        fine_tuning_seq_len = config.dataset.seq_in_length
+
+        if (
+                pre_trained_number_of_feats != fine_tuning_number_of_feats
+                or pre_training_seq_len != fine_tuning_seq_len
+        ):
+            print(f"⚠️ Dimension mismatch detected between pre-training and fine-tuning datasets!")
+            strict = False
+
+            model = adjust_model_for_finetuning(
+                model,
+                pre_feats=pre_trained_number_of_feats,
+                fine_feats=fine_tuning_number_of_feats,
+                pre_seq_len=pre_training_seq_len,
+                fine_seq_len=fine_tuning_seq_len,
+                conv_type=config.model.name,
+                device=device,
+                halve_both=checkpoint['cfg'].model.get('halve_both', False),
+                halve_feats=checkpoint['cfg'].model.get('halve_features', True),
+                halve_time=checkpoint['cfg'].model.get('halve_time', True)
+            )
+        else:
+            strict = True
 
         # Extract model state dict
         if 'model_state_dict' in checkpoint:
@@ -412,32 +574,37 @@ def load_pretrained_checkpoint(model, config, device):
             pretrained_params = None
 
         # Load weights into model
-        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=True)
+        if not strict:
+            print("⚠️ Loading with strict=False due to dimension mismatch")
+            load_compatible_weights(model, state_dict)
 
-        if missing_keys:
-            print(f"⚠️ Missing keys: {missing_keys}")
-        if unexpected_keys:
-            print(f"⚠️ Unexpected keys: {unexpected_keys}")
+        else:
+            print("🔄 Loading with strict=True")
+            missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=strict)
+            if missing_keys:
+                print(f"⚠️ Missing keys: {missing_keys}")
+            if unexpected_keys:
+                print(f"⚠️ Unexpected keys: {unexpected_keys}")
+
+            # Verify weights changed
+            loaded_state = model.state_dict()
+            loaded_sample = list(loaded_state.values())[0].flatten()[:5]
+            print(f"Loaded weights sample: {loaded_sample}")
+
+            weights_changed = not torch.allclose(initial_sample.cpu(), loaded_sample.cpu(), rtol=1e-5)
+            if weights_changed:
+                print("✅ Weights successfully loaded and different from random initialization")
+            else:
+                print("⚠️ WARNING: Weights appear unchanged!")
+
+            # Verify parameter count matches (if available)
+            current_params = sum(p.numel() for p in model.parameters())
+            if pretrained_params and pretrained_params != current_params:
+                print(f"⚠️ WARNING: Parameter count mismatch!")
+                print(f"   Pretrained: {pretrained_params:,}")
+                print(f"   Current: {current_params:,}")
 
         print(f"✅ Loaded pretrained weights from epoch {pretrained_epoch}")
-
-        # Verify weights changed
-        loaded_state = model.state_dict()
-        loaded_sample = list(loaded_state.values())[0].flatten()[:5]
-        print(f"Loaded weights sample: {loaded_sample}")
-
-        weights_changed = not torch.allclose(initial_sample.cpu(), loaded_sample.cpu(), rtol=1e-5)
-        if weights_changed:
-            print("✅ Weights successfully loaded and different from random initialization")
-        else:
-            print("⚠️ WARNING: Weights appear unchanged!")
-
-        # Verify parameter count matches (if available)
-        current_params = sum(p.numel() for p in model.parameters())
-        if pretrained_params and pretrained_params != current_params:
-            print(f"⚠️ WARNING: Parameter count mismatch!")
-            print(f"   Pretrained: {pretrained_params:,}")
-            print(f"   Current: {current_params:,}")
 
         print(f"{'=' * 60}\n")
 
