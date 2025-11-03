@@ -1,6 +1,6 @@
 # Optimization
 tune_config:
-  model.num_layers: tune.choice([1,2])
+  model.num_layers: tune.choice([2])
   model.base_filters: tune.choice([8, 16, 32])
   model.activation: tune.choice(['Relu'])
   model.bottleneck_activation: tune.choice(['Tanh'])

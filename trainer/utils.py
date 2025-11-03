@@ -355,7 +355,7 @@ def test_anomaly_step(model, dataloader, device,
     }}
 
 
-def adjust_model_for_finetuning(model, pre_feats, fine_feats, pre_seq_len, fine_seq_len,
+def adjust_model_for_finetuning(model, checkpoint, pre_feats, fine_feats, pre_seq_len, fine_seq_len,
                                 conv_type="conv_ae2D", device='cuda:0', halve_both=True,  halve_feats=True, halve_time=True):
     """
     Adatta la struttura del modello per il fine-tuning se cambiano le dimensioni di input.
@@ -381,6 +381,7 @@ def adjust_model_for_finetuning(model, pre_feats, fine_feats, pre_seq_len, fine_
     # 1️⃣ Caso Conv1D
     # -------------------------------
     if conv_type.lower() == "conv_ae1d":
+        raise Exception('Bugged, do not use until fixed')
         print(f"🧩 Detected Conv1D model")
 
         if features_changed:
@@ -436,14 +437,33 @@ def adjust_model_for_finetuning(model, pre_feats, fine_feats, pre_seq_len, fine_
             print(f"🔧 Adjusting latent space for Conv2D (features or sequence changed)")
 
             # Recupera shape interne
-            old_flattened = model.encoder.flattened_size
-            old_h, old_w = model.encoder.h_enc, model.encoder.w_enc
+            #old_flattened = model.encoder.flattened_size
+            #old_h, old_w = model.encoder.h_enc, model.encoder.w_enc
+            old_flattened = checkpoint['cfg'].model.flattened_size
             compression_factor = getattr(model.encoder, "compression_factor", 1)
 
             # Approssima nuova shape in base ai rapporti di scala
-            new_h = math.ceil(old_h * (fine_feats / pre_feats)) if halve_feats else fine_feats
-            new_w = math.ceil(old_w * (fine_seq_len / pre_seq_len)) if halve_time else fine_seq_len
-            new_flattened = new_h * new_w * (old_flattened // (old_h * old_w))
+            #new_h = math.ceil(old_h * (fine_feats / pre_feats)) if halve_feats else fine_feats
+            #new_w = math.ceil(old_w * (fine_seq_len / pre_seq_len)) if halve_time else fine_seq_len
+            feats_factor = (fine_feats / pre_feats) if halve_feats else 1
+            time_factor = (fine_seq_len / pre_seq_len) if halve_time else 1
+
+            if halve_feats and not halve_time:
+                new_flattened = fine_feats * (old_flattened // (pre_feats))
+                new_h = fine_feats // model.num_layers
+                new_w = fine_seq_len
+            elif halve_time and not halve_feats:
+                new_flattened = fine_seq_len * (old_flattened // (pre_seq_len))
+                new_h = fine_feats
+                new_w = fine_seq_len // model.num_layers
+            elif halve_time and halve_feats:
+                new_flattened = fine_feats*fine_seq_len * (old_flattened // (pre_feats*pre_seq_len))
+                new_h = fine_feats // model.num_layers
+                new_w = fine_seq_len // model.num_layers
+            else:
+                raise Exception('No dimension changed, error')
+            #new_flattened = new_h * new_w * (old_flattened // (old_h * old_w))
+
             new_latent_dim = int(new_flattened // compression_factor)
 
             print(f"  - old_flattened: {old_flattened}")
@@ -541,6 +561,7 @@ def load_pretrained_checkpoint(model, config, device):
 
             model = adjust_model_for_finetuning(
                 model,
+                checkpoint=checkpoint,
                 pre_feats=pre_trained_number_of_feats,
                 fine_feats=fine_tuning_number_of_feats,
                 pre_seq_len=pre_training_seq_len,

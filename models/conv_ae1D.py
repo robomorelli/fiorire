@@ -262,6 +262,7 @@ class CONV_AE1D(nn.Module):
         )
 
         self.flattened_size = self.encoder.flattened_size
+        self.cfg.model.flattened_size = self.flattened_size
         self.latent_dim = int(self.flattened_size // self.compression_factor)
 
         # Decoder
