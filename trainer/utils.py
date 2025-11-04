@@ -5,7 +5,7 @@ import numpy as np
 from sklearn.metrics import f1_score
 from tqdm import tqdm
 from typing import List, Optional
-import math
+import warnings
 from config import *
 
 class EarlyStopping:
@@ -371,9 +371,6 @@ def adjust_model_for_finetuning(model, checkpoint, pre_feats, fine_feats, pre_se
     features_changed = pre_feats != fine_feats
     seq_changed = pre_seq_len != fine_seq_len
 
-    halve_feats = halve_both or halve_feats
-    halve_time = halve_both or halve_time
-
     print(f"🔍 Pre-training: feats={pre_feats}, seq={pre_seq_len}")
     print(f"🔍 Fine-tuning: feats={fine_feats}, seq={fine_seq_len}")
 
@@ -381,8 +378,7 @@ def adjust_model_for_finetuning(model, checkpoint, pre_feats, fine_feats, pre_se
     # 1️⃣ Caso Conv1D
     # -------------------------------
     if conv_type.lower() == "conv_ae1d":
-        raise Exception('Bugged, do not use until fixed')
-        print(f"🧩 Detected Conv1D model")
+        warnings.warn("🧩 Detected Conv1D model — check adapter behavior", UserWarning)
 
         if features_changed:
             print(f"🔧 Adding Conv1D adapter: {pre_feats} → {fine_feats}")
@@ -392,37 +388,6 @@ def adjust_model_for_finetuning(model, checkpoint, pre_feats, fine_feats, pre_se
                 kernel_size=1
             )
             model.adapter_layer = adapter.to(device)
-
-        if seq_changed or features_changed:
-            print(f"🔧 Adjusting latent space for Conv1D (sequence/feature mismatch)")
-
-            # Calcolo nuova dimensione latente in base ai parametri del modello
-            old_flattened = model.encoder.flattened_size
-            compression_factor = getattr(model.encoder, "compression_factor", 1)
-            feats_factor = (fine_feats / pre_feats)
-            time_factor = (fine_seq_len / pre_seq_len)
-
-            new_flattened = int(old_flattened * feats_factor * time_factor) if halve_time else int(old_flattened * feats_factor)
-            new_latent_dim = int(new_flattened // compression_factor)
-
-            print(f"  - old_flattened: {old_flattened}")
-            print(f"  - new_flattened: {new_flattened}")
-            print(f"  - new_latent_dim: {new_latent_dim}")
-
-            # Aggiorna bottleneck
-            model.encoder.bottleneck.to_latent = nn.Linear(new_flattened, new_latent_dim).to(device)
-            model.encoder.bottleneck.batch_norm_latent = nn.BatchNorm1d(new_latent_dim).to(device)
-
-            # Aggiorna decoder
-            model.decoder.decoder[0].latent_to_flatten = nn.Linear(new_latent_dim, new_flattened).to(device)
-            model.decoder.decoder[0].batch_norm_1d = nn.BatchNorm1d(new_flattened).to(device)
-
-            # Aggiorna attributi
-            model.encoder.flattened_size = new_flattened
-            model.latent_dim = new_latent_dim
-            model.encoder.latent_dim = new_latent_dim
-            model.decoder.latent_dim = new_latent_dim
-
             print("✅ Latent layers updated for Conv1D")
 
         return model
@@ -436,58 +401,17 @@ def adjust_model_for_finetuning(model, checkpoint, pre_feats, fine_feats, pre_se
         if features_changed or seq_changed:
             print(f"🔧 Adjusting latent space for Conv2D (features or sequence changed)")
 
-            # Recupera shape interne
-            #old_flattened = model.encoder.flattened_size
-            #old_h, old_w = model.encoder.h_enc, model.encoder.w_enc
-            old_flattened = checkpoint['cfg'].model.flattened_size
-            compression_factor = getattr(model.encoder, "compression_factor", 1)
-
-            # Approssima nuova shape in base ai rapporti di scala
-            #new_h = math.ceil(old_h * (fine_feats / pre_feats)) if halve_feats else fine_feats
-            #new_w = math.ceil(old_w * (fine_seq_len / pre_seq_len)) if halve_time else fine_seq_len
-            feats_factor = (fine_feats / pre_feats) if halve_feats else 1
-            time_factor = (fine_seq_len / pre_seq_len) if halve_time else 1
-
-            if halve_feats and not halve_time:
-                new_flattened = fine_feats * (old_flattened // (pre_feats))
-                new_h = fine_feats // model.num_layers
-                new_w = fine_seq_len
-            elif halve_time and not halve_feats:
-                new_flattened = fine_seq_len * (old_flattened // (pre_seq_len))
-                new_h = fine_feats
-                new_w = fine_seq_len // model.num_layers
-            elif halve_time and halve_feats:
-                new_flattened = fine_feats*fine_seq_len * (old_flattened // (pre_feats*pre_seq_len))
-                new_h = fine_feats // model.num_layers
-                new_w = fine_seq_len // model.num_layers
-            else:
-                raise Exception('No dimension changed, error')
-            #new_flattened = new_h * new_w * (old_flattened // (old_h * old_w))
-
-            new_latent_dim = int(new_flattened // compression_factor)
+            old_flattened = checkpoint['cfg'].model.get("flattened_size", None)
+            new_flattened = model.encoder.flattened_size
+            new_latent_dim = model.encoder.latent_dim
+            new_h = model.encoder.h_enc
+            new_w = model.encoder.w_enc
 
             print(f"  - old_flattened: {old_flattened}")
             print(f"  - new_flattened: {new_flattened}")
             print(f"  - new_latent_dim: {new_latent_dim}")
             print(f"  - new_h: {new_h}, new_w: {new_w}")
-
-            # Aggiorna layer nel bottleneck
-            model.encoder.bottleneck.to_latent = nn.Linear(new_flattened, new_latent_dim).to(device)
-            model.encoder.bottleneck.batch_norm_latent = nn.BatchNorm1d(new_latent_dim).to(device)
-
-            # Aggiorna decoder
-            model.decoder.decoder[0].latent_to_flatten = nn.Linear(new_latent_dim, new_flattened).to(device)
-            model.decoder.decoder[0].batch_norm_1d = nn.BatchNorm1d(new_flattened).to(device)
-
-            # Aggiorna attributi del modello
-            model.encoder.flattened_size = new_flattened
-            model.latent_dim = new_latent_dim
-            model.encoder.h_enc, model.encoder.w_enc = new_h, new_w
-            model.encoder.latent_dim = new_latent_dim
-            model.decoder.latent_dim = new_latent_dim
-
-
-            print("✅ Latent layers updated for Conv2D")
+            print(f'New Model arcitecture: {model}')
 
         return model
 
@@ -572,6 +496,7 @@ def load_pretrained_checkpoint(model, config, device):
                 halve_feats=checkpoint['cfg'].model.get('halve_features', True),
                 halve_time=checkpoint['cfg'].model.get('halve_time', True)
             )
+
         else:
             strict = True
 

@@ -20,11 +20,11 @@ tune_config:
 dataset:
   name: 'fiorire'
   data_path: './data/fiorire_2/nominal_merged.csv'
-  seq_in_length_into_chunk: 1000    # number of chunks the dataset is divided into (cannot be less than 3); if null the dataset is not chunked
+  seq_in_length_into_chunk: 1000    # # number of sequences for each split chunk
   seq_in_length: 16
   seq_out_length: null
   train_val_split: 0.8
-  shuffle_train: True #shuffle the idx of the train
+  shuffle_train: True # shuffle the idx of the train
   feats: [
     "ACT40001(PREPRO_CMG_LEVEL)", "ACT40101(MODEMNG_CMG_TORQUE_REQ_X)", "ACT40102(MODEMNG_CMG_TORQUE_REQ_Y)",
     "ACT40103(MODEMNG_CMG_TORQUE_REQ_Z)", "ACT41027(UNIT_FW_VEL_1)", "ACT41028(UNIT_FW_VEL_2)",

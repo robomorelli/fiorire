@@ -81,13 +81,32 @@ class Encoder(nn.Module):
                 m.bias.data.zero_()
 
     def _get_final_flattened_size(self):
+        """
+        Calcola la dimensione flatten finale dell'encoder + bottleneck_conv
+        usando un input dummy coerente con dtype e device del modello.
+        """
         with torch.no_grad():
-            x = torch.zeros((1, self.in_channels, self.h, self.w))
+            # Recupera dtype e device coerenti con il modello
+            param = next(self.parameters())
+            dtype = param.dtype
+            device = param.device
+
+            # Crea input dummy con gli stessi dtype e device
+            x = torch.zeros(
+                (1, self.in_channels, self.h, self.w),
+                dtype=dtype,
+                device=device
+            )
+
+            # Passa attraverso encoder e bottleneck
             x = self.encoder(x)
             x = self.bottleneck_conv(x)
- # ✅ include bottleneck in size computation
+
+            # Ottieni le dimensioni finali
             _, c, h, w = x.size()
-        return c * w * h, h, w
+
+        return c * h * w, h, w
+
 
     def forward(self, x):
         enc = self.encoder(x)
