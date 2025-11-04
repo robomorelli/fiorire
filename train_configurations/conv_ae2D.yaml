@@ -29,7 +29,7 @@ tune_config:
 # Dataset
 dataset:
   name: 'fiorire_1'
-  upsample_factor: 4
+  upsample_factor: 1
   upsample_method: 'linear'
   upsample_augmentation: 0
   flag_col: null    #"ACT40082(PREPRO_CMG_ENABLE)"
