@@ -387,6 +387,7 @@ def adjust_model_for_finetuning(model, checkpoint, pre_feats, fine_feats, pre_se
                 out_channels=fine_feats,
                 kernel_size=1
             )
+            nn.init.kaiming_normal_(adapter.weight)
             model.adapter_layer = adapter.to(device)
             print("✅ Latent layers updated for Conv1D")
 

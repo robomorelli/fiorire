@@ -40,3 +40,11 @@ activation_dict = {'Relu': nn.ReLU(), 'Elu': nn.ELU(), 'Selu': nn.SELU(), 'LRelu
 fiorire_family = ['fiorire_1', 'fiorire_2', 'fiorire']
 
 enabled_comma_names = ['opt.checkpoint_path']
+
+anomalies_labels = [
+    'GWN', 'Constant', 'Step', 'Impulse',
+    'GNN',
+    'TimeWarping', 'SpectralAlteration', 'PrincipalSubspaceAlteration',
+    'MixingGWN', 'MixingConstant',
+    'Clipping', 'Dead-Zone'
+]
