@@ -4,6 +4,7 @@ from sklearn.preprocessing import StandardScaler, RobustScaler
 from dataset.sentinel import Dataset_seq
 from torch.utils.data import SubsetRandomSampler, DataLoader
 import numpy as np
+from scipy import interpolate
 
 import matplotlib
 matplotlib.use('TkAgg')  # or 'Qt5Agg' if you have PyQt5 installed
@@ -259,6 +260,135 @@ def create_train_val_df_indexes(
 
     return train_normal_indexes, val_normal_indexes, df_train_values_for_scaling, anomalous_window_indexes
 
+def upsample_and_augment(
+    df_low: pd.DataFrame,
+    factor: int = 4,
+    method: str = "cubic",
+    do_augmentation: bool = True,
+    jitter_std: float = 0.001,
+    scale_range=(0.995, 1.005),
+    ano_col=None,
+    propagate_mode: str = "forward",
+) -> pd.DataFrame:
+    """
+    Upsample an entire DataFrame column-wise and optionally apply
+    slight augmentation *only* to interpolated points.
+
+    If `ano_col` is provided (binary 0/1 anomaly label or list of them),
+    those columns are *not interpolated* but propagated step-wise:
+      - propagate_mode='forward': fill interpolated points with the
+        anomaly value of the *start* of each interval.
+      - propagate_mode='backward': fill interpolated points with the
+        anomaly value of the *end* of each interval.
+
+    Handles datetime indexes (with or without timezone) and numeric indexes.
+
+    Parameters
+    ----------
+    df_low : pd.DataFrame
+        Time-indexed DataFrame (datetime or numeric index).
+    factor : int
+        Upsampling factor (e.g., 4 = 4x more points).
+    method : str
+        Interpolation method ('linear', 'cubic', ...).
+    do_augmentation : bool
+        Whether to add small noise/scaling to interpolated points.
+    jitter_std : float
+        Noise amplitude relative to each column's std.
+    scale_range : tuple
+        Random scaling range for interpolated points.
+    ano_col : str or list, optional
+        Name or list of binary anomaly columns to propagate without interpolation.
+    propagate_mode : str, default='forward'
+        'forward' → use the first value of each interval,
+        'backward' → use the last value of each interval.
+
+    Returns
+    -------
+    pd.DataFrame
+        Upsampled (and optionally augmented) DataFrame.
+    """
+
+    if factor <= 1:
+        return df_low.copy()
+
+    df_low = df_low.sort_index()
+    n = len(df_low)
+
+    # --- Normalize ano_col to list
+    if ano_col is None:
+        ano_cols = []
+    elif isinstance(ano_col, str):
+        ano_cols = [ano_col]
+    else:
+        ano_cols = list(ano_col)
+
+    # --- Convert index to numeric (seconds or raw)
+    if isinstance(df_low.index, pd.DatetimeIndex):
+        idx = pd.DatetimeIndex(df_low.index)
+        if idx.tz is not None:
+            idx = idx.tz_convert(None)
+        x_low = idx.view(np.int64) / 1e9  # seconds
+        idx_type = "datetime"
+    else:
+        x_low = df_low.index.to_numpy(dtype=float)
+        idx_type = "numeric"
+
+    # --- Build new timeline
+    x_min, x_max = x_low[0], x_low[-1]
+    n_new = (n - 1) * factor + 1
+    x_high = np.linspace(x_min, x_max, n_new)
+
+    # --- Identify original vs interpolated points
+    #tol = (x_high[1] - x_high[0]) / 10
+    #is_original = np.isclose(x_high[:, None], x_low[None, :], atol=tol).any(axis=1)
+
+    upsampled_cols = {}
+
+    for col in df_low.columns:
+        y_low = df_low[col].to_numpy()
+
+        # Handle anomaly columns separately
+        if col in ano_cols:
+            if propagate_mode == "backward":
+                y_high = np.repeat(y_low, factor)
+                y_high = np.append(y_low[0], y_high[:-1])  # shift backward
+            else:  # forward (default)
+                y_high = np.repeat(y_low, factor)
+                y_high = np.append(y_high, y_low[-1])
+            y_high = y_high[:n_new]
+            upsampled_cols[col] = y_high.astype(int)
+            continue
+
+        # --- Regular interpolation for numeric columns
+        col_method = "linear" if (method == "cubic" and len(df_low) < 4) else method
+        f = interpolate.interp1d(
+            x_low, y_low, kind=col_method, bounds_error=False, fill_value="extrapolate"
+        )
+        y_high = f(x_high)
+
+        # --- Augmentation only on interpolated points
+        if do_augmentation:
+            std = np.nanstd(y_low)
+            if std == 0 or np.isnan(std):
+                std = 1.0
+            noise = np.random.normal(0, jitter_std * std, len(y_high))
+            scale = np.random.uniform(scale_range[0], scale_range[1])
+            #mask = ~is_original
+            #y_high[mask] = y_high[mask] * scale + noise[mask]
+            y_high = y_high * scale + noise
+
+        upsampled_cols[col] = y_high
+
+    # --- Build output index
+    if idx_type == "datetime":
+        new_index = pd.to_datetime(x_high, unit="s")
+    else:
+        new_index = x_high
+
+    df_high = pd.DataFrame(upsampled_cols, index=new_index)
+    df_high.index.name = df_low.index.name
+    return df_high
 
 
 def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, transform=None, ano_col=None
@@ -283,6 +413,14 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
     df = df[columns].dropna()
     if cfg.dataset.dataset_subset:
         df = df.iloc[:cfg.dataset.dataset_subset, :]
+
+    if cfg.dataset.get('upsample_factor', 0) > 1:
+        print(f"🔧 Upsampling data by factor of {cfg.dataset.upsample_factor}")
+        up_factor = cfg.dataset.get('upsample_factor')
+        method = cfg.dataset.get('upsample_method', 'cubic')
+        augmentation = cfg.dataset.get('upsample_augmentation', False)
+
+        df = upsample_and_augment(df_low = df, factor=up_factor, method=method, do_augmentation=augmentation, ano_col=ano_col)
 
     # Use anomaly-aware split if anomaly column exists in the data
     use_anomaly_split = ano_col in df.columns and filter_anomalies

@@ -57,7 +57,8 @@ def get_transform(cfg):
 
     return transform
 
-def load_dataframe(cfg, aux_cols=None):
+
+def load_dataframe(cfg):
     """
     Load a pandas DataFrame from CSV, TSV, Excel, Parquet, Pickle, or text-like files.
     Automatically detects file type and delimiter for text files. Validates expected columns if provided.
