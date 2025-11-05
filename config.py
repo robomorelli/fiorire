@@ -9,6 +9,7 @@ root = os.path.abspath(os.path.join(module_dir))   # go up one level (repo root)
 model_results_path = root + '/model_results/'
 
 config_path = root + '/train_configurations/'
+dataset_config_path = root + '/data/dataset_configurations/'
 ray_mapper = {'tune.choice': tune.choice}
 
 lstm_ae_config_file = 'lstm_ae.yaml'
@@ -27,9 +28,6 @@ available_metrics = ['val_loss', 'val_f1_score']
 available_modes = ['min', 'max']
 opt_metric_dict_keys = ["metric_key", "mode", "best_metric"]
 
-# sentinel
-sentinel_path = root + '/data/fiorire/sentinel/'
-
 all_feats_dict = {'fiorire': ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
                   'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
                   'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
@@ -38,6 +36,11 @@ all_feats_dict = {'fiorire': ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_
 activation_dict = {'Relu': nn.ReLU(), 'Elu': nn.ELU(), 'Selu': nn.SELU(), 'LRelu': nn.LeakyReLU(), 'Tanh': nn.Tanh(), 'Sigmoid': nn.Sigmoid()}
 
 fiorire_family = ['fiorire_1', 'fiorire_2', 'fiorire']
+fiorire_1_data_path = root + '/data/fiorire/fiorire_1/all_2016-2018_clean_4s.pkl'
+fiorire_2_data_path = root + '/data/fiorire/fiorire_2/nominal_merged.csv'
+
+fiorire_1_conf_path = os.path.join(dataset_config_path, 'fiorire_1.yaml')
+fiorire_2_conf_path = os.path.join(dataset_config_path, 'fiorire_2.yaml')
 
 enabled_comma_names = ['opt.checkpoint_path']
 
