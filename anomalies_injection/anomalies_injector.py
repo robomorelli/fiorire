@@ -379,7 +379,7 @@ def print_final_statistics(df_original: pd.DataFrame, df_final: pd.DataFrame, fe
     print("=" * 100)
 
     header = (f"{'Channel':<20} {'Original Mean':>14} {'Final Mean':>14} {'Δ Mean (%)':>12} "
-              f"{'Original Std':>14} {'Final Std':>14} {'Δ Std (%)':>12} {'Anomalous Points':>18}")
+              f"{'Original Std':>14} {'Final Std':>14} {'Δ Std (%)':>12}") #{'Anomalous Points':>18}")
     print(header)
     print("-" * len(header))
 
