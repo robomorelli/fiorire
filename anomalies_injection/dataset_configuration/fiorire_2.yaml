@@ -16,13 +16,15 @@ dataset:
     "ACT41058(ASSEMBLY_T_BRF_Z)"]
   #dataset_subset: 1000_000
   anomalies_type: [ 'GWN', 'Constant', 'Step', 'Impulse','GNN' ]
+  anomaly_percentage: 0.5    # N%
   delta_mean: 0.8
-  delta_std: 0.5
-  anomaly_percentage: 0.05
-  window_mean: 100
+  delta_std: 0.1
+  window_skewness: -3
+  window_mean: 164
+  window_std: 40
+  reset_interval: 30
   min_channels: 1
   max_channels: 4
-  window_skewness: -3
   channel_prob_decay: 0.7
   block_percentage: 0.1
   random_seed: 123
