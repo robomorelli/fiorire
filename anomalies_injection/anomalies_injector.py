@@ -21,7 +21,7 @@ from omegaconf import OmegaConf, DictConfig, ListConfig
 from tqdm import tqdm
 
 # Your project utilities (assumed available)
-from anomalies_injection.utils import load_data, ANOMALIES_REGISTRY, make_json_safe
+from anomalies_injection.utils import load_data, ANOMALIES_REGISTRY, make_json_safe, sample_and_plot_anomalies
 
 # -------------------------
 # Standardization handler
@@ -504,6 +504,16 @@ def main(args):
     print("\n" + "=" * 70)
     print("PIPELINE COMPLETED SUCCESSFULLY")
     print("=" * 70)
+
+    # Campiona e salva un sottoinsieme di sequenze anomale per ispezione visiva
+    sample_dir = os.path.join(dir_path, "anomaly_samples")
+    sample_and_plot_anomalies(
+        df_original=df_backup,
+        df_with_anom=df_with_anom,
+        anomalies_log=anomalies_metadata["anomalies"],
+        output_dir=sample_dir,
+        sample_pct=5.0,  # percentuale di sequenze da visualizzare
+    )
 
 
 if __name__ == "__main__":

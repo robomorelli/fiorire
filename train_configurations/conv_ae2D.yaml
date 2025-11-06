@@ -35,7 +35,7 @@ dataset:
   flag_col: null    #"ACT40082(PREPRO_CMG_ENABLE)"
   align_data: 0
   detect_flag: 0
-  data_path: './data/fiorire_1/all_2016-2018_clean_4s.pkl' #'./data/fiorire_1/all_2016-2018_clean_4s.pkl'    #'./data/fiorire_2/nominal_merged.csv'
+  data_path: './data/fiorire_1/all_2016-2018_clean_4s_with_anomalies.pkl' #'./data/fiorire_1/all_2016-2018_clean_4s.pkl'    #'./data/fiorire_2/nominal_merged.csv'
   seq_in_length_into_chunk: 2000    # number of sequences for each split chunk
   seq_out_length: null
   train_val_split: 0.8
@@ -44,12 +44,12 @@ dataset:
           'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
           'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
           'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
-  target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
+  target: null    # null: the same input features are the target (reconstruction task); all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
   dataset_subset: 1000_000
   save_dataloaders: False
   forecast: False
-  is_anomaly_column: null   # name of the anomaly column; if None there are no anomalous sequences
+  is_anomaly_column: 'is_anomaly'   # name of the anomaly column; if None there are no anomalous sequences
 
 # Model
 model:
@@ -66,7 +66,7 @@ opt:
   other_reports: ['parameters_number']
   order_by: 'val_loss'    # summary of the results is ordered by this value
   num_workers: 12
-  evaluate_metrics: False
+  evaluate_metrics: True
   n_std: [1, 3]
   metrics_dataset_path: null   # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
   detect_anomaly_epoch_freq: 1

@@ -1,6 +1,8 @@
 import pandas as pd
-from omegaconf import ListConfig
+from typing import List, Dict, Tuple
 import csv
+import random
+import matplotlib.pyplot as plt
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from config import *
 from wombats.anomalies.increasing import *
@@ -188,3 +190,62 @@ def load_data(cfg):
                 print("⚠️ No valid flag column found in cfg.dataset.flag_column.")
 
     return df
+
+def sample_and_plot_anomalies(
+    df_original: pd.DataFrame,
+    df_with_anom: pd.DataFrame,
+    anomalies_log: List[dict],
+    output_dir: str,
+    sample_pct: float = 5.0,
+):
+    """
+    Campiona una percentuale di sequenze anomale e salva i grafici di confronto.
+    Ogni grafico mostra la serie originale e quella con anomalia per un singolo canale.
+
+    Args:
+        df_original: DataFrame originale (non standardizzato)
+        df_with_anom: DataFrame finale (de-standardizzato)
+        anomalies_log: lista dei dizionari di anomalie iniettate
+        output_dir: cartella di destinazione per i plot
+        sample_pct: percentuale di anomalie da campionare (es. 5.0 = 5%)
+    """
+    if not anomalies_log:
+        print("⚠ Nessuna anomalia registrata, nessun plot generato.")
+        return
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    n_anoms = len(anomalies_log)
+    n_sample = max(1, int(round(n_anoms * sample_pct / 100.0)))
+    sampled = random.sample(anomalies_log, n_sample)
+
+    print(f"\n📊 Genero {n_sample} grafici di anomalie campionate in '{output_dir}'")
+
+    for i, anom in enumerate(sampled, 1):
+        start = anom["start_idx"]
+        end = anom["end_idx"]
+        anomaly_type = anom["anomaly_type"]
+        delta = anom["delta"]
+        affected_channels = anom["affected_channels"]
+
+        for ch in affected_channels:
+            orig = df_original[ch].iloc[start:end].values
+            anomv = df_with_anom[ch].iloc[start:end].values
+            if len(orig) == 0:
+                continue
+
+            plt.figure(figsize=(8, 4))
+            plt.plot(orig, label="Originale", alpha=0.7)
+            plt.plot(anomv, label="Anomalia", alpha=0.8)
+            plt.title(f"{ch} — {anomaly_type} (Δ={delta:.3f}) [{start}:{end}]")
+            plt.xlabel("Indice campione")
+            plt.ylabel("Valore")
+            plt.legend()
+            plt.tight_layout()
+
+            fname = f"sample_{i:03d}_{ch}_{anomaly_type}_Δ{delta:.2f}.png"
+            fpath = os.path.join(output_dir, fname)
+            plt.savefig(fpath, dpi=150)
+            plt.close()
+
+    print(f"✓ Salvati {n_sample} esempi di anomalie ({sample_pct:.1f}% del totale)")

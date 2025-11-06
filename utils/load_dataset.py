@@ -58,7 +58,7 @@ def get_transform(cfg):
     return transform
 
 
-def load_dataframe(cfg):
+def load_dataframe(cfg, data_path=None):
     """
     Load a pandas DataFrame from CSV, TSV, Excel, Parquet, Pickle, or text-like files.
     Automatically detects file type and delimiter for text files. Validates expected columns if provided.
@@ -74,7 +74,7 @@ def load_dataframe(cfg):
         FileNotFoundError: If the file doesn't exist.
         ValueError: If the file format is unsupported or cannot be parsed.
     """
-    file_path = cfg.dataset.data_path
+    file_path = cfg.dataset.data_path if data_path is None else data_path
     expected_cols = cfg.dataset.feats
 
     if not os.path.isfile(file_path):

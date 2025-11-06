@@ -4,6 +4,7 @@ from sklearn.preprocessing import StandardScaler, RobustScaler
 from dataset.sentinel import Dataset_seq
 from torch.utils.data import SubsetRandomSampler, DataLoader
 import numpy as np
+import random
 from scipy import interpolate
 
 import matplotlib
@@ -46,43 +47,67 @@ def get_scaler(cfg, df_fit=None, df_transform=None):
     if not scaler_cfg:
         return None, df_transform, None  # No scaler, return original df_transform and None for params
 
-    columns_fit = df_fit.columns.difference([cfg.dataset.is_anomaly_column]) if cfg.dataset.is_anomaly_column in df_fit.columns else df_fit.columns
-    df_fit = df_fit[columns_fit]
+    # Identify anomaly flag column if present
+    anomaly_col = getattr(cfg.dataset, "is_anomaly_column", None)
 
+    # Prepare df_fit (exclude anomaly column)
+    if df_fit is not None:
+        if anomaly_col and anomaly_col in df_fit.columns:
+            df_fit_no_anomaly = df_fit.drop(columns=[anomaly_col])
+        else:
+            df_fit_no_anomaly = df_fit.copy()
+    else:
+        df_fit_no_anomaly = None
+
+    # Prepare df_transform (exclude anomaly column)
     if df_transform is not None:
-        columns_transform = df_transform.columns.difference([cfg.dataset.is_anomaly_column]) if cfg.dataset.is_anomaly_column in df_transform.columns else df_transform.columns
-        df_transform = df_transform[columns_transform]
-        assert df_fit.columns.equals(df_transform.columns), "DataFrames for fitting and transforming must have the same columns."
+        if anomaly_col and anomaly_col in df_transform.columns:
+            df_transform_no_anomaly = df_transform.drop(columns=[anomaly_col])
+        else:
+            df_transform_no_anomaly = df_transform.copy()
+    else:
+        df_transform_no_anomaly = None
 
-    # Extract scaler name and params
+    # Sanity check: columns must match
+    if df_fit_no_anomaly is not None and df_transform_no_anomaly is not None:
+        assert df_fit_no_anomaly.columns.equals(df_transform_no_anomaly.columns), \
+            "DataFrames for fitting and transforming must have the same columns."
+
+    # --- Extract scaler name and parameters ---
     scaler_name = scaler_cfg.split('-')[0]
 
     if scaler_name == 'StandardScaler':
         scaler = StandardScaler()
     elif scaler_name == 'RobustScaler':
-        # Translate config keys to sklearn-compatible ones
         q1 = float(scaler_cfg.split('-')[1])
         q2 = float(scaler_cfg.split('-')[2])
         scaler = RobustScaler(quantile_range=(q1 * 100, q2 * 100))
     else:
         raise ValueError(f"Scaler '{scaler_name}' not supported.")
 
-    if df_fit is not None:
-        # Fit only on clean training data
-        scaler.fit(df_fit)
+    # --- Fit the scaler ---
+    if df_fit_no_anomaly is not None:
+        scaler.fit(df_fit_no_anomaly)
     else:
-        df_scaled = None
-        scaler_params = None
-        return scaler, df_scaled, scaler_params    # df_scaled=None, scaler_params=None
+        return scaler, None, None
 
-    if df_fit is not None and df_transform is not None:
-        df_scaled = pd.DataFrame(scaler.transform(df_transform), columns=df_transform.columns)
+    # --- Transform if df_transform provided ---
+    if df_transform_no_anomaly is not None:
+        df_scaled = pd.DataFrame(
+            scaler.transform(df_transform_no_anomaly),
+            columns=df_transform_no_anomaly.columns,
+            index=df_transform_no_anomaly.index
+        )
+
+        # Re-attach the anomaly flag column if present
+        if anomaly_col and anomaly_col in df_transform.columns:
+            df_scaled[anomaly_col] = df_transform[anomaly_col]
+
+        # Serialize parameters (if you have a helper)
         scaler_params = serialize_scaler(scaler)
         return scaler, df_scaled, scaler_params
     else:
-        df_scaled = None
-        scaler_params = None
-        return scaler, df_scaled, scaler_params  # df_scaled=None, scaler_params=None
+        return scaler, None, None
 
 
 def serialize_scaler(scaler):
@@ -256,6 +281,7 @@ def create_train_val_df_indexes(
     anomalous_window_indexes = list(get_anomaly_window_indexes(full_anomalous_idx, total_len))
 
     scaling_cols = df.columns.difference([ano_col]) if ano_col in df.columns else df.columns
+    scaling_cols = [x for x in df.columns if x in scaling_cols]
     df_train_values_for_scaling = df[scaling_cols].iloc[train_normal_indexes].reset_index(drop=True)
 
     return train_normal_indexes, val_normal_indexes, df_train_values_for_scaling, anomalous_window_indexes
@@ -454,8 +480,11 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
     }
 
     if anomalous_indexes is not None:
-        metric_indexes = np.union1d(val_indexes, anomalous_indexes)
-        index_sets["metric"] = (metric_indexes, seq_len)
+        val_indexes_injection = val_indexes.copy()
+        random.shuffle(val_indexes_injection)
+        val_indexes_injection = val_indexes_injection[:len(anomalous_indexes) * 6]
+        metric_indexes = np.union1d(val_indexes_injection, anomalous_indexes)
+        index_sets["metric"] = (metric_indexes, seq_len, False)
 
     samplers = get_samplers_from_index_sets(index_sets)
 
@@ -464,7 +493,7 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
                         sequence_length=cfg.dataset.seq_in_length, out_window=cfg.dataset.seq_out_length,
                         forecast=cfg.dataset.forecast,
                         remove_target=cfg.dataset.remove_target,
-                        transform=transform)
+                        transform=transform, is_anomaly_column=cfg.dataset.get('is_anomaly_column', None))
 
     train_dataset = Dataset_seq(**dataset_args, sampler=samplers['train'], indices=samplers['train'].indices)
     val_dataset = Dataset_seq(**dataset_args, sampler=samplers['val'], indices=samplers['val'].indices)

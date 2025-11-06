@@ -17,6 +17,19 @@ class Dataset_seq(Dataset):
             else [is_anomaly_column] if isinstance(is_anomaly_column, str)
             else None
         )
+        if isinstance(self.is_anomaly_column, (list, tuple)):
+            # keep it only if *all* columns exist in df
+            if all(col in self.df.columns for col in self.is_anomaly_column):
+                self.is_anomaly_column = list(self.is_anomaly_column)
+            else:
+                self.is_anomaly_column = None
+        else:
+            # single column case
+            self.is_anomaly_column = (
+                self.is_anomaly_column
+                if self.is_anomaly_column in self.df.columns
+                else None
+            )
         self.transform = transform
         self.sequence_length = sequence_length
         self.out_window = out_window
@@ -34,7 +47,8 @@ class Dataset_seq(Dataset):
             exclude_cols.append(self.is_anomaly_column) if isinstance(self.is_anomaly_column, str) else exclude_cols.extend(self.is_anomaly_column)
 
         # Get binary classification target if is_anomaly_column is specified
-        self.df_is_anomaly = self.df.loc[:, self.is_anomaly_column] if self.is_anomaly_column is not None and all(item in list(self.df.columns) for item in self.is_anomaly_column) else None
+        self.df_is_anomaly = self.df.loc[:, self.is_anomaly_column] if (self.is_anomaly_column
+                                is not None and all(item in list(self.df.columns) for item in self.is_anomaly_column)) else None
 
         # Drop excluded columns for model input
         self.df_data = df.drop(columns=exclude_cols) if exclude_cols else df
