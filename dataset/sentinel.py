@@ -87,7 +87,8 @@ class Dataset_seq(Dataset):
         if self.transform is not None:
             data = self.transform(data)
             target = self.transform(target)
-            anomaly_labels = self.transform(anomaly_labels)
+            anomaly_labels = torch.permute(torch.tensor(anomaly_labels), (1, 0))  # to have shape (1, seq_len)
+            #anomaly_labels = self.transform(anomaly_labels)
 
         return data.float(), target.float(), anomaly_labels.float()
 

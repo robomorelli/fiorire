@@ -365,12 +365,12 @@ def reduce_anomaly_mask(all_errors, thresholds, model_type):
     """
     if model_type == 'cnn':
         thresholds_tensor = torch.tensor(thresholds).view(1, -1, 1)  # [1, C, 1]
-        mask = (all_errors > thresholds_tensor).int()               # [N, C, L]
+        mask = (all_errors.squeeze() > thresholds_tensor).int()               # [N, C, L]
         reduced = mask.any(dim=1, keepdim=True).int()               # [N, 1, L]
 
     elif model_type == 'lstm':
         thresholds_tensor = torch.tensor(thresholds).view(1, 1, -1)  # [1, 1, C]
-        mask = (all_errors > thresholds_tensor).int()               # [N, L, C]
+        mask = (all_errors.squeeze() > thresholds_tensor).int()               # [N, L, C]
         reduced = mask.any(dim=2, keepdim=True).permute(0, 2, 1).int()  # [N, 1, L]
 
     else:

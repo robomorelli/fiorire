@@ -77,6 +77,7 @@ class trainCONVAE2D(tune.Trainable):
             desc=f"Epoch {self.current_epoch} [Train]",
         )
         train_loss = train_results["train_loss"]
+        #TO DO: compute the mean and std on the validation set instead of train set where the avg of the error is across batches with higher loss since th emodel is training
         print(f"Epoch {self.current_epoch} - Avg Train Loss: {train_loss:.6f}")
 
         evaluate_metrics = self.cfg.opt.evaluate_metrics and (
