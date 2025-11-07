@@ -297,7 +297,10 @@ def test_anomaly_step(model, dataloader, device,
         model_type, last_layer = infer_model_type(model)
 
         if model_type == "cnn":
-            C = all_errors.shape[1]
+            if last_layer == 'Conv2d':
+                C = all_errors.shape[2]
+            else:
+                C = all_errors.shape[1]
         elif model_type == "lstm":
             C = all_errors.shape[2]
         else:

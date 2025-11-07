@@ -23,7 +23,7 @@ tune_config:
   opt.es_patience: tune.choice([25, 35])
 
   dataset.scaler: tune.choice(['StandardScaler'])
-  dataset.seq_in_length: tune.choice([16])
+  dataset.seq_in_length: tune.choice([8])
   dataset.perc_overlap: tune.choice([0.2, 0.5])
 
 # Dataset
