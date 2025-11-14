@@ -1,12 +1,12 @@
 # Optimization
 tune_config:
   model.num_layers: tune.choice([2])
-  model.base_filters: tune.choice([8, 16, 32])
+  model.base_filters: tune.choice([8])
   model.activation: tune.choice(['Relu'])
   model.bottleneck_activation: tune.choice(['Tanh'])
   model.kernel_size: tune.choice([5])
   model.double_deconv: tune.choice([1])
-  model.compression_factor: tune.choice([2])
+  model.compression_factor: tune.choice([1])
   model.halve_both: tune.choice([1])
   model.halve_time: tune.choice([0])
   model.halve_features: tune.choice([0])
@@ -36,7 +36,7 @@ dataset:
   align_data: 0
   detect_flag: 0
   data_path: './data/fiorire_1/all_2016-2018_clean_4s_with_anomalies.pkl' #'./data/fiorire_1/all_2016-2018_clean_4s.pkl'    #'./data/fiorire_2/nominal_merged.csv'
-  seq_in_length_into_chunk: 100    # number of sequences for each split chunk
+  seq_in_length_into_chunk: 2000    # number of sequences for each split chunk
   seq_out_length: null
   train_val_split: 0.8
   shuffle_train: True #shuffle the idx of the train
@@ -46,7 +46,7 @@ dataset:
           'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
   target: null    # null: the same input features are the target (reconstruction task); all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
-  dataset_subset: 100000
+  dataset_subset: null
   save_dataloaders: False
   forecast: False
   is_anomaly_column: 'is_anomaly'   # name of the anomaly column; if None there are no anomalous sequences

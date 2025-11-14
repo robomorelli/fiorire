@@ -2,6 +2,7 @@ from utils.general import resolve_paths, infer_model_type, reduce_anomaly_mask
 from omegaconf import OmegaConf, ListConfig
 import torch
 import numpy as np
+import math
 from sklearn.metrics import f1_score
 from tqdm import tqdm
 from typing import List, Optional
@@ -358,18 +359,31 @@ def test_anomaly_step(model, dataloader, device,
     }}
 
 
-def adjust_model_for_finetuning(model, checkpoint, pre_feats, fine_feats, pre_seq_len, fine_seq_len,
-                                conv_type="conv_ae2D", device='cuda:0', halve_both=True,  halve_feats=True, halve_time=True):
+
+def adjust_model_for_finetuning(
+    fine_tuning_cfg,
+    model,
+    checkpoint,
+    pre_feats,
+    fine_feats,
+    pre_seq_len,
+    fine_seq_len,
+    conv_type="conv_ae2d",
+    device='cuda:0'
+):
     """
-    Adatta la struttura del modello per il fine-tuning se cambiano le dimensioni di input.
+    Adjust the model structure for fine-tuning when input dimensions change.
 
     Args:
-        model: modello PyTorch
-        pre_feats: numero di feature nel pre-training
-        fine_feats: numero di feature nel fine-tuning
-        pre_seq_len: lunghezza sequenza nel pre-training
-        fine_seq_len: lunghezza sequenza nel fine-tuning
-        conv_type: "conv1d" o "conv2d"
+        fine_tuning_cfg: fine-tuning configuration object
+        model: PyTorch model
+        checkpoint: pretrained model checkpoint
+        pre_feats: number of features (height) in pre-training
+        fine_feats: number of features (height) in fine-tuning
+        pre_seq_len: input sequence length during pre-training (width)
+        fine_seq_len: input sequence length during fine-tuning (width)
+        conv_type: "conv_ae1d" or "conv_ae2d"
+        device: computation device
     """
     features_changed = pre_feats != fine_feats
     seq_changed = pre_seq_len != fine_seq_len
@@ -378,64 +392,107 @@ def adjust_model_for_finetuning(model, checkpoint, pre_feats, fine_feats, pre_se
     print(f"🔍 Fine-tuning: feats={fine_feats}, seq={fine_seq_len}")
 
     # -------------------------------
-    # 1️⃣ Caso Conv1D
+    # 1️⃣ Conv1D case
     # -------------------------------
     if conv_type.lower() == "conv_ae1d":
         warnings.warn("🧩 Detected Conv1D model — check adapter behavior", UserWarning)
 
         if features_changed:
-            print(f"🔧 Adding Conv1D adapter: {pre_feats} → {fine_feats}")
+            print(f"🔧 Adding Conv1D adapter: {fine_feats} → {pre_feats}")
+            # Map fine-tuning input features → pretrained feature dimension
             adapter = nn.Conv1d(
-                in_channels=pre_feats,
-                out_channels=fine_feats,
+                in_channels=fine_feats,
+                out_channels=pre_feats,
                 kernel_size=1
             )
-            nn.init.kaiming_normal_(adapter.weight)
+            if hasattr(adapter, "weight"):
+                nn.init.kaiming_normal_(adapter.weight)
             model.adapter_layer = adapter.to(device)
-            print("✅ Latent layers updated for Conv1D")
+            print("✅ Added Conv1D adapter layer")
 
         return model
 
     # -------------------------------
-    # 2️⃣ Caso Conv2D
+    # 2️⃣ Conv2D case
     # -------------------------------
     elif conv_type.lower() == "conv_ae2d":
-        print(f"🧩 Detected Conv2D model")
+        print("🧩 Detected Conv2D model")
 
         if features_changed or seq_changed:
-            print(f"🔧 Adjusting latent space for Conv2D (features or sequence changed)")
+            print("🔧 Adjusting latent space for Conv2D (features or sequence changed)")
 
-            old_flattened = checkpoint['cfg'].model.get("flattened_size", None)
-            new_flattened = model.encoder.flattened_size
-            new_latent_dim = model.encoder.latent_dim
-            new_h = model.encoder.h_enc
-            new_w = model.encoder.w_enc
+            mode = fine_tuning_cfg.opt.get('fine_tuning_mode', None)
 
-            print(f"  - old_flattened: {old_flattened}")
-            print(f"  - new_flattened: {new_flattened}")
-            print(f"  - new_latent_dim: {new_latent_dim}")
-            print(f"  - new_h: {new_h}, new_w: {new_w}")
-            print(f'New Model arcitecture: {model}')
+            if mode == "adaptive_layer":
+                print("⚙️ Fine-tuning mode: 'adaptive_layer' (learnable resizer)")
 
-        return model
+                if features_changed:
+                    # Add a learnable resizer to map feature height fine→pre
+                    adapter = AdaptiveLearnableResizer2D(
+                        h_in=fine_feats,
+                        h_out=pre_feats,
+                        channels=1
+                    )
+                    model.input_adapter = nn.Sequential(
+                        adapter.to(device),
+                        nn.BatchNorm2d(1),
+                        nn.ReLU(inplace=True)
+                    )
+                    print(f"✅ Added learnable adapter {adapter.mode}: {fine_feats} → {pre_feats}")
+                else:
+                    print("✅ Sequence length changed but feature height identical — no adapter needed")
+
+            else:
+                print(f"ℹ️ Fine-tuning mode '{mode}' — running structural diagnostics only")
+
+                old_flattened = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size", None)
+                new_flattened = getattr(getattr(model, "encoder", None), "flattened_size", None)
+                new_latent_dim = getattr(getattr(model, "encoder", None), "latent_dim", None)
+                new_h = getattr(getattr(model, "encoder", None), "h_enc", None)
+                new_w = getattr(getattr(model, "encoder", None), "w_enc", None)
+
+                print(f"  - old_flattened: {old_flattened}")
+                print(f"  - new_flattened: {new_flattened}")
+                print(f"  - new_latent_dim: {new_latent_dim}")
+                print(f"  - new_h: {new_h}, new_w: {new_w}")
+                print(f"🧱 New model architecture: {model}")
+
+            return model
+
+        else:
+            print("✅ Feature and sequence dimensions identical — no adapter needed")
+            return model
 
     else:
-        raise ValueError(f"Unsupported conv_type '{conv_type}' (expected 'conv_ae1D' or 'conv_ae2D')")
+        raise ValueError(f"Unsupported conv_type '{conv_type}' (expected 'conv_ae1d' or 'conv_ae2d')")
+
+
 
 def load_compatible_weights(model, checkpoint_state_dict):
+    """
+    Load matching weights from a checkpoint into a model safely.
+    Only parameters with identical shapes are loaded.
+    """
     model_dict = model.state_dict()
     compatible_dict = {}
 
     for k, v in checkpoint_state_dict.items():
-        if k in model_dict and v.size() == model_dict[k].size():
-            compatible_dict[k] = v
+        if k in model_dict and isinstance(v, torch.Tensor) and v.shape == model_dict[k].shape:
+            compatible_dict[k] = v.detach()
         else:
-            print(f"⚠️ Skipping {k} (shape mismatch {v.size()} vs {model_dict.get(k, 'MISSING')})")
+            print(f"⚠️ Skipping {k} (shape mismatch or missing key)")
 
-    model_dict.update(compatible_dict)
-    model.load_state_dict(model_dict)
+    # Load only the compatible parameters
+    msg = model.load_state_dict(compatible_dict, strict=False)
 
-    print(f"✅ Loaded {len(compatible_dict)} / {len(model_dict)} layers from checkpoint")
+    # Summary
+    print(f"✅ Loaded {len(compatible_dict)} compatible tensors")
+    if msg.missing_keys:
+        print(f"ℹ️ Missing keys in checkpoint: {len(msg.missing_keys)}")
+    if msg.unexpected_keys:
+        print(f"ℹ️ Unexpected keys in checkpoint: {len(msg.unexpected_keys)}")
+
+    return model
 
 
 def load_pretrained_checkpoint(model, config, device):
@@ -488,6 +545,7 @@ def load_pretrained_checkpoint(model, config, device):
             strict = False
 
             model = adjust_model_for_finetuning(
+                config,
                 model,
                 checkpoint=checkpoint,
                 pre_feats=pre_trained_number_of_feats,
@@ -496,9 +554,6 @@ def load_pretrained_checkpoint(model, config, device):
                 fine_seq_len=fine_tuning_seq_len,
                 conv_type=config.model.name,
                 device=device,
-                halve_both=checkpoint['cfg'].model.get('halve_both', False),
-                halve_feats=checkpoint['cfg'].model.get('halve_features', True),
-                halve_time=checkpoint['cfg'].model.get('halve_time', True)
             )
 
         else:
@@ -606,3 +661,62 @@ def verify_pretrained_loading(model, checkpoint_path, device):
                                                                                                      'total_layers'] > 0 else 0
 
     return results
+
+
+# ===========================================
+# Learnable Adaptive Resizer 2D
+# ===========================================
+class AdaptiveLearnableResizer2D(nn.Module):
+    """
+    Learnable resizer that adapts the spatial height (H_in → H_out)
+    using Conv2D or ConvTranspose2D.
+    Automatically computes padding / output_padding to reach the target size.
+    """
+    def __init__(self, h_in, h_out, kernel_size=3, channels=1):
+        super().__init__()
+        self.h_in = h_in
+        self.h_out = h_out
+        self.kernel_size = kernel_size
+        self.channels = channels
+
+        if h_in > h_out:
+            # ✅ Downsample with Conv2d
+            stride = math.ceil(h_in / h_out)
+            padding = math.ceil(((h_out - 1) * stride - h_in + kernel_size) / 2)
+            self.layer = nn.Conv2d(
+                in_channels=channels,
+                out_channels=channels,
+                kernel_size=(kernel_size, 1),
+                stride=(stride, 1),
+                padding=(padding, 0)
+            )
+            self.mode = f"conv_down (stride={stride}, pad={padding})"
+
+        elif h_in < h_out:
+            # ✅ Upsample with ConvTranspose2d
+            stride = math.floor(h_out / h_in)
+            padding = kernel_size // 2
+
+            H_calc = (h_in - 1) * stride - 2 * padding + kernel_size
+            output_padding = max(0, h_out - H_calc)
+
+            self.layer = nn.ConvTranspose2d(
+                in_channels=channels,
+                out_channels=channels,
+                kernel_size=(kernel_size, 1),
+                stride=(stride, 1),
+                padding=(padding, 0),
+                output_padding=(output_padding, 0)
+            )
+            self.mode = f"conv_transpose_up (stride={stride}, pad={padding}, out_pad={output_padding})"
+
+        else:
+            self.layer = nn.Identity()
+            self.mode = "identity"
+
+        # Init pesi (solo se layer learnable)
+        if isinstance(self.layer, (nn.Conv2d, nn.ConvTranspose2d)):
+            nn.init.kaiming_normal_(self.layer.weight, nonlinearity='relu')
+
+    def forward(self, x):
+        return self.layer(x)

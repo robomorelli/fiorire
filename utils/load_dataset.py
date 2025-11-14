@@ -176,6 +176,12 @@ def get_train_val_dataloader(cfg, filter_anomalies=True,
     if not cfg.dataset.seq_out_length:
         cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
 
+    if cfg.opt.get("fine_tuning", False):
+        print("⚠️ Fine-tuning mode: skipping data alignment and flag detection.")
+        if torch.load(cfg.opt.get('checkpoint_path'))['cfg'].dataset.seq_in_length != cfg.dataset.seq_in_length:
+            print(f"🔄 Overriding seq_in_length from {cfg.dataset.seq_in_length} to {torch.load(cfg.opt.get('checkpoint_path'))['cfg'].dataset.seq_in_length} for fine-tuning.")
+        cfg.dataset.seq_in_length = torch.load(cfg.opt.get('checkpoint_path'))['cfg'].dataset.seq_in_length
+
     print("📂 Loading dataset from:", cfg.dataset.data_path)
     df = load_dataframe(cfg)
 

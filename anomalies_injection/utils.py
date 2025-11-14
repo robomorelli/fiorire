@@ -4,6 +4,8 @@ import csv
 import random
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig, ListConfig, OmegaConf
+from sympy.codegen import Print
+
 from config import *
 from wombats.anomalies.increasing import *
 from wombats.anomalies.invariant import *
@@ -14,7 +16,8 @@ ANOMALIES_REGISTRY = {
     'Constant':Constant,
     'Step':Step,
     'Impulse':Impulse,
-    'GNN':GNN
+    'GNN':GNN,
+    'PrincipalSubspaceAlteration': PrincipalSubspaceAlteration,
     }
 
 def to_json_serializable(obj):

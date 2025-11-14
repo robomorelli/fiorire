@@ -7,24 +7,46 @@ Adaptive WOMBAT-style multi-channel anomaly injector
 - Final statistics table includes anomalous point counts per feature
 """
 
+# Your project utilities (assumed available)
+from anomalies_injection.utils import load_data, ANOMALIES_REGISTRY, make_json_safe, sample_and_plot_anomalies
+
 import os
-import sys
 import json
 import random
 import argparse
 from datetime import datetime
-from typing import List, Dict, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
-from omegaconf import OmegaConf, DictConfig, ListConfig
 from tqdm import tqdm
 
-# Your project utilities (assumed available)
-from anomalies_injection.utils import load_data, ANOMALIES_REGISTRY, make_json_safe, sample_and_plot_anomalies
+# External libs referenced in original script (placeholders if not imported elsewhere)
+from omegaconf import OmegaConf
+from omegaconf import DictConfig, ListConfig
+
+# --- PLACEHOLDERS / EXPECTED TO BE PROVIDED IN YOUR ENVIRONMENT ---
+# ANOMALIES_REGISTRY, load_data, sample_and_plot_anomalies should be available
+# in your codebase exactly as they were in the original project. If not, import
+# them appropriately.
+try:
+    from anomalies_registry import ANOMALIES_REGISTRY  # optional local import
+except Exception:
+    ANOMALIES_REGISTRY = globals().get('ANOMALIES_REGISTRY', {})
+
+try:
+    from data_loader import load_data
+except Exception:
+    load_data = globals().get('load_data', lambda cfg: pd.DataFrame())
+
+try:
+    from viz import sample_and_plot_anomalies
+except Exception:
+    sample_and_plot_anomalies = globals().get('sample_and_plot_anomalies', lambda **kw: None)
+
 
 # -------------------------
-# Standardization handler
+# Standardization Handler
 # -------------------------
 class StandardizationHandler:
     """
@@ -67,6 +89,7 @@ class StandardizationHandler:
 class AdaptiveMultiChannelInjector:
     """
     Multi-channel anomaly injector with adaptive delta/window schedule and lazy fitting.
+    Option A labeling: a time step is anomalous if ANY channel changed (union mask).
     """
 
     def __init__(self, cfg: DictConfig, anomaly_registry: dict = None):
@@ -79,9 +102,9 @@ class AdaptiveMultiChannelInjector:
         self.delta_mean: float = float(ds.delta_mean)
         self.delta_std: float = float(ds.delta_std)
         self.reset_interval_pct: float = float(ds.get("reset_interval", 100))  # percent
-        self.min_channels: int = int(ds.get("min_channels", 1))
-        self.max_channels: int = int(ds.get("max_channels", 1))
-        self.channel_prob_decay: float = float(ds.get("channel_prob_decay", 0.7))
+        self.min_channels: int = int(ds.get("min_channels", 1)) if ds.get("min_channels", 1) is not None else None
+        self.max_channels: int = int(ds.get("max_channels", 1)) if ds.get("max_channels", 1) is not None else None
+        self.channel_prob_decay: float = float(ds.get("channel_prob_decay", 0.7)) if ds.get("channel_prob_decay", 0.7) is not None else None
         self.random_seed = ds.get("random_seed", None)
 
         # registry with anomaly classes (strings -> classes)
@@ -105,13 +128,14 @@ class AdaptiveMultiChannelInjector:
         print(f"  - delta_mean/std: {self.delta_mean}/{self.delta_std}")
         print(f"  - reset_interval_pct: {self.reset_interval_pct}%")
         print(f"  - channels per window: {self.min_channels}-{self.max_channels}")
-        print(f"  - P(1 channel) = {self.channel_prob_decay:.2f}")
 
     # -------------------------
     # Channel selection policy
     # -------------------------
-    def _select_num_channels(self) -> int:
+    def _select_num_channels(self, features) -> int:
         """Return number of channels to perturb following the decay policy."""
+        if self.channel_prob_decay is None or self.max_channels is None:
+            return len(features)
         if np.random.rand() < self.channel_prob_decay or self.max_channels <= 1:
             return 1
         # else sample 2..max_channels with exponential decay
@@ -121,7 +145,7 @@ class AdaptiveMultiChannelInjector:
         return int(np.random.choice(possible, p=probs))
 
     def _choose_channels(self, feature_columns: List[str]) -> List[str]:
-        n = self._select_num_channels()
+        n = self._select_num_channels(feature_columns)
         n = min(n, len(feature_columns))
         return list(np.random.choice(feature_columns, size=n, replace=False))
 
@@ -203,7 +227,7 @@ class AdaptiveMultiChannelInjector:
         print(f"\n♻️  Schedule reset → new delta={self.current_delta:.4f}, new window={self.current_window}")
 
     # -------------------------
-    # Injection core
+    # Injection core (UPDATED)
     # -------------------------
     def inject(self, df_standardized: pd.DataFrame, feature_columns: List[str]) -> Tuple[pd.DataFrame, List[dict], pd.DataFrame]:
         """
@@ -211,6 +235,8 @@ class AdaptiveMultiChannelInjector:
          - df_standardized with 'is_anomaly' and metadata columns,
          - anomalies_log (list of dicts),
          - stats_log DataFrame describing schedule resets.
+
+        LABELING STRATEGY (Option A): A time step is anomalous if ANY channel changed.
         """
         n_points = len(df_standardized)
         n_target_points = int(round(n_points * (self.anomaly_percentage / 100.0)))
@@ -229,8 +255,6 @@ class AdaptiveMultiChannelInjector:
         df_out['affected_channels'] = ''
 
         # prepare window indices (we operate on non-overlapping windows at high-level for selection)
-        # We'll treat the dataset as n_windows of length current_window when selecting windows to mark anomalous.
-        # However because current_window may change at resets, we will compute on-the-fly per stage.
         anomalies_log: List[dict] = []
         stats_log: List[dict] = []
 
@@ -269,45 +293,79 @@ class AdaptiveMultiChannelInjector:
             # pick anomaly type uniformly
             anomaly_type = random.choice(self.anomaly_types)
 
-            # apply same anomaly type to all selected channels (fitted lazily)
+            # We'll collect per-channel "before" and "after" to compute exact changed points
+            before_windows = {}
+            after_windows = {}
             distorted_channels = []
+
+            # First, for each channel, capture 'before', obtain the anomaly object and compute distorted 'after'
             for ch in selected_channels:
                 try:
+                    # capture before from df_out (standardized space)
+                    before = df_out[ch].values[start_idx:end_idx].copy()
+
                     # get or fit anomaly object for this channel+type using current delta & current window
                     anomaly_obj = self._get_or_fit(ch, anomaly_type, df_standardized)
-                    # extract window data from df_out (standardized space)
-                    window_data = df_out[ch].values[start_idx:end_idx]
-                    # WOMBAT distort expects shape (M, L) -> provide shape (1, L)
-                    distorted = anomaly_obj.distort(window_data.reshape(1, -1))[0]
-                    # reinsert
-                    df_out.iloc[start_idx:end_idx, df_out.columns.get_loc(ch)] = distorted
+
+                    # generate distorted window (WOMBAT expects shape (M, L))
+                    distorted = anomaly_obj.distort(before.reshape(1, -1))[0]
+
+                    # store
+                    before_windows[ch] = before
+                    after_windows[ch] = distorted
                     distorted_channels.append(ch)
                 except Exception as e:
-                    print(f"  ⚠ Error applying {anomaly_type} to {ch} at [{start_idx}:{end_idx}]: {e}")
+                    print(f"  ⚠ Error preparing/applying {anomaly_type} to {ch} at [{start_idx}:{end_idx}]: {e}")
                     # skip this channel only and continue with others
                     continue
 
-            # if at least one channel distorted -> mark as anomalous and log
-            if len(distorted_channels) > 0:
-                df_out.iloc[start_idx:end_idx, df_out.columns.get_loc('is_anomaly')] = 1
-                df_out.iloc[start_idx:end_idx, df_out.columns.get_loc('anomaly_type')] = anomaly_type
-                df_out.iloc[start_idx:end_idx, df_out.columns.get_loc('affected_channels')] = ','.join(distorted_channels)
+            # if no channel produced a distortion, skip
+            if len(distorted_channels) == 0:
+                continue
 
-                # log anomaly
+            # Compute precise per-point anomaly mask (union across channels)
+            window_len = end_idx - start_idx
+            changed_mask = np.zeros(window_len, dtype=bool)
+            for ch in distorted_channels:
+                before = before_windows[ch]
+                after = after_windows[ch]
+                # element-wise comparison (float) -> use != which is fine in standardized space
+                changed_mask |= (before != after)
+
+            # If at least one point changed -> update df_out for those indices only
+            if changed_mask.any():
+                changed_idx_rel = np.where(changed_mask)[0]  # relative positions within window
+                changed_idx_abs = (start_idx + changed_idx_rel).tolist()
+
+                # apply after-values only for distorted channels, but only at changed positions
+                for ch in distorted_channels:
+                    after = after_windows[ch]
+                    # only set values where after differs from before (changed_mask)
+                    # use iloc since we have integer positions
+                    df_out.iloc[start_idx:end_idx, df_out.columns.get_loc(ch)].values[changed_mask] = after[changed_mask]
+
+                # mark anomaly metadata only at changed timestamps
+                df_out.iloc[changed_idx_abs, df_out.columns.get_loc('is_anomaly')] = 1
+                df_out.iloc[changed_idx_abs, df_out.columns.get_loc('anomaly_type')] = anomaly_type
+                # affected_channels column will list all channels that were part of the distortion attempt
+                df_out.iloc[changed_idx_abs, df_out.columns.get_loc('affected_channels')] = ','.join(distorted_channels)
+
+                # log anomaly (store full window start/end and exact changed indices)
                 anomalies_log.append({
                     "anomaly_id": len(anomalies_log),
                     "start_idx": int(start_idx),
                     "end_idx": int(end_idx),
+                    "changed_indices": changed_idx_abs,
                     "anomaly_type": anomaly_type,
                     "affected_channels": distorted_channels,
-                    "n_channels_affected": len(distorted_channels),
+                    "n_changed_points": int(changed_mask.sum()),
                     "window_length": int(self.current_window),
                     "delta": float(self.current_delta)
                 })
 
                 # update counters
-                injected_points += (end_idx - start_idx)
-                pbar.update(end_idx - start_idx)
+                injected_points += int(changed_mask.sum())
+                pbar.update(int(changed_mask.sum()))
 
             # check reset condition
             if injected_points >= next_reset_points and injected_points < n_target_points:
@@ -378,8 +436,8 @@ def print_final_statistics(df_original: pd.DataFrame, df_final: pd.DataFrame, fe
     print("STATISTICAL COMPARISON: Original vs Final (with anomalies)")
     print("=" * 100)
 
-    header = (f"{'Channel':<20} {'Original Mean':>14} {'Final Mean':>14} {'Δ Mean (%)':>12} "
-              f"{'Original Std':>14} {'Final Std':>14} {'Δ Std (%)':>12}") #{'Anomalous Points':>18}")
+    header = (f"{ 'Channel':<20} {'Original Mean':>14} {'Final Mean':>14} {'Δ Mean (%)':>12} "
+              f"{'Original Std':>14} {'Final Std':>14} {'Δ Std (%)':>12}")
     print(header)
     print("-" * len(header))
 
@@ -393,16 +451,14 @@ def print_final_statistics(df_original: pd.DataFrame, df_final: pd.DataFrame, fe
         std_final = df_final[col].std()
 
         # percentage changes (handle zero denom)
-        mean_change_pct = ( (mean_final - mean_orig) / (abs(mean_orig) + 1e-12) ) * 100.0 if abs(mean_orig) > 1e-12 else (mean_final - mean_orig)
-        std_change_pct = ( (std_final - std_orig) / (std_orig + 1e-12) ) * 100.0 if std_orig != 0 else (std_final - std_orig)
+        mean_change_pct = (((mean_final - mean_orig) / (abs(mean_orig) + 1e-12)) * 100.0) if abs(mean_orig) > 1e-12 else (mean_final - mean_orig)
+        std_change_pct = (((std_final - std_orig) / (std_orig + 1e-12)) * 100.0) if std_orig != 0 else (std_final - std_orig)
 
         max_mean_change = max(max_mean_change, abs(mean_change_pct))
         max_std_change = max(max_std_change, abs(std_change_pct))
 
-        n_anom_points = int(df_final.loc[df_final['is_anomaly'] == 1, col].count())
-
         print(f"{col:<20} {mean_orig:14.4f} {mean_final:14.4f} {mean_change_pct:12.2f}% "
-              f"{std_orig:14.4f} {std_final:14.4f} {std_change_pct:12.2f}%") #{n_anom_points:18d}")
+              f"{std_orig:14.4f} {std_final:14.4f} {std_change_pct:12.2f}%")
 
     print("-" * len(header))
     print(f"Maximum changes: Mean={max_mean_change:.2f}%, Std={max_std_change:.2f}%")
@@ -479,9 +535,9 @@ def main(args):
             "window_mean": int(cfg.dataset.window_mean),
             "window_std": float(cfg.dataset.get("window_std", cfg.dataset.window_mean * 0.1)),
             "reset_interval_pct": float(cfg.dataset.get("reset_interval", 100)),
-            "min_channels": int(cfg.dataset.get("min_channels", 1)),
-            "max_channels": int(cfg.dataset.get("max_channels", 1)),
-            "channel_prob_decay": float(cfg.dataset.get("channel_prob_decay", 0.7))
+            "min_channels": int(cfg.dataset.get("min_channels", 1)) if cfg.dataset.get("min_channels", 1) is not None else None,
+            "max_channels": int(cfg.dataset.get("max_channels", 1)) if cfg.dataset.get("max_channels", 1) is not None else None,
+            "channel_prob_decay": float(cfg.dataset.get("channel_prob_decay", 0.7) if cfg.dataset.get("channel_prob_decay", 0.7) is not None else None),
         },
         "summary": {
             "target_anomalous_points": int(round(n_points * (float(cfg.dataset.anomaly_percentage) / 100.0))),
