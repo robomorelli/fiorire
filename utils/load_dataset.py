@@ -262,7 +262,7 @@ def get_metric_loader(cfg, metric_loader=None, data_path=None, scale=True, scale
         cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
 
     # Load the dataframe from the specified path
-    metric_df = load_dataframe(cfg)
+    metric_df = load_dataframe(cfg, data_path=data_path)
 
     metric_loader, scaler, scaler_params = get_scaled_dataloader(cfg, metric_df,
                                         seq_len=cfg.dataset.seq_in_length,
