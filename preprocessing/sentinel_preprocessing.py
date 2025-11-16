@@ -483,55 +483,55 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
         "val": (val_indexes, step, False),
     }
 
-    if anomalous_indexes is not None:
-        estimated_anomaly_count = len(anomalous_indexes) / (len(train_indexes) + len(val_indexes))
-        print(f"ℹ️ Estimated anomaly percentage in dataset: {estimated_anomaly_count * 100:.4f}%")
+    # -------------------------------
+    # Handle metric loader with desired normal-anomalous ratio
+    # -------------------------------
+    metrics_loader = None
+    if anomalous_indexes is not None and not only_metric_loader:
+        normal_ratio = cfg.opt.normal_anomalous_ratio
 
-        # Reproducible shuffle for normal indexes
         random.seed(seed)
         val_indexes_injection = val_indexes.copy()
         random.shuffle(val_indexes_injection)
 
-        normal_ratio = cfg.opt.normal_anomalous_ratio
+        normals = len(val_indexes_injection)
+        anomalies = len(anomalous_indexes)
 
-        # Desired number of normal samples based on ratio: normals = anomalies * normal_ratio
-        desired_normals = int(len(anomalous_indexes) * normal_ratio)
+        # -------------------------------
+        # Adjust based on ratio
+        # -------------------------------
+        if normal_ratio == 1:
+            # Equal number of normal and anomalies
+            target = min(normals, anomalies)
+            val_indexes_injection = val_indexes_injection[:target]
+            anomalous_indexes = anomalous_indexes[:target]
 
-        if normal_ratio >= 1:
-            # Want MORE normals than anomalies (ratio >= 1)
-
-            if len(val_indexes_injection) >= desired_normals:
-                # Enough normal points available → truncate to desired size
-                val_indexes_injection = val_indexes_injection[:desired_normals]
+        elif normal_ratio > 1:
+            # Want MORE normals than anomalies
+            anomalies_target = int(normals / normal_ratio)
+            if anomalies >= anomalies_target:
+                # Enough anomalies → trim anomalies
+                anomalous_indexes = anomalous_indexes[:anomalies_target]
             else:
-                # Not enough normal points → reduce anomaly set to maintain ratio
-                print("⚠️ Not enough normal samples available — reducing anomaly count to match desired ratio.")
-
-                if normal_ratio > 0:
-                    desired_anomalies = int(len(val_indexes_injection) / normal_ratio)
-                    desired_anomalies = max(1, desired_anomalies)
-                    anomalous_indexes = anomalous_indexes[:desired_anomalies]
-                else:
-                    print("⚠️ Invalid normal_anomalous_ratio=0; keeping anomalies unchanged.")
+                # Not enough anomalies → reduce normal samples
+                print("⚠️ Not enough anomalies to reach ratio >1 → reducing normal samples.")
+                normals_target = int(anomalies * normal_ratio)
+                val_indexes_injection = val_indexes_injection[:normals_target]
 
         else:
             # normal_ratio < 1 → want MORE anomalies than normals
-
-            if len(val_indexes_injection) >= desired_normals:
-                # Normal case: reduce normal samples to match desired ratio
-                val_indexes_injection = val_indexes_injection[:desired_normals]
+            anomalies_target = int(normals / normal_ratio)
+            if anomalies >= anomalies_target:
+                # Enough anomalies → trim anomalies
+                anomalous_indexes = anomalous_indexes[:anomalies_target]
             else:
-                # Not enough normal samples → adjust anomalies down to maintain ratio
-                print("⚠️ Not enough normal samples to reach desired proportion — reducing anomalies accordingly.")
+                # Not enough anomalies → reduce normal samples
+                print("⚠️ Not enough anomalies to reach ratio <1 → reducing normal samples.")
+                normals_target = int(anomalies * normal_ratio)
+                normals_target = max(1, normals_target)
+                val_indexes_injection = val_indexes_injection[:normals_target]
 
-                if normal_ratio > 0:
-                    desired_anomalies = int(len(val_indexes_injection) / normal_ratio)
-                    desired_anomalies = max(1, desired_anomalies)
-                    anomalous_indexes = anomalous_indexes[:desired_anomalies]
-                else:
-                    print("⚠️ Invalid ratio (0); leaving anomaly set unchanged.")
-
-        # Merge normal + anomaly indexes for metric loader
+        # Union for metric loader
         metric_indexes = np.union1d(val_indexes_injection, anomalous_indexes)
         index_sets["metric"] = (metric_indexes, seq_len, False)
 
