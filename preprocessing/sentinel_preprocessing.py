@@ -418,7 +418,7 @@ def upsample_and_augment(
 
 
 def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, transform=None, ano_col=None
-                                    ,scale=True, scaler=None):
+                                    ,scale=True, scaler=None, seed=42, only_metric_loader=False):
 
     # target can be a list of columns or a single column
     cfg.dataset.target = (
@@ -452,15 +452,19 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
     use_anomaly_split = ano_col in df.columns and filter_anomalies
     # To do use decorator on the same function to divide ano searches behaviour
     # Train df_scaling is without eventual ano_col, so it can be used to fit the scaler
+    seed = cfg.opt.get("seed", seed)
+    # val indexes on zook array([8029780, 8029781, 8029782, ..., 6508345, 6508346, 6508347])
     train_indexes, val_indexes, train_df_for_scaling, anomalous_indexes = (
-                    create_train_val_df_indexes(cfg=cfg, df=df, return_anomalies=use_anomaly_split, ano_col=ano_col, seed=42))
-
+                    create_train_val_df_indexes(cfg=cfg, df=df, return_anomalies=use_anomaly_split, ano_col=ano_col, seed=seed))
+    #excludelist(set(anomalous_indexes) & set(val_indexes))
+    #len(val_indexes) 3097422
     # Scaling
     if scale:
         if scaler is None:
             scaler, df_scaled, scaler_params = get_scaler(cfg, df_fit=train_df_for_scaling, df_transform=df)
         else:
             scaling_cols = df.columns.difference([ano_col]) if ano_col in df.columns else df.columns
+            scaling_cols = [x for x in scaler.feature_names_in_ if x in scaling_cols]
             assert list(scaling_cols) == list(scaler.feature_names_in_)
             scaled_values = scaler.transform(df[scaling_cols].values)
             ano_col = ano_col if isinstance(ano_col, (list, ListConfig)) else [ano_col] if ano_col else None
@@ -480,9 +484,11 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
     }
 
     if anomalous_indexes is not None:
+        random.seed(seed)
         val_indexes_injection = val_indexes.copy()
         random.shuffle(val_indexes_injection)
-        val_indexes_injection = val_indexes_injection[:len(anomalous_indexes) * 6]
+        #14988619    (zbook indexes)
+        val_indexes_injection = val_indexes_injection[:len(anomalous_indexes) * cfg.opt.normal_anomalous_ratio]
         metric_indexes = np.union1d(val_indexes_injection, anomalous_indexes)
         index_sets["metric"] = (metric_indexes, seq_len, False)
 
@@ -495,11 +501,14 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
                         remove_target=cfg.dataset.remove_target,
                         transform=transform, is_anomaly_column=cfg.dataset.get('is_anomaly_column', None))
 
-    train_dataset = Dataset_seq(**dataset_args, sampler=samplers['train'], indices=samplers['train'].indices)
-    val_dataset = Dataset_seq(**dataset_args, sampler=samplers['val'], indices=samplers['val'].indices)
+    if not only_metric_loader:
+        train_dataset = Dataset_seq(**dataset_args, sampler=samplers['train'], indices=samplers['train'].indices)
+        val_dataset = Dataset_seq(**dataset_args, sampler=samplers['val'], indices=samplers['val'].indices)
 
-    trainloader = DataLoader(train_dataset, batch_size=cfg.opt.batch_size, sampler=samplers["train"])
-    valloader = DataLoader(val_dataset, batch_size=cfg.opt.batch_size, sampler=samplers["val"])
+        trainloader = DataLoader(train_dataset, batch_size=cfg.opt.batch_size, sampler=samplers["train"])
+        valloader = DataLoader(val_dataset, batch_size=cfg.opt.batch_size, sampler=samplers["val"])
+    else:
+        trainloader, valloader = None, None
 
     if "metric" in samplers:
         dataset_args['is_anomaly_column'] = ano_col
@@ -538,6 +547,7 @@ def get_scaled_dataloader(cfg, df, seq_len=40, transform=None, ano_col=None, sca
             scaler, df_scaled, scaler_params = get_scaler(cfg, df_fit=df, df_transform=df)
         else:
             scaling_cols = df.columns.difference([ano_col]) if ano_col in df.columns else df.columns
+            scaling_cols = [x for x in scaler.feature_names_in_ if x in scaling_cols]
             assert list(scaling_cols) == list(scaler.feature_names_in_)
             scaled_values = scaler.transform(df[scaling_cols].values)
             ano_col = ano_col if isinstance(ano_col, list) else [ano_col] if ano_col else None
@@ -766,8 +776,6 @@ def get_scaled_train_val_df(cfg, df, seq_len=32, ano_col=None):
         df_scaled,  # unscaled full dataset
         scaler_params
     )
-
-
 
 
 def get_scaled_df(cfg, df, scale=False, scaler=None, add_columns=None):

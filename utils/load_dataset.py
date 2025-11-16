@@ -158,7 +158,7 @@ def load_dataframe(cfg, data_path=None):
 
 
 
-def get_train_val_dataloader(cfg, filter_anomalies=True,
+def get_train_val_dataloader(cfg, filter_anomalies=True, data_path=None,
                              **kwargs):
     """
     Load and prepare train/validation dataloaders.
@@ -177,13 +177,12 @@ def get_train_val_dataloader(cfg, filter_anomalies=True,
         cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
 
     if cfg.opt.get("fine_tuning", False):
-        print("⚠️ Fine-tuning mode: skipping data alignment and flag detection.")
         if torch.load(cfg.opt.get('checkpoint_path'))['cfg'].dataset.seq_in_length != cfg.dataset.seq_in_length:
             print(f"🔄 Overriding seq_in_length from {cfg.dataset.seq_in_length} to {torch.load(cfg.opt.get('checkpoint_path'))['cfg'].dataset.seq_in_length} for fine-tuning.")
         cfg.dataset.seq_in_length = torch.load(cfg.opt.get('checkpoint_path'))['cfg'].dataset.seq_in_length
 
     print("📂 Loading dataset from:", cfg.dataset.data_path)
-    df = load_dataframe(cfg)
+    df = load_dataframe(cfg) if data_path is None else load_dataframe(cfg, data_path=data_path)
 
     flag_col = getattr(cfg.dataset, "flag_col", None)
     align_data = getattr(cfg.dataset, "align_data", False)
@@ -225,7 +224,7 @@ def get_train_val_dataloader(cfg, filter_anomalies=True,
         seq_len=cfg.dataset.seq_in_length,
         filter_anomalies=filter_anomalies,
         transform=transform,
-        ano_col=cfg.dataset.is_anomaly_column
+        ano_col=cfg.dataset.is_anomaly_column,
     )
 
     n_features = len(cfg.dataset.feats)
@@ -241,8 +240,88 @@ def get_train_val_dataloader(cfg, filter_anomalies=True,
 
     return trainloader, valloader, metric_loader, scaler, scaler_params
 
+def get_metric_dataloader(cfg, filter_anomalies=True, data_path=None, scale=True, scaler=None,
+                             **kwargs):
+    """
+    Load and prepare train/validation dataloaders.
 
-def get_metric_loader(cfg, metric_loader=None, data_path=None, scale=True, scaler=None):
+    Args:
+        cfg: configuration object
+        filter_anomalies (bool): whether to filter anomalies
+        align_data (bool): if True, align all DataFrame columns to the same length
+        detect_flag (bool): if True, detect first change in flag column and trim data
+        **kwargs: other optional arguments
+    """
+    transform = get_transform(cfg)
+
+    # If seq_out_length is not specified, set it equal to seq_in_length
+    if not cfg.dataset.seq_out_length:
+        cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
+
+    if cfg.opt.get("fine_tuning", False):
+        if torch.load(cfg.opt.get('checkpoint_path'))['cfg'].dataset.seq_in_length != cfg.dataset.seq_in_length:
+            print(f"🔄 Overriding seq_in_length from {cfg.dataset.seq_in_length} to {torch.load(cfg.opt.get('checkpoint_path'))['cfg'].dataset.seq_in_length} for fine-tuning.")
+        cfg.dataset.seq_in_length = torch.load(cfg.opt.get('checkpoint_path'))['cfg'].dataset.seq_in_length
+
+    data_path = cfg.opt.metrics_dataset_path if data_path is None else data_path
+    if data_path is None:
+        raise ValueError("Metrics dataset path is not specified in the configuration.")
+    df = load_dataframe(cfg, data_path=data_path)
+
+    flag_col = getattr(cfg.dataset, "flag_col", None)
+    align_data = getattr(cfg.dataset, "align_data", False)
+    detect_flag = getattr(cfg.dataset, "detect_flag", False)
+
+    # Optional alignment and flag trimming
+    if align_data or detect_flag:
+        col_to_rem = [c for c in df.columns if c.startswith("ANT47") or c.startswith("Frame")]
+        if col_to_rem:
+            print(f"🔧 Preprocessing: removing {len(col_to_rem)} ANT47 columns")
+            df = df.drop(columns=[c for c in df.columns if c.startswith("ANT47") or c.startswith("Frame")])
+        print("🔧 Preprocessing: align_data =", align_data, ", detect_flag =", detect_flag)
+        # --- 1️⃣ Align columns if required ---
+        if align_data:
+            series_dict = {col: df[col] for col in df.columns}
+            min_len = min(len(s) for s in series_dict.values())
+            aligned_data = {col: s.iloc[:min_len].reset_index(drop=True) for col, s in series_dict.items()}
+            df = pd.DataFrame(aligned_data)
+            print(f"✅ Data aligned to {min_len} samples")
+
+        # --- 2️⃣ Detect flag and trim if required ---
+        if detect_flag:
+            if flag_col and flag_col in df.columns:
+                print(f"⚙️ Detecting first change in flag column: '{flag_col}'")
+                changes = df[flag_col].diff().fillna(0)
+                change_idxs = changes[changes != 0].index
+                if len(change_idxs) > 0:
+                    first_change_idx = change_idxs[0]
+                    df = df.loc[first_change_idx:].reset_index(drop=True)
+                    print(f"✅ Trimmed dataset from first flag change at index {first_change_idx}")
+                else:
+                    print("⚠️ No flag change detected — dataset not trimmed.")
+            else:
+                print("⚠️ No valid flag column found in cfg.dataset.flag_column.")
+
+    # --- Continue with normal scaling & dataloader creation ---
+    _, _, metric_loader, scaler, scaler_params = get_scaled_train_val_dataloader(
+        cfg, df, seq_len=cfg.dataset.seq_in_length,
+        filter_anomalies=filter_anomalies, transform=transform,
+        ano_col=cfg.dataset.is_anomaly_column, scale=scale, scaler=scaler, only_metric_loader=True)
+
+    n_features = len(cfg.dataset.feats)
+    cfg.dataset.n_features = n_features
+    cfg.model.output_size = n_features if not cfg.dataset.target else len(cfg.dataset.target)
+
+    # Optionally save dataloaders
+    if cfg.dataset.save_dataloaders:
+        root = getattr(cfg, "root", ".")
+
+        torch.save(metric_loader, os.path.join(root, f'dataloader/metric_dataloader_{n_features}_ft_{cfg.dataset.seq_in_length}_length.pth'))
+
+    return metric_loader, scaler, scaler_params
+
+
+def get_metric_loader_bkp(cfg, metric_loader=None, data_path=None, scale=True, scaler=None):
     """
     Get the metrics loader.
     :param cfg: configuration file
@@ -262,14 +341,14 @@ def get_metric_loader(cfg, metric_loader=None, data_path=None, scale=True, scale
         cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
 
     # Load the dataframe from the specified path
+    data_path = cfg.opt.metrics_dataset_path if data_path is None else data_path
+    if data_path is None:
+        raise ValueError("Metrics dataset path is not specified in the configuration.")
     metric_df = load_dataframe(cfg, data_path=data_path)
 
     metric_loader, scaler, scaler_params = get_scaled_dataloader(cfg, metric_df,
-                                        seq_len=cfg.dataset.seq_in_length,
-                                        transform=transform,
-                                        scale=scale,
-                                        scaler=scaler,
-                                        ano_col=cfg.dataset.is_anomaly_column)
+                                            seq_len=cfg.dataset.seq_in_length, transform=transform,
+                                            scale=scale, scaler=scaler, ano_col=cfg.dataset.is_anomaly_column)
 
     if metric_loader is not None:
         metric_datasets_list.append(metric_loader.dataset)

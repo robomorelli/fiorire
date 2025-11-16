@@ -1,5 +1,5 @@
 from utils.load_model import get_model
-from utils.load_dataset import get_train_val_dataloader, get_metric_loader
+from utils.load_dataset import get_train_val_dataloader, get_metric_dataloader
 from trainer.utils import (get_opt_metric, update_input_output, model_setup, train_one_epoch, validate_one_epoch,
                            load_pretrained_checkpoint, get_optimizazion_objects)
 from omegaconf import ListConfig
@@ -27,10 +27,10 @@ class trainCONVAE1D(tune.Trainable):
         self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
             self.cfg, filter_anomalies=True)
         # If the anomalous sequences are not present in the main dataset, the metrics_loader will be None. Try to load it from the path specified in the config file
-        self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader,
-                                                data_path=self.cfg.opt.metrics_dataset_path,
-                                                scale=True,
-                                                scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+        self.metrics_loader, _, _ = get_metric_dataloader(self.cfg, self.metrics_loader,
+                          data_path=self.cfg.opt.metrics_dataset_path,
+                          scale=True,
+                          scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (

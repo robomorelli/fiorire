@@ -1,5 +1,5 @@
 from utils.load_model import get_model
-from utils.load_dataset import get_train_val_dataloader, get_metric_loader
+from utils.load_dataset import get_train_val_dataloader, get_metric_dataloader
 from trainer.utils import (get_opt_metric, update_input_output, model_setup, train_one_epoch,
                            validate_one_epoch, get_optimizazion_objects, load_pretrained_checkpoint)
 from omegaconf import ListConfig
@@ -23,14 +23,19 @@ class trainCONVAE2D(tune.Trainable):
             self.scaler_pre_training_params = None
         # Load data
         # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
-        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
-            self.cfg, filter_anomalies=True)   # filter anomalies mean tha tuse only normal for standardization and use anomalies for metric loader
-        # If the anomalous sequences are not present in the main dataset, the metrics_loader will be None. Try to load it from the path specified in the config file
-        self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader,
-                                                data_path=self.cfg.opt.metrics_dataset_path,
-                                                scale=True,
-                                                scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(self.cfg, filter_anomalies=True)   # filter anomalies means that use only normal for standardization and use anomalies for metric loader
+        self.metrics_loader, _, _ = get_metric_dataloader(self.cfg, filter_anomalies=True,
+                          data_path=self.cfg.opt.metrics_dataset_path,scale=True,
+                          scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
 
+
+        #                                        scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+        # If the anomalous sequences are not present in the main dataset, the metrics_loader will be None.
+        # Try to load it from the path specified in the config file
+        #self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader,
+        #                                        data_path=self.cfg.opt.metrics_dataset_path,
+        #                                        scale=True,
+        #                                        scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (
