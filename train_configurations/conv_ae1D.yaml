@@ -19,39 +19,34 @@ tune_config:
   opt.es_patience: tune.choice([25, 35])
 
   dataset.scaler: tune.choice(['StandardScaler'])
-  dataset.seq_in_length: tune.choice([16])
+  dataset.seq_in_length: tune.choice([8])
   dataset.perc_overlap: tune.choice([0.3, 0.8])
 
 # Dataset
 dataset:
   seed: 42
-  name: 'fiorire'
-  data_path: './data/fiorire_1/all_2016-2018_clean_4s.pkl'    #'./data/fiorire_2/nominal_merged.csv'
-  seq_in_length_into_chunk: 2000    # number of chunks the dataset is divided into (cannot be less than 3); if null the dataset is not chunked
-  seq_in_length: 16
+  name: 'fiorire_1'
+  upsample_factor: 1
+  upsample_method: 'linear'
+  upsample_augmentation: 0
+  flag_col: null    #"ACT40082(PREPRO_CMG_ENABLE)"
+  align_data: 0
+  detect_flag: 0
+  data_path: './data/fiorire_1/all_2016-2018_clean_4s.pkl' #'./data/fiorire_1/all_2016-2018_clean_4s.pkl'    #'./data/fiorire_2/nominal_merged.csv'
+  seq_in_length_into_chunk: 2000    # number of sequences for each split chunk
   seq_out_length: null
   train_val_split: 0.8
   shuffle_train: True #shuffle the idx of the train
-  feats:
-  #[
-  #  "ACT40001(PREPRO_CMG_LEVEL)", "ACT40101(MODEMNG_CMG_TORQUE_REQ_X)", "ACT40102(MODEMNG_CMG_TORQUE_REQ_Y)",
-  #  "ACT40103(MODEMNG_CMG_TORQUE_REQ_Z)", "ACT41027(UNIT_FW_VEL_1)", "ACT41028(UNIT_FW_VEL_2)",
-  #  "ACT41029(UNIT_FW_VEL_3)", "ACT41037(UNIT_GIMB_POS_1)", "ACT41038(UNIT_GIMB_POS_2)",
-  #  "ACT41039(UNIT_GIMB_POS_3)", "ACT41042(UNIT_GIMB_VEL_1)", "ACT41043(UNIT_GIMB_VEL_2)",
-  #  "ACT41044(UNIT_GIMB_VEL_3)", "ACT41052(ASSEMBLY_H_BRF_X)", "ACT41053(ASSEMBLY_H_BRF_Y)",
-  #  "ACT41054(ASSEMBLY_H_BRF_Z)", "ACT41056(ASSEMBLY_T_BRF_X)", "ACT41057(ASSEMBLY_T_BRF_Y)",
-  #  "ACT41058(ASSEMBLY_T_BRF_Z)"]
-    ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
-     'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
-    'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
-    'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
-  target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
+  feats: ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
+          'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
+          'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
+          'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
+  target: null    # null: the same input features are the target (reconstruction task); all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
-  dataset_subset: null
-  scaler: 'RobustScaler-0.05-0.95'  # other coiches {StandarcScaler: None}, None
+  dataset_subset: 100_000
   save_dataloaders: False
   forecast: False
-  is_anomaly_column: null
+  is_anomaly_column: 'is_anomaly'   # name of the anomaly column; if None there are no anomalous sequences
 
 # Model
 model:
@@ -68,9 +63,9 @@ opt:
   other_reports: ['parameters_number']    # overwrite with all hyperparameters to display everything
   order_by: 'val_loss'    # summary of the results is ordered by this value
   num_workers: 12
-  evaluate_metrics: False
+  evaluate_metrics: True
   n_std: [1, 3]
-  metrics_dataset_path: null   # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
+  metrics_dataset_path: './data/fiorire_1/all_2016-2018_clean_4s_with_anomalies.pkl'
   detect_anomaly_epoch_freq: 1
   normal_anomalous_ratio: 1
   exp_name: 'conv_ae1D_fiorire'

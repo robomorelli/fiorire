@@ -3,10 +3,11 @@ from omegaconf import OmegaConf, ListConfig
 import torch
 import numpy as np
 import math
-from sklearn.metrics import f1_score
+from sklearn.metrics import roc_curve, auc, f1_score
 from tqdm import tqdm
 from typing import List, Optional
 import warnings
+
 from config import *
 
 class EarlyStopping:
@@ -167,7 +168,8 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train
     pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc=desc, leave=False)
     for i, (inputs, targets, is_anomaly) in pbar:
         inputs, targets = inputs.to(device), targets.to(device)
-
+        # conv ae 1d torch.Size([100, 16, 8]), torch.Size([100, 16, 8]), torch.Size([100, 1, 8])
+        # conv ae 2d torch.Size([100, 1, 16, 8]), torch.Size([100, 1, 16, 8]), torch.Size([100, 1, 8])
         optimizer.zero_grad()
         outputs = model(inputs).to(device)
         loss = criterion(outputs, targets)
@@ -237,12 +239,11 @@ def validate_one_epoch(
 
     # Optionally evaluate anomaly detection metrics
     if evaluate_metrics:
-        test_results = test_anomaly_step(
+        test_results = test_anomaly_step_normalized(
             model=model,
             dataloader=metric_loader,
             device=device,
-            n_std=n_std,
-            anomaly_threshold=anomaly_threshold,
+            normalization_factor=None
         )
 
         # Flatten only necessary fields for logging
@@ -258,6 +259,124 @@ def validate_one_epoch(
             })
 
     return results
+
+
+@torch.no_grad()
+def test_anomaly_step_normalized(
+    model,
+    dataloader,
+    device,
+    normalization_factor=None,
+    epsilon=1e-5,
+    desc="Testing anomalies (normalized)"):
+
+    """
+    Computes anomaly detection scores using reconstruction error.
+    Normalization is performed using the *mathematical median* (50th percentile)
+    of reconstruction errors for each channel across all time steps and samples.
+
+    Returns:
+        anomaly_scores: tensor [N, L]
+        roc_auc: float
+        best thresholds (Youden + F1)
+        normalization_factor: tensor [C]
+    """
+
+    model.eval()
+    all_errors = []
+    all_masks = []
+
+    # -----------------------------------------------------------
+    # 1) Collect reconstruction errors for all batches
+    # -----------------------------------------------------------
+    for x, target, mask in dataloader:
+        x = x.to(device)
+        target = target.to(device)
+
+        recon = model(x)
+        error = torch.abs(recon - target)  # shape: [B, C, L]
+
+        all_errors.append(error.cpu())
+        all_masks.append(mask.cpu())
+
+    # Concatenate over batches
+    all_errors = torch.cat(all_errors, dim=0)  # [N, 1, C, L] or [N, C, L]
+    all_masks  = torch.cat(all_masks,  dim=0)  # [N, 1, C, L] or [N, C, L]
+
+    # -----------------------------------------------------------
+    # 2) Detect model type and adjust shapes
+    # -----------------------------------------------------------
+    model_type, last_layer = infer_model_type(model)
+
+    # all_errors may be [N,1,C,L], squeeze appropriately
+    if model_type == "cnn":
+        if last_layer == 'Conv2d':
+            # remove channel dimension if it's a singleton
+            if all_errors.dim() == 4:
+                # shape: [N, 1, C, L] → [N, C, L]
+                all_errors = all_errors.squeeze(1)
+    elif model_type == "lstm":
+        # expected shape already [N, C, L]
+        pass
+    else:
+        raise ValueError("Unknown model type: expected cnn or lstm")
+
+    N, C, L = all_errors.shape
+
+    # -----------------------------------------------------------
+    # 2) Compute normalization factor using the *mathematical median*
+    # -----------------------------------------------------------
+    if normalization_factor is None:
+        # Flatten over all samples and time steps: [N*L, C]
+        flat = all_errors.permute(0, 2, 1).reshape(-1, C).float()
+
+        # Mathematical median (50th percentile)
+        # torch.quantile(..., 0.5) computes the true median, including interpolation.
+        normalization_factor = torch.quantile(flat, 0.5, dim=0)  # [C]
+
+    # Prepare for broadcasting: [1, C, 1]
+    norm = normalization_factor.view(1, C, 1) + epsilon
+
+    # -----------------------------------------------------------
+    # 3) Normalize errors
+    # -----------------------------------------------------------
+    normalized_errors = all_errors / norm   # [N, C, L]
+
+    # Score per time step = mean across channels
+    anomaly_scores = normalized_errors.mean(dim=1)  # [N, L]
+
+    # -----------------------------------------------------------
+    # 4) Compute AUC + optimal thresholds
+    # -----------------------------------------------------------
+    y_scores = anomaly_scores.reshape(-1).numpy()      # [N*L]
+    y_true   = all_masks.reshape(-1).numpy().astype(int)
+
+    fpr, tpr, thresholds = roc_curve(y_true, y_scores)
+    roc_auc = auc(fpr, tpr)
+
+    # Youden
+    J = tpr - fpr
+    ix = np.argmax(J)
+    best_thresh_youden = thresholds[ix]
+
+    # F1
+    f1s = [f1_score(y_true, (y_scores >= t).astype(int)) for t in thresholds]
+    ix_f1 = np.argmax(f1s)
+    best_thresh_f1 = thresholds[ix_f1]
+    best_f1 = f1s[ix_f1]
+
+    return {
+        "anomaly_scores": anomaly_scores,
+        "roc_auc": roc_auc,
+        "fpr": fpr,
+        "tpr": tpr,
+        "thresholds": thresholds,
+        "best_thresh_youden": best_thresh_youden,
+        "best_thresh_f1": best_thresh_f1,
+        "best_f1": best_f1,
+        "normalization_factor": normalization_factor,
+    }
+
 
 def test_anomaly_step(model, dataloader, device,
                       n_std: List[int]=None, anomaly_threshold=None,

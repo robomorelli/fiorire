@@ -229,7 +229,10 @@ class Decoder1D(nn.Module):
 class CONV_AE1D(nn.Module):
     def __init__(self, cfg):
         super().__init__()
+
+        self.cfg = cfg
         model_cfg = cfg.model
+
         self.in_channels = cfg.dataset.n_features
         self.kernel_size = model_cfg.kernel_size
         self.base_filters = model_cfg.base_filters

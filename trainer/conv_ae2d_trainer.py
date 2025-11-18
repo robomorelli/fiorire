@@ -24,7 +24,7 @@ class trainCONVAE2D(tune.Trainable):
         # Load data
         # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
         self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(self.cfg, filter_anomalies=True)   # filter anomalies means that use only normal for standardization and use anomalies for metric loader
-        self.metrics_loader, _, _ = get_metric_dataloader(self.cfg, filter_anomalies=True,
+        self.metrics_loader = get_metric_dataloader(self.cfg, filter_anomalies=True,
                           data_path=self.cfg.opt.metrics_dataset_path,scale=True,
                           scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
 

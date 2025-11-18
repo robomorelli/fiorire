@@ -318,7 +318,7 @@ def get_metric_dataloader(cfg, filter_anomalies=True, data_path=None, scale=True
 
         torch.save(metric_loader, os.path.join(root, f'dataloader/metric_dataloader_{n_features}_ft_{cfg.dataset.seq_in_length}_length.pth'))
 
-    return metric_loader, scaler, scaler_params
+    return metric_loader
 
 
 def get_metric_loader_bkp(cfg, metric_loader=None, data_path=None, scale=True, scaler=None):

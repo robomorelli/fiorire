@@ -486,8 +486,8 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
     # -------------------------------
     # Handle metric loader with desired normal-anomalous ratio
     # -------------------------------
-    metrics_loader = None
-    if anomalous_indexes is not None and not only_metric_loader:
+
+    if anomalous_indexes is not None:
         normal_ratio = cfg.opt.normal_anomalous_ratio
 
         random.seed(seed)

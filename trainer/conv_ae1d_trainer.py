@@ -21,15 +21,11 @@ class trainCONVAE1D(tune.Trainable):
             self.scaler_pre_training_params = None if not(self.cfg.opt.get('fine_tuning', False)) else torch.load(self.cfg.opt.get('checkpoint_path'))['scaler_params_pre_training']
         else:
             self.scaler_pre_training_params = None
-
         # Load data
         # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
-        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
-            self.cfg, filter_anomalies=True)
-        # If the anomalous sequences are not present in the main dataset, the metrics_loader will be None. Try to load it from the path specified in the config file
-        self.metrics_loader, _, _ = get_metric_dataloader(self.cfg, self.metrics_loader,
-                          data_path=self.cfg.opt.metrics_dataset_path,
-                          scale=True,
+        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(self.cfg, filter_anomalies=True)   # filter anomalies means that use only normal for standardization and use anomalies for metric loader
+        self.metrics_loader = get_metric_dataloader(self.cfg, filter_anomalies=True,
+                          data_path=self.cfg.opt.metrics_dataset_path,scale=True,
                           scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
