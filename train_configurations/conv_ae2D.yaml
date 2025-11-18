@@ -64,7 +64,7 @@ resources:
 opt:
   seed: 42
   opt_metric: {'val_loss':'min'}   #val_loss; val_f1_score This is the metric key used to rank the models (the optimization is still on the loss)
-  metrics_to_report: ['train_loss', 'val_f1_score']
+  metrics_to_report: ['train_loss', 'val_f1_score', 'best_val_f1_score']
   other_reports: ['parameters_number']
   order_by: 'val_loss'    # summary of the results is ordered by this value
   num_workers: 12

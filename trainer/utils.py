@@ -251,9 +251,9 @@ def validate_one_epoch(
             metrics = test_results["metrics_results"]
             results.update({
                 "val_f1_score": metrics["best_f1_score"],
-                "best_n_std": metrics["best_n_std"],
-                "channel_means": metrics["channel_means"],
-                "channel_stds": metrics["channel_stds"],
+                #"best_n_std": metrics["best_n_std"],
+                #"channel_means": metrics["channel_means"],
+                #"channel_stds": metrics["channel_stds"],
                 # optionally more if needed for post-analysis
                 # "channel_thresholds": metrics["channel_thresholds"]
             })
@@ -365,7 +365,7 @@ def test_anomaly_step_normalized(
     best_thresh_f1 = thresholds[ix_f1]
     best_f1 = f1s[ix_f1]
 
-    return {
+    return {"metrics_results":{
         "anomaly_scores": anomaly_scores,
         "roc_auc": roc_auc,
         "fpr": fpr,
@@ -373,9 +373,10 @@ def test_anomaly_step_normalized(
         "thresholds": thresholds,
         "best_thresh_youden": best_thresh_youden,
         "best_thresh_f1": best_thresh_f1,
-        "best_f1": best_f1,
+        "best_f1_score": best_f1,
         "normalization_factor": normalization_factor,
-    }
+    }}
+
 
 
 def test_anomaly_step(model, dataloader, device,

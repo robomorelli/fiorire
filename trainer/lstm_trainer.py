@@ -77,6 +77,7 @@ class trainLSTM(tune.Trainable):
             desc=f"Epoch {self.current_epoch} [Train]",
         )
         train_loss = train_results["train_loss"]
+        #TO DO: compute the mean and std on the validation set instead of train set where the avg of the error is across batches with higher loss since th emodel is training
         print(f"Epoch {self.current_epoch} - Avg Train Loss: {train_loss:.6f}")
 
         evaluate_metrics = self.cfg.opt.evaluate_metrics and (
@@ -100,16 +101,23 @@ class trainLSTM(tune.Trainable):
 
         self.scheduler.step(val_loss)
         # Combine loggable metrics
+
         result = {
             "epoch": self.current_epoch,
             "train_loss": train_loss,
             "val_loss": val_loss,
-            'val_f1_score': self.val_results.get('val_f1_score', -float(np.inf)),  # 👈 Always included
             "parameters_number": self.parameters_number,
         }
 
         if self.metric_key in self.val_results:
             result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, -float(np.inf))  # 👈 Always included
+
+        current_f1 = self.val_results.get("val_f1_score", -float(np.inf))
+        result["val_f1_score"] = current_f1
+        if current_f1 > self.best_f1_score:
+            self.best_f1_score = current_f1
+            print(f"INFO: New best F1 score: {self.best_f1_score:.4f} at epoch {self.current_epoch}")
+            result["best_val_f1_score"] = self.best_f1_score
 
         # Track best model
         # example of self.cfg.opt_metric: {'val_loss': 'min'}
@@ -125,6 +133,7 @@ class trainLSTM(tune.Trainable):
         # Check early stopping conditions
         stop_training = False
         stop_reason = None
+
 
         # Check if early stopping triggered
         if self.early_stopping.early_stop:

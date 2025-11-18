@@ -16,6 +16,7 @@ class trainCONVAE2D(tune.Trainable):
         self.cfg, _, _ = update_input_output(self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.max_epochs = self.cfg.opt.epochs
         self.current_epoch = 0
+        self.best_f1_score = -float(np.inf)
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
         if  config.get('opt.fine_tuning') and 'scaler_params_pre_training' in torch.load(self.cfg.opt.get('checkpoint_path')).keys():
             self.scaler_pre_training_params = None if not(self.cfg.opt.get('fine_tuning', False)) else torch.load(self.cfg.opt.get('checkpoint_path'))['scaler_params_pre_training']
@@ -106,16 +107,23 @@ class trainCONVAE2D(tune.Trainable):
 
         self.scheduler.step(val_loss)
         # Combine loggable metrics
+
         result = {
             "epoch": self.current_epoch,
             "train_loss": train_loss,
             "val_loss": val_loss,
-            'val_f1_score': self.val_results.get('val_f1_score', -float(np.inf)),  # 👈 Always included
             "parameters_number": self.parameters_number,
         }
 
         if self.metric_key in self.val_results:
             result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, -float(np.inf))  # 👈 Always included
+
+        current_f1 = self.val_results.get("val_f1_score", -float(np.inf))
+        result["val_f1_score"] = current_f1
+        if current_f1 > self.best_f1_score:
+            self.best_f1_score = current_f1
+            print(f"INFO: New best F1 score: {self.best_f1_score:.4f} at epoch {self.current_epoch}")
+            result["best_val_f1_score"] = self.best_f1_score
 
         # Track best model
         # example of self.cfg.opt_metric: {'val_loss': 'min'}
