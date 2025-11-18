@@ -8,7 +8,7 @@ Adaptive WOMBAT-style multi-channel anomaly injector
 """
 
 # Your project utilities (assumed available)
-from anomalies_injection.utils import load_data, ANOMALIES_REGISTRY, make_json_safe, sample_and_plot_anomalies
+from anomalies_injection.utils import load_data, ANOMALIES_REGISTRY, make_json_safe, sample_and_plot_anomalies_with_labels
 
 import os
 import json
@@ -20,6 +20,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import shutil
 
 # External libs referenced in original script (placeholders if not imported elsewhere)
 from omegaconf import OmegaConf
@@ -29,20 +30,6 @@ from omegaconf import DictConfig, ListConfig
 # ANOMALIES_REGISTRY, load_data, sample_and_plot_anomalies should be available
 # in your codebase exactly as they were in the original project. If not, import
 # them appropriately.
-try:
-    from anomalies_registry import ANOMALIES_REGISTRY  # optional local import
-except Exception:
-    ANOMALIES_REGISTRY = globals().get('ANOMALIES_REGISTRY', {})
-
-try:
-    from data_loader import load_data
-except Exception:
-    load_data = globals().get('load_data', lambda cfg: pd.DataFrame())
-
-try:
-    from viz import sample_and_plot_anomalies
-except Exception:
-    sample_and_plot_anomalies = globals().get('sample_and_plot_anomalies', lambda **kw: None)
 
 
 # -------------------------
@@ -104,7 +91,9 @@ class AdaptiveMultiChannelInjector:
         self.reset_interval_pct: float = float(ds.get("reset_interval", 100))  # percent
         self.min_channels: int = int(ds.get("min_channels", 1)) if ds.get("min_channels", 1) is not None else None
         self.max_channels: int = int(ds.get("max_channels", 1)) if ds.get("max_channels", 1) is not None else None
-        self.channel_prob_decay: float = float(ds.get("channel_prob_decay", 0.7)) if ds.get("channel_prob_decay", 0.7) is not None else None
+        self.channel_prob_decay: float = float(ds.get("channel_prob_decay", 1)) if ds.get("channel_prob_decay", 1) is not None else None
+        self.channel_prob_decay = 1 if self.max_channels == 1 else self.channel_prob_decay
+        self.channel_prob_decay = None if self.max_channels is None else self.channel_prob_decay
         self.random_seed = ds.get("random_seed", None)
 
         # registry with anomaly classes (strings -> classes)
@@ -146,8 +135,11 @@ class AdaptiveMultiChannelInjector:
 
     def _choose_channels(self, feature_columns: List[str]) -> List[str]:
         n = self._select_num_channels(feature_columns)
-        n = min(n, len(feature_columns))
-        return list(np.random.choice(feature_columns, size=n, replace=False))
+        if n == len(feature_columns):
+            return list(feature_columns)
+        else:
+            n = min(n, len(feature_columns))
+            return list(np.random.choice(feature_columns, size=n, replace=False))
 
     # -------------------------
     # Windows extraction helpers
@@ -331,6 +323,9 @@ class AdaptiveMultiChannelInjector:
                 after = after_windows[ch]
                 # element-wise comparison (float) -> use != which is fine in standardized space
                 changed_mask |= (before != after)
+                if np.sum(changed_mask) == window_len:
+                    # all points changed, no need to check further
+                    break
 
             # If at least one point changed -> update df_out for those indices only
             if changed_mask.any():
@@ -537,7 +532,7 @@ def main(args):
             "reset_interval_pct": float(cfg.dataset.get("reset_interval", 100)),
             "min_channels": int(cfg.dataset.get("min_channels", 1)) if cfg.dataset.get("min_channels", 1) is not None else None,
             "max_channels": int(cfg.dataset.get("max_channels", 1)) if cfg.dataset.get("max_channels", 1) is not None else None,
-            "channel_prob_decay": float(cfg.dataset.get("channel_prob_decay", 0.7) if cfg.dataset.get("channel_prob_decay", 0.7) is not None else None),
+            "channel_prob_decay": float(cfg.dataset.get("channel_prob_decay", 0)) if cfg.dataset.get("channel_prob_decay", 0)is not None else None,
         },
         "summary": {
             "target_anomalous_points": int(round(n_points * (float(cfg.dataset.anomaly_percentage) / 100.0))),
@@ -563,14 +558,21 @@ def main(args):
 
     # Campiona e salva un sottoinsieme di sequenze anomale per ispezione visiva
     sample_dir = os.path.join(dir_path, "anomaly_samples")
-    sample_and_plot_anomalies(
-        df_original=df_backup,
-        df_with_anom=df_with_anom,
-        anomalies_log=anomalies_metadata["anomalies"],
-        output_dir=sample_dir,
-        sample_pct=5.0,  # percentuale di sequenze da visualizzare
-    )
 
+    # --- clean existing output dir ---
+    if os.path.exists(sample_dir):
+        shutil.rmtree(sample_dir)
+    os.makedirs(sample_dir, exist_ok=True)
+
+    sample_and_plot_anomalies_with_labels(
+        df_original=df_backup,  # denormalized
+        df_with_anom=df_with_anom,  # denormalized
+        df_labels=df_with_anom_std["is_anomaly"],  # 0/1 labels
+        anomalies_log=anomalies_metadata["anomalies"],
+        output_dir=os.path.join(dir_path, "anomaly_samples"),
+        sample_pct=5.0,
+        extend_window_plot_factor=0.5,
+    )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Adaptive multi-channel anomaly injection (WOMBAT-style)")

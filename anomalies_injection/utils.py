@@ -5,6 +5,7 @@ import random
 import matplotlib.pyplot as plt
 from omegaconf import DictConfig, ListConfig, OmegaConf
 from sympy.codegen import Print
+import shutil
 
 from config import *
 from wombats.anomalies.increasing import *
@@ -194,35 +195,42 @@ def load_data(cfg):
 
     return df
 
-def sample_and_plot_anomalies(
-    df_original: pd.DataFrame,
-    df_with_anom: pd.DataFrame,
-    anomalies_log: List[dict],
+def sample_and_plot_anomalies_with_labels(
+    df_original: pd.DataFrame,      # denormalized original
+    df_with_anom: pd.DataFrame,     # denormalized with anomalies
+    df_labels: pd.Series,           # 0/1 labels aligned with df_with_anom
+    anomalies_log: list,
     output_dir: str,
     sample_pct: float = 5.0,
+    extend_window_plot_factor: float = 0.5,
 ):
     """
-    Campiona una percentuale di sequenze anomale e salva i grafici di confronto.
-    Ogni grafico mostra la serie originale e quella con anomalia per un singolo canale.
+    Sample a subset of anomalies and plot:
 
-    Args:
-        df_original: DataFrame originale (non standardizzato)
-        df_with_anom: DataFrame finale (de-standardizzato)
-        anomalies_log: lista dei dizionari di anomalie iniettate
-        output_dir: cartella di destinazione per i plot
-        sample_pct: percentuale di anomalie da campionare (es. 5.0 = 5%)
+        - original channel (denormalized)
+        - injected channel (denormalized)
+        - 0/1 labels on a secondary y-axis
+        - a context window around the anomaly region
+
+    extend_window_plot_factor defines how much extra context is shown.
     """
+
     if not anomalies_log:
-        print("⚠ Nessuna anomalia registrata, nessun plot generato.")
+        print("⚠ No anomalies found — no plots generated.")
         return
 
+    # Clean output directory
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
     n_anoms = len(anomalies_log)
     n_sample = max(1, int(round(n_anoms * sample_pct / 100.0)))
     sampled = random.sample(anomalies_log, n_sample)
 
-    print(f"\n📊 Genero {n_sample} grafici di anomalie campionate in '{output_dir}'")
+    print(f"\n📊 Generating {n_sample} anomaly plots in: {output_dir}")
+
+    total_len = len(df_original)
 
     for i, anom in enumerate(sampled, 1):
         start = anom["start_idx"]
@@ -231,24 +239,70 @@ def sample_and_plot_anomalies(
         delta = anom["delta"]
         affected_channels = anom["affected_channels"]
 
+        # -------------------------
+        # EXTENDED WINDOW CALCULATION
+        # -------------------------
+        window_len = end - start
+        extra = int(window_len * extend_window_plot_factor)
+
+        plot_start = max(0, start - extra)
+        plot_end   = min(total_len, end + extra)
+
+        # slice labels
+        labels_window = df_labels.iloc[plot_start:plot_end].values
+        x_axis = np.arange(plot_end - plot_start)
+
         for ch in affected_channels:
-            orig = df_original[ch].iloc[start:end].values
-            anomv = df_with_anom[ch].iloc[start:end].values
+
+            orig = df_original[ch].iloc[plot_start:plot_end].values   # ← denormalized
+            anomv = df_with_anom[ch].iloc[plot_start:plot_end].values # ← denormalized
+
             if len(orig) == 0:
                 continue
 
-            plt.figure(figsize=(8, 4))
-            plt.plot(orig, label="Originale", alpha=0.7)
-            plt.plot(anomv, label="Anomalia", alpha=0.8)
-            plt.title(f"{ch} — {anomaly_type} (Δ={delta:.3f}) [{start}:{end}]")
-            plt.xlabel("Indice campione")
-            plt.ylabel("Valore")
-            plt.legend()
+            # ---- Plot ----
+            fig, ax1 = plt.subplots(figsize=(12, 5))
+
+            ax1.plot(x_axis, orig, label="Original", alpha=0.6)
+            ax1.plot(x_axis, anomv, label="Injected", alpha=0.8)
+
+            ax1.set_xlabel("Index (relative)")
+            ax1.set_ylabel("Signal value")
+            ax1.legend(loc="upper left")
+
+            # SECOND AXIS FOR LABELS
+            ax2 = ax1.twinx()
+            ax2.plot(
+                x_axis,
+                labels_window,
+                drawstyle="steps-post",
+                linewidth=2,
+                alpha=0.7,
+                color="red"
+            )
+            ax2.set_ylabel("Label (0/1)")
+            ax2.set_ylim(-0.1, 1.2)
+
+            # highlight the true anomaly window
+            anomaly_rel_start = start - plot_start
+            anomaly_rel_end   = end - plot_start
+
+            ax1.axvspan(
+                anomaly_rel_start,
+                anomaly_rel_end,
+                color='red',
+                alpha=0.12,
+                label="Anomalous interval"
+            )
+
+            plt.title(
+                f"{ch} — {anomaly_type} (Δ={delta:.3f})\n"
+                f"Anomaly [{start}:{end}] | Plot [{plot_start}:{plot_end}]"
+            )
             plt.tight_layout()
 
             fname = f"sample_{i:03d}_{ch}_{anomaly_type}_Δ{delta:.2f}.png"
-            fpath = os.path.join(output_dir, fname)
-            plt.savefig(fpath, dpi=150)
+            plt.savefig(os.path.join(output_dir, fname), dpi=150)
             plt.close()
 
-    print(f"✓ Salvati {n_sample} esempi di anomalie ({sample_pct:.1f}% del totale)")
+    print(f"✓ Saved {n_sample} anomaly examples\n")
