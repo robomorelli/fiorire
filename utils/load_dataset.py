@@ -158,7 +158,7 @@ def load_dataframe(cfg, data_path=None):
 
 
 
-def get_train_val_dataloader(cfg, filter_anomalies=True, data_path=None,
+def get_train_val_dataloader(cfg, filter_anomalies=True, data_path=None, dataset_subset=None,
                              **kwargs):
     """
     Load and prepare train/validation dataloaders.
@@ -225,6 +225,7 @@ def get_train_val_dataloader(cfg, filter_anomalies=True, data_path=None,
         filter_anomalies=filter_anomalies,
         transform=transform,
         ano_col=cfg.dataset.is_anomaly_column,
+        dataset_subset=dataset_subset
     )
 
     n_features = len(cfg.dataset.feats)
@@ -240,7 +241,8 @@ def get_train_val_dataloader(cfg, filter_anomalies=True, data_path=None,
 
     return trainloader, valloader, metric_loader, scaler, scaler_params
 
-def get_metric_dataloader(cfg, filter_anomalies=True, data_path=None, scale=True, scaler=None,
+def get_metric_dataloader(cfg, filter_anomalies=True, data_path=None, scale=True,
+                          scaler=None, dataset_subset=None,
                              **kwargs):
     """
     Load and prepare train/validation dataloaders.
@@ -306,7 +308,8 @@ def get_metric_dataloader(cfg, filter_anomalies=True, data_path=None, scale=True
     _, _, metric_loader, scaler, scaler_params = get_scaled_train_val_dataloader(
         cfg, df, seq_len=cfg.dataset.seq_in_length,
         filter_anomalies=filter_anomalies, transform=transform,
-        ano_col=cfg.dataset.is_anomaly_column, scale=scale, scaler=scaler, only_metric_loader=True)
+        ano_col=cfg.dataset.is_anomaly_column, scale=scale, scaler=scaler, only_metric_loader=True,
+        dataset_subset=dataset_subset)
 
     n_features = len(cfg.dataset.feats)
     cfg.dataset.n_features = n_features
@@ -321,72 +324,3 @@ def get_metric_dataloader(cfg, filter_anomalies=True, data_path=None, scale=True
     return metric_loader
 
 
-def get_metric_loader_bkp(cfg, metric_loader=None, data_path=None, scale=True, scaler=None):
-    """
-    Get the metrics loader.
-    :param cfg: configuration file
-    :param metrics_loader: optional, if None it will be loaded from the path specified in the config file
-    :return: metrics loader
-    """
-    metric_datasets_list = []
-    # existing metric_loader (e.g., from get_train_val_dataset)
-    if metric_loader is not None:
-        metric_datasets_list.append(metric_loader.dataset)
-
-    # Define the dataset name to apply specific transformations
-    transform = get_transform(cfg)
-
-    # If seq_out_length is not specified, set it equal to seq_in_length
-    if not cfg.dataset.seq_out_length:
-        cfg.dataset.seq_out_length = cfg.dataset.seq_in_length
-
-    # Load the dataframe from the specified path
-    data_path = cfg.opt.metrics_dataset_path if data_path is None else data_path
-    if data_path is None:
-        raise ValueError("Metrics dataset path is not specified in the configuration.")
-    metric_df = load_dataframe(cfg, data_path=data_path)
-
-    metric_loader, scaler, scaler_params = get_scaled_dataloader(cfg, metric_df,
-                                            seq_len=cfg.dataset.seq_in_length, transform=transform,
-                                            scale=scale, scaler=scaler, ano_col=cfg.dataset.is_anomaly_column)
-
-    if metric_loader is not None:
-        metric_datasets_list.append(metric_loader.dataset)
-
-    # concatenate if we have at least one dataset
-    if metric_datasets_list:
-        samplers = []
-        dataset_lengths = []
-
-        for dataset in metric_datasets_list:
-            dataset_lengths.append(len(dataset))
-
-            # Use default logic to choose a sampler (customize as needed)
-            if hasattr(dataset, 'sampler_type'):
-                # Custom datasets can define their own sampler preference
-                sampler_type = dataset.sampler_type
-            else:
-                sampler_type = 'SequentialSampler'  # Default
-
-            if sampler_type == 'SubsetRandomSampler':
-                sampler = SubsetRandomSampler(dataset.indices)
-            elif sampler_type == 'Subset' and hasattr(dataset, 'indices'):
-                # For Dataset objects that already define a subset of indices
-                sampler = SubsetRandomSampler(dataset.indices)
-            else:
-                sampler = SequentialSampler(dataset)
-
-            samplers.append(sampler)
-
-        concat_sampler = ConcatSampler(samplers=samplers, dataset_lengths=dataset_lengths)
-        metric_dataset = ConcatDataset(metric_datasets_list)
-        metric_loader = DataLoader(
-            metric_dataset,
-            batch_size=cfg.opt.batch_size,
-            sampler=concat_sampler,
-        )
-
-    else:
-        metric_loader = None
-
-    return metric_loader

@@ -227,14 +227,14 @@ def validate_one_epoch(
             pbar.set_postfix(loss=loss.item())
 
     all_errors = torch.cat(all_errors, dim=0)  # [N, C, L]
-    model_type, last_layer = infer_model_type(model)
-    channel_mean_errors, channel_std_errors = mean_std_per_channel(all_errors, model_type)
+    #model_type, last_layer = infer_model_type(model)
+    #channel_mean_errors, channel_std_errors = mean_std_per_channel(all_errors, model_type)
 
     # Core validation results
     results = {
         "val_loss": epoch_loss / len(dataloader),
-        "val_channel_mean_errors": channel_mean_errors,
-        "val_channel_std_errors": channel_std_errors,
+        #"val_channel_mean_errors": channel_mean_errors,
+        #"val_channel_std_errors": channel_std_errors,
     }
 
     # Optionally evaluate anomaly detection metrics
@@ -243,14 +243,16 @@ def validate_one_epoch(
             model=model,
             dataloader=metric_loader,
             device=device,
+            all_val_norm_errors=all_errors,
             normalization_factor=None
-        )
+            )
 
         # Flatten only necessary fields for logging
         if "metrics_results" in test_results:
             metrics = test_results["metrics_results"]
             results.update({
-                "val_f1_score": metrics["best_f1_score"],
+                "val_f1_score": metrics["val_f1_score"],   #best among all the possible threhsold
+                "val_roc_auc": metrics["val_roc_auc"],
                 #"best_n_std": metrics["best_n_std"],
                 #"channel_means": metrics["channel_means"],
                 #"channel_stds": metrics["channel_stds"],
@@ -266,9 +268,11 @@ def test_anomaly_step_normalized(
     model,
     dataloader,
     device,
+    all_val_norm_errors=None,
     normalization_factor=None,
     epsilon=1e-5,
-    desc="Testing anomalies (normalized)"):
+    desc="Testing anomalies (feature weigthing approach)",
+    seed=123):
 
     """
     Computes anomaly detection scores using reconstruction error.
@@ -289,7 +293,7 @@ def test_anomaly_step_normalized(
     # -----------------------------------------------------------
     # 1) Collect reconstruction errors for all batches
     # -----------------------------------------------------------
-    for x, target, mask in dataloader:
+    for x, target, mask in tqdm(dataloader, desc=desc):
         x = x.to(device)
         target = target.to(device)
 
@@ -348,33 +352,41 @@ def test_anomaly_step_normalized(
     # -----------------------------------------------------------
     # 4) Compute AUC + optimal thresholds
     # -----------------------------------------------------------
-    y_scores = anomaly_scores.reshape(-1).numpy()      # [N*L]
-    y_true   = all_masks.reshape(-1).numpy().astype(int)
+    y_scores = anomaly_scores.reshape(-1).numpy()  # [N*L]
+    y_true = all_masks.reshape(-1).numpy().astype(int)
 
-    fpr, tpr, thresholds = roc_curve(y_true, y_scores)
+    # 4.1 AUC calculation remains exact (fast)
+    fpr, tpr, thresholds_full = roc_curve(y_true, y_scores)
     roc_auc = auc(fpr, tpr)
 
-    # Youden
-    J = tpr - fpr
-    ix = np.argmax(J)
-    best_thresh_youden = thresholds[ix]
+    # 4.2 Reduce threshold grid using quantiles
+    NUM_THRESH = 10  # adjustable
+    candidate_thresholds = np.quantile(y_scores, np.linspace(0, 1, NUM_THRESH))
 
-    # F1
-    f1s = [f1_score(y_true, (y_scores >= t).astype(int)) for t in thresholds]
+    # Compute F1 for each candidate threshold
+    f1s = []
+    for t in candidate_thresholds:
+        preds = (y_scores >= t).astype(int)
+        f1s.append(f1_score(y_true, preds))
+
     ix_f1 = np.argmax(f1s)
-    best_thresh_f1 = thresholds[ix_f1]
+    best_thresh_f1 = candidate_thresholds[ix_f1]
     best_f1 = f1s[ix_f1]
 
+    # Compute optimal Youden index on the full ROC (fast anyway)
+    J = tpr - fpr
+    ix_youden = np.argmax(J)
+    best_thresh_youden = thresholds_full[ix_youden]
+
     return {"metrics_results":{
-        "anomaly_scores": anomaly_scores,
-        "roc_auc": roc_auc,
-        "fpr": fpr,
-        "tpr": tpr,
-        "thresholds": thresholds,
-        "best_thresh_youden": best_thresh_youden,
-        "best_thresh_f1": best_thresh_f1,
-        "best_f1_score": best_f1,
-        "normalization_factor": normalization_factor,
+        "val_anomaly_scores": anomaly_scores,
+        "val_roc_auc": roc_auc,
+        "val_fpr": fpr,
+        "val_tpr": tpr,
+        "val_best_thresh_youden": best_thresh_youden,
+        "val_best_thresh_f1": best_thresh_f1,
+        "val_f1_score": best_f1,
+        "val_normalization_factor": normalization_factor,
     }}
 
 

@@ -571,7 +571,7 @@ def main(args):
         anomalies_log=anomalies_metadata["anomalies"],
         output_dir=os.path.join(dir_path, "anomaly_samples"),
         sample_pct=5.0,
-        extend_window_plot_factor=0.5,
+        extend_window_plot_factor=2,
     )
 
 if __name__ == "__main__":

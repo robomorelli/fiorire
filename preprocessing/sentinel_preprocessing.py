@@ -418,7 +418,8 @@ def upsample_and_augment(
 
 
 def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, transform=None, ano_col=None
-                                    ,scale=True, scaler=None, seed=42, only_metric_loader=False):
+                                    ,scale=True, scaler=None, seed=42, only_metric_loader=False, dataset_subset=None):
+
 
     # target can be a list of columns or a single column
     cfg.dataset.target = (
@@ -437,8 +438,9 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
     columns = columns + [ano_col] if ano_col and ano_col in df.columns else columns
 
     df = df[columns].dropna()
-    if cfg.dataset.dataset_subset:
-        df = df.iloc[:cfg.dataset.dataset_subset, :]
+    if dataset_subset is not None:
+        print(f"🔧 Using only a subset of the dataset: first {dataset_subset} samples")
+        df = df.iloc[:dataset_subset, :]
 
     if cfg.dataset.get('upsample_factor', 0) > 1:
         print(f"🔧 Upsampling data by factor of {cfg.dataset.upsample_factor}")

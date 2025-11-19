@@ -202,7 +202,7 @@ def sample_and_plot_anomalies_with_labels(
     anomalies_log: list,
     output_dir: str,
     sample_pct: float = 5.0,
-    extend_window_plot_factor: float = 0.5,
+    extend_window_plot_factor: float = 1,
 ):
     """
     Sample a subset of anomalies and plot:

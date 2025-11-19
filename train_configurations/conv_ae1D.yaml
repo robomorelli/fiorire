@@ -63,6 +63,7 @@ opt:
   other_reports: ['parameters_number']    # overwrite with all hyperparameters to display everything
   order_by: 'val_loss'    # summary of the results is ordered by this value
   num_workers: 12
+  anomalies_dataset_subset: null
   evaluate_metrics: True
   n_std: [1, 3]
   metrics_dataset_path: './data/fiorire_1/all_2016-2018_clean_4s_with_anomalies.pkl'

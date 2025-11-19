@@ -17,6 +17,7 @@ class trainCONVAE2D(tune.Trainable):
         self.max_epochs = self.cfg.opt.epochs
         self.current_epoch = 0
         self.best_f1_score = -float(np.inf)
+        self.best_val_roc_auc = -float(np.inf)
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
         if  config.get('opt.fine_tuning') and 'scaler_params_pre_training' in torch.load(self.cfg.opt.get('checkpoint_path')).keys():
             self.scaler_pre_training_params = None if not(self.cfg.opt.get('fine_tuning', False)) else torch.load(self.cfg.opt.get('checkpoint_path'))['scaler_params_pre_training']
@@ -24,10 +25,11 @@ class trainCONVAE2D(tune.Trainable):
             self.scaler_pre_training_params = None
         # Load data
         # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
-        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(self.cfg, filter_anomalies=True)   # filter anomalies means that use only normal for standardization and use anomalies for metric loader
+        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(self.cfg, filter_anomalies=True,
+                                                                                                                          dataset_subset=self.cfg.dataset.dataset_subset)   # filter anomalies means that use only normal for standardization and use anomalies for metric loader
         self.metrics_loader = get_metric_dataloader(self.cfg, filter_anomalies=True,
                           data_path=self.cfg.opt.metrics_dataset_path,scale=True,
-                          scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+                          scaler=self.scaler, dataset_subset=self.cfg.opt.anomalies_dataset_subset) if self.cfg.opt.evaluate_metrics else None
 
 
         #                                        scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
@@ -118,12 +120,16 @@ class trainCONVAE2D(tune.Trainable):
         if self.metric_key in self.val_results:
             result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, -float(np.inf))  # 👈 Always included
 
-        current_f1 = self.val_results.get("val_f1_score", -float(np.inf))
-        result["val_f1_score"] = current_f1
+        current_f1, current_roc_auc = self.val_results.get("val_f1_score", -float(np.inf)), self.val_results.get("val_roc_auc", -float(np.inf))
+        result["val_f1_score"], result["val_roc_auc"] = current_f1, current_roc_auc
         if current_f1 > self.best_f1_score:
             self.best_f1_score = current_f1
             print(f"INFO: New best F1 score: {self.best_f1_score:.4f} at epoch {self.current_epoch}")
-            result["best_val_f1_score"] = self.best_f1_score
+        if current_roc_auc > self.best_val_roc_auc:
+            self.best_val_roc_auc = current_roc_auc
+            print(f"INFO: New best ROC AUC: {self.best_val_roc_auc:.4f} at epoch {self.current_epoch}")
+        result["best_val_roc_auc"] = self.best_val_roc_auc
+        result["best_val_f1_score"] = self.best_f1_score
 
         # Track best model
         # example of self.cfg.opt_metric: {'val_loss': 'min'}
@@ -134,7 +140,9 @@ class trainCONVAE2D(tune.Trainable):
 
         result["should_checkpoint"] = improved
         result[f"best_{self.metric_key}"] = best_metric
-        result["best_n_std"] = self.val_results.get("best_n_std", 0.0)
+        #result["best_n_std"] = self.val_results.get("best_n_std", 0.0)
+
+        print(result)
 
         # Check early stopping conditions
         stop_training = False
