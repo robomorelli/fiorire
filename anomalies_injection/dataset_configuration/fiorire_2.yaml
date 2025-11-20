@@ -15,7 +15,7 @@ dataset:
     "ACT41054(ASSEMBLY_H_BRF_Z)", "ACT41056(ASSEMBLY_T_BRF_X)", "ACT41057(ASSEMBLY_T_BRF_Y)",
     "ACT41058(ASSEMBLY_T_BRF_Z)"]
   #dataset_subset: 1000_000
-  anomalies_type: [ 'GWN', 'Constant', 'Step', 'Impulse','GNN' ]
+  anomalies_type: [ 'GWN', 'Constant', 'Step', 'Impulse',' PrincipalSubspaceAlteration']
   anomaly_percentage: 8    # N%
   delta_mean: 0.8
   delta_std: 0.1

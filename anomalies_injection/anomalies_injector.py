@@ -467,6 +467,7 @@ def main(args):
     cfg = OmegaConf.load(args.conf_file)
     data_path = cfg.dataset.data_path
     features = list(cfg.dataset.feats)
+    exp_name = '_'.join((str(cfg.dataset.delta_mean).replace('.', '_'), str(cfg.dataset.window_mean)))
 
     print("\n" + "=" * 70)
     print("WOMBAT MULTI-CHANNEL ADAPTIVE INJECTION")
@@ -502,7 +503,7 @@ def main(args):
     base_name, ext = os.path.splitext(os.path.basename(data_path))
     if ext == '':
         ext = '.pkl'  # fallback
-    output_path = os.path.join(dir_path, f"{base_name}_with_anomalies{ext}")
+    output_path = os.path.join(dir_path, f"{base_name}_{exp_name}_with_anomalies{ext}")
     if ext == '.pkl':
         df_with_anom.to_pickle(output_path)
     else:
@@ -544,7 +545,7 @@ def main(args):
 
     # JSON-safe conversion and save
     anomalies_metadata_clean = to_json_serializable(anomalies_metadata)
-    json_path = os.path.join(dir_path, f"{base_name}_anomalies_info.json")
+    json_path = os.path.join(dir_path, f"{base_name}_{exp_name}_anomalies_info.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(anomalies_metadata_clean, f, indent=2, ensure_ascii=False)
     print(f"✓ Saved metadata JSON: {json_path}")
@@ -557,7 +558,7 @@ def main(args):
     print("=" * 70)
 
     # Campiona e salva un sottoinsieme di sequenze anomale per ispezione visiva
-    sample_dir = os.path.join(dir_path, "anomaly_samples")
+    sample_dir = os.path.join(dir_path, f"anomaly_samples_{exp_name}")
 
     # --- clean existing output dir ---
     if os.path.exists(sample_dir):
@@ -569,7 +570,7 @@ def main(args):
         df_with_anom=df_with_anom,  # denormalized
         df_labels=df_with_anom_std["is_anomaly"],  # 0/1 labels
         anomalies_log=anomalies_metadata["anomalies"],
-        output_dir=os.path.join(dir_path, "anomaly_samples"),
+        output_dir=os.path.join(dir_path, f"anomaly_samples_{exp_name}"),
         sample_pct=5.0,
         extend_window_plot_factor=2,
     )
