@@ -19,6 +19,9 @@ class trainCONVAE2D(tune.Trainable):
         self.best_val_loss = float(np.inf)
         self.best_f1_score = -float(np.inf)
         self.best_val_roc_auc = -float(np.inf)
+        self.best_fpr = 0
+        self.best_tpr = 0
+        self.best_thresh_f1 = -float(np.inf)
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
         if  config.get('opt.fine_tuning') and 'scaler_params_pre_training' in torch.load(self.cfg.opt.get('checkpoint_path')).keys():
             self.scaler_pre_training_params = None if not(self.cfg.opt.get('fine_tuning', False)) else torch.load(self.cfg.opt.get('checkpoint_path'))['scaler_params_pre_training']
@@ -110,8 +113,12 @@ class trainCONVAE2D(tune.Trainable):
         # optional metrics
         current_f1, current_roc_auc = self.val_results.get("val_f1_score", -float(np.inf)), self.val_results.get(
             "val_roc_auc", -float(np.inf))
+        current_fpr, current_tpr, current_thresh_f1 = (self.val_results.get("val_fpr", None), self.val_results.get("val_tpr", None),
+                                                            self.val_results.get("val_best_thresh_f1", None))
+
         result["val_f1_score"], result["val_roc_auc"], result[
             'val_loss'] = current_f1, current_roc_auc, current_val_loss
+        result["val_fpr"], result["val_tpr"], result["val_thresh_f1"] = current_fpr, current_tpr, current_thresh_f1
 
         if current_f1 > self.best_f1_score:
             self.best_f1_score = current_f1
@@ -125,10 +132,19 @@ class trainCONVAE2D(tune.Trainable):
         if current_val_loss > self.best_val_loss:
             self.best_val_loss = current_val_loss
             print(f"INFO: New best Val Loss: {self.best_val_loss:.6f} at epoch {self.current_epoch}")
+        if current_fpr > self.best_fpr:
+            self.best_fpr = current_fpr
+        if current_tpr > self.best_tpr:
+            self.best_tpr = current_tpr
+        if current_thresh_f1 > self.best_thresh_f1:
+            self.best_thresh_f1 = current_thresh_f1
 
         result["best_val_loss"] = self.best_val_loss
         result["best_val_roc_auc"] = self.best_val_roc_auc
         result["best_val_f1_score"] = self.best_f1_score
+        result["best_val_fpr"] = self.best_fpr
+        result["best_val_tpr"] = self.best_tpr
+        result["best_val_thresh_f1"] = self.best_thresh_f1
 
         # Track best model
         # example of self.cfg.opt_metric: {'val_loss': 'min'}

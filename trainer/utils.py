@@ -253,6 +253,10 @@ def validate_one_epoch(
             results.update({
                 "val_f1_score": metrics["val_f1_score"],   #best among all the possible threhsold
                 "val_roc_auc": metrics["val_roc_auc"],
+                "val_fpr": metrics["val_fpr"],
+                "val_tpr": metrics["val_tpr"],
+                #"val_best_thresh_youden": metrics["val_best_thresh_youden"],
+                "val_best_thresh_f1": metrics["val_best_thresh_f1"],
                 #"best_n_std": metrics["best_n_std"],
                 #"channel_means": metrics["channel_means"],
                 #"channel_stds": metrics["channel_stds"],
@@ -429,8 +433,9 @@ def test_anomaly_step_normalized(
         }
     }
 
-    return metrics_dict, indices
 
+
+    return metrics_dict, indices
 
 
 def test_anomaly_step(model, dataloader, device,

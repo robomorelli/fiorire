@@ -205,15 +205,14 @@ def sample_and_plot_anomalies_with_labels(
     extend_window_plot_factor: float = 1,
 ):
     """
-    Sample a subset of anomalies and plot:
-
-        - original channel (denormalized)
-        - injected channel (denormalized)
-        - 0/1 labels on a secondary y-axis
-        - a context window around the anomaly region
-
-    extend_window_plot_factor defines how much extra context is shown.
+    Versione corretta:
+      • Plot superiore: ORIGINAL + ANOMALO sovrapposti
+      • Plot inferiore: solo ORIGINAL
+      • Anomalies in dashed line
+      • Labels solo sul grafico superiore
     """
+
+    import matplotlib.pyplot as plt
 
     if not anomalies_log:
         print("⚠ No anomalies found — no plots generated.")
@@ -240,7 +239,7 @@ def sample_and_plot_anomalies_with_labels(
         affected_channels = anom["affected_channels"]
 
         # -------------------------
-        # EXTENDED WINDOW CALCULATION
+        # EXTENDED WINDOW
         # -------------------------
         window_len = end - start
         extra = int(window_len * extend_window_plot_factor)
@@ -248,61 +247,79 @@ def sample_and_plot_anomalies_with_labels(
         plot_start = max(0, start - extra)
         plot_end   = min(total_len, end + extra)
 
-        # slice labels
-        labels_window = df_labels.iloc[plot_start:plot_end].values
         x_axis = np.arange(plot_end - plot_start)
+        labels_window = df_labels.iloc[plot_start:plot_end].values
 
         for ch in affected_channels:
 
-            orig = df_original[ch].iloc[plot_start:plot_end].values   # ← denormalized
-            anomv = df_with_anom[ch].iloc[plot_start:plot_end].values # ← denormalized
+            orig = df_original[ch].iloc[plot_start:plot_end].values
+            anomv = df_with_anom[ch].iloc[plot_start:plot_end].values
 
             if len(orig) == 0:
                 continue
 
-            # ---- Plot ----
-            fig, ax1 = plt.subplots(figsize=(12, 5))
+            # -------------------------
+            #  FIGURE A 2 FINESTRE
+            # -------------------------
+            fig, (ax_top, ax_bottom) = plt.subplots(
+                2, 1, figsize=(13, 7), sharex=True,
+                gridspec_kw={"height_ratios": [3, 2]}
+            )
 
-            ax1.plot(x_axis, orig, label="Original", alpha=0.6)
-            ax1.plot(x_axis, anomv, label="Injected", alpha=0.8)
+            # ========= TOP (Original + Injected) ==========
+            ax1 = ax_top
 
-            ax1.set_xlabel("Index (relative)")
-            ax1.set_ylabel("Signal value")
-            ax1.legend(loc="upper left")
+            # Original clean
+            ax1.plot(x_axis, orig, label="Original", color="black", alpha=0.9)
 
-            # SECOND AXIS FOR LABELS
+            # Injected anomalies (dashed)
+            ax1.plot(
+                x_axis, anomv,
+                label="Injected",
+                linestyle="--",
+                color="red",
+                alpha=0.9
+            )
+
+            ax1.set_ylabel("Signal")
+            ax1.set_title(f"{ch} — {anomaly_type}  (Δ={delta:.3f})")
+
+            # Labels su asse secondario
             ax2 = ax1.twinx()
             ax2.plot(
-                x_axis,
-                labels_window,
+                x_axis, labels_window,
                 drawstyle="steps-post",
                 linewidth=2,
-                alpha=0.7,
-                color="red"
+                alpha=0.6,
+                color="purple",
+                label="Label 0/1"
             )
-            ax2.set_ylabel("Label (0/1)")
             ax2.set_ylim(-0.1, 1.2)
+            ax2.set_ylabel("Label")
 
-            # highlight the true anomaly window
-            anomaly_rel_start = start - plot_start
-            anomaly_rel_end   = end - plot_start
+            # Highlight anomalous window
+            rel_start = start - plot_start
+            rel_end   = end - plot_start
+            ax1.axvspan(rel_start, rel_end, color="red", alpha=0.12)
 
-            ax1.axvspan(
-                anomaly_rel_start,
-                anomaly_rel_end,
-                color='red',
-                alpha=0.12,
-                label="Anomalous interval"
-            )
+            # ========= BOTTOM (Only Original) ==========
+            ax3 = ax_bottom
+            ax3.plot(x_axis, orig, label="Original", color="black", alpha=0.9)
+            ax3.set_ylabel("Original only")
+            ax3.set_xlabel("Index (relative)")
 
-            plt.title(
-                f"{ch} — {anomaly_type} (Δ={delta:.3f})\n"
-                f"Anomaly [{start}:{end}] | Plot [{plot_start}:{plot_end}]"
-            )
+            # Same highlight to compare
+            ax3.axvspan(rel_start, rel_end, color="red", alpha=0.12)
+
+            ax1.legend(loc="upper left")
+            ax3.legend(loc="upper left")
+
             plt.tight_layout()
 
+            # SAVE
             fname = f"sample_{i:03d}_{ch}_{anomaly_type}_Δ{delta:.2f}.png"
-            plt.savefig(os.path.join(output_dir, fname), dpi=150)
+            plt.savefig(os.path.join(output_dir, fname), dpi=140)
             plt.close()
 
     print(f"✓ Saved {n_sample} anomaly examples\n")
+
