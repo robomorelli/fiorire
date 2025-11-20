@@ -78,7 +78,7 @@ class trainCONVAE2D(tune.Trainable):
             desc=f"Epoch {self.current_epoch} [Train]",
         )
         train_loss = train_results["train_loss"]
-        #TO DO: compute the mean and std on the validation set instead of train set where the avg of the error is across batches with higher loss since th emodel is training
+        # TO DO: compute the mean and std on the validation set instead of train set where the avg of the error is across batches with higher loss since th emodel is training
         print(f"Epoch {self.current_epoch} - Avg Train Loss: {train_loss:.6f}")
 
         evaluate_metrics = self.cfg.opt.evaluate_metrics and (
@@ -86,7 +86,7 @@ class trainCONVAE2D(tune.Trainable):
                 (self.current_epoch % self.cfg.opt.detect_anomaly_epoch_freq == 0)
         )
 
-        self.val_results = validate_one_epoch(
+        self.val_results, indices = validate_one_epoch(
             model=self.model,
             dataloader=self.valloader,
             metric_loader=self.metrics_loader,
@@ -94,19 +94,24 @@ class trainCONVAE2D(tune.Trainable):
             device=self.device,
             desc=f"Epoch {self.current_epoch} [Val]",
             evaluate_metrics=evaluate_metrics,
-            n_std=self.n_std,
             anomaly_threshold=train_results.get('anomaly_threshold', None),
             normal_anomalous_ratio=self.cfg.opt.normal_anomalous_ratio,
         )
 
-        #if self.metric_key in self.val_results:
+        # if self.metric_key in self.val_results:
         #    result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, self.best_metric)  # 👈 Always included
-        result = {}
+        result = {
+            "epoch": self.current_epoch,
+            "train_loss": train_loss,
+            "parameters_number": self.parameters_number,
+        }
         # Combine loggable metrics
         current_val_loss = self.val_results["val_loss"]
         # optional metrics
-        current_f1, current_roc_auc = self.val_results.get("val_f1_score", -float(np.inf)), self.val_results.get("val_roc_auc", -float(np.inf))
-        result["val_f1_score"], result["val_roc_auc"], result['val_loss'] = current_f1, current_roc_auc, current_val_loss
+        current_f1, current_roc_auc = self.val_results.get("val_f1_score", -float(np.inf)), self.val_results.get(
+            "val_roc_auc", -float(np.inf))
+        result["val_f1_score"], result["val_roc_auc"], result[
+            'val_loss'] = current_f1, current_roc_auc, current_val_loss
 
         if current_f1 > self.best_f1_score:
             self.best_f1_score = current_f1
@@ -129,23 +134,13 @@ class trainCONVAE2D(tune.Trainable):
         # example of self.cfg.opt_metric: {'val_loss': 'min'}
         # Step 2: Save model only if current metric is better
         # 🔑 Unified improvement + early stopping
-
-        result = {
-            "epoch": self.current_epoch,
-            "train_loss": train_loss,
-            "val_loss": current_val_loss,
-            "parameters_number": self.parameters_number,
-        }
-
         print(f"Epoch {self.current_epoch} - Avg Val Loss: {current_val_loss:.6f}")
-        current_metric = result[self.metric_key]    # which one ios used as a metric?
+        current_metric = result[self.metric_key]  # which one ios used as a metric?
         improved, self.best_metric = self.early_stopping(current_metric)
         self.scheduler.step(current_val_loss)
 
         result["should_checkpoint"] = improved
         result[f"best_{self.metric_key}"] = self.best_metric
-
-        print(result)
 
         # Check early stopping conditions
         stop_training = False
@@ -178,11 +173,13 @@ class trainCONVAE2D(tune.Trainable):
         torch.save({
             'epoch': self.current_epoch, 'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(), 'loss': self.metric_key,
-            'loss_value': self.result[f"best_{self.metric_key}"] ,
-            'cfg': self.cfg, 'scaler_params_pre_training': self.scaler_pre_training_params if self.scaler_pre_training_params else self.scaler_params,
+            'loss_value': self.result[f"best_{self.metric_key}"],
+            'cfg': self.cfg,
+            'scaler_params_pre_training': self.scaler_pre_training_params if self.scaler_pre_training_params else self.scaler_params,
             'scaler_params_fine_tuning': self.scaler_params if self.cfg.opt.get('fine_tuning', False) else None,
             'parameters_number': self.parameters_number, 'param_conf': self.parameters_number,
             'metric_score': self.val_results if "metric_score" in self.val_results else None,
+            "indices": self.val_results["indices"] if "indices" in self.val_results else None,
         }, f"{checkpoint_dir}/model.pt")
         return os.path.join(checkpoint_dir, "model.pt")
 

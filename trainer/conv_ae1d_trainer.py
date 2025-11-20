@@ -89,10 +89,9 @@ class trainCONVAE1D(tune.Trainable):
 
         evaluate_metrics = self.cfg.opt.evaluate_metrics and (
                 self.metrics_loader is not None and
-                (self.current_epoch % self.cfg.opt.detect_anomaly_epoch_freq == 0)
-        )
+                (self.current_epoch % self.cfg.opt.detect_anomaly_epoch_freq == 0))
 
-        self.val_results = validate_one_epoch(
+        self.val_results, indices = validate_one_epoch(
             model=self.model,
             dataloader=self.valloader,
             metric_loader=self.metrics_loader,
@@ -100,14 +99,16 @@ class trainCONVAE1D(tune.Trainable):
             device=self.device,
             desc=f"Epoch {self.current_epoch} [Val]",
             evaluate_metrics=evaluate_metrics,
-            n_std=self.n_std,
             anomaly_threshold=train_results.get('anomaly_threshold', None),
-            normal_anomalous_ratio=self.cfg.opt.normal_anomalous_ratio,
-        )
+            normal_anomalous_ratio=self.cfg.opt.normal_anomalous_ratio)
 
         # if self.metric_key in self.val_results:
         #    result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, self.best_metric)  # 👈 Always included
-        result = {}
+        result = {
+            "epoch": self.current_epoch,
+            "train_loss": train_loss,
+            "parameters_number": self.parameters_number,
+        }
         # Combine loggable metrics
         current_val_loss = self.val_results["val_loss"]
         # optional metrics
@@ -137,14 +138,6 @@ class trainCONVAE1D(tune.Trainable):
         # example of self.cfg.opt_metric: {'val_loss': 'min'}
         # Step 2: Save model only if current metric is better
         # 🔑 Unified improvement + early stopping
-
-        result = {
-            "epoch": self.current_epoch,
-            "train_loss": train_loss,
-            "val_loss": current_val_loss,
-            "parameters_number": self.parameters_number,
-        }
-
         print(f"Epoch {self.current_epoch} - Avg Val Loss: {current_val_loss:.6f}")
         current_metric = result[self.metric_key]  # which one ios used as a metric?
         improved, self.best_metric = self.early_stopping(current_metric)
@@ -152,8 +145,6 @@ class trainCONVAE1D(tune.Trainable):
 
         result["should_checkpoint"] = improved
         result[f"best_{self.metric_key}"] = self.best_metric
-
-        print(result)
 
         # Check early stopping conditions
         stop_training = False

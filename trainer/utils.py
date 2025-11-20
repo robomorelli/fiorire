@@ -205,8 +205,6 @@ def validate_one_epoch(
     device,
     desc: str = "Validation",
     evaluate_metrics: bool = True,
-    n_std: Optional[List[float]] = None,
-    anomaly_threshold: Optional[dict] = None,
     normal_anomalous_ratio: int = 1):
 
     model.eval()
@@ -240,7 +238,7 @@ def validate_one_epoch(
 
     # Optionally evaluate anomaly detection metrics
     if evaluate_metrics:
-        test_results = test_anomaly_step_normalized(
+        test_results, indices = test_anomaly_step_normalized(
             model=model,
             dataloader=metric_loader,
             device=device,
@@ -262,7 +260,10 @@ def validate_one_epoch(
                 # "channel_thresholds": metrics["channel_thresholds"]
             })
 
-    return results
+    else:
+        indices = None
+
+    return results, indices
 
 
 @torch.no_grad()
@@ -415,7 +416,7 @@ def test_anomaly_step_normalized(
     ix_youden = np.argmax(J)
     best_thresh_youden = thresholds_full[ix_youden]
 
-    return {
+    metrics_dict =  {
         "metrics_results": {
             "val_anomaly_scores": anomaly_scores,
             "val_roc_auc": roc_auc,
@@ -427,6 +428,8 @@ def test_anomaly_step_normalized(
             "val_normalization_factor": normalization_factor,
         }
     }
+
+    return metrics_dict, indices
 
 
 
