@@ -99,7 +99,6 @@ class trainCONVAE1D(tune.Trainable):
             device=self.device,
             desc=f"Epoch {self.current_epoch} [Val]",
             evaluate_metrics=evaluate_metrics,
-            anomaly_threshold=train_results.get('anomaly_threshold', None),
             normal_anomalous_ratio=self.cfg.opt.normal_anomalous_ratio)
 
         # if self.metric_key in self.val_results:
