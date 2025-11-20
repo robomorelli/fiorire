@@ -206,7 +206,8 @@ def validate_one_epoch(
     desc: str = "Validation",
     evaluate_metrics: bool = True,
     n_std: Optional[List[float]] = None,
-    anomaly_threshold: Optional[dict] = None):
+    anomaly_threshold: Optional[dict] = None,
+    normal_anomalous_ratio: int = 1):
 
     model.eval()
     epoch_loss = 0
@@ -244,7 +245,8 @@ def validate_one_epoch(
             dataloader=metric_loader,
             device=device,
             all_val_norm_errors=all_errors,
-            normalization_factor=None
+            normalization_factor=None,
+            normal_anomalies_ratio=normal_anomalous_ratio
             )
 
         # Flatten only necessary fields for logging
@@ -270,124 +272,161 @@ def test_anomaly_step_normalized(
     device,
     all_val_norm_errors=None,
     normalization_factor=None,
+    num_thresh: int = 10,
     epsilon=1e-5,
-    desc="Testing anomalies (feature weigthing approach)",
-    seed=123):
-
+    desc="Testing anomalies (feature weighting approach)",
+    normal_anomalies_ratio: int = 1,
+    seed=123,
+    shuffle: bool = True
+):
     """
     Computes anomaly detection scores using reconstruction error.
-    Normalization is performed using the *mathematical median* (50th percentile)
-    of reconstruction errors for each channel across all time steps and samples.
+    Only sequences with at least one anomalous point are used for inference.
+    Normal sequences are used only for normalization and F1 computation.
 
+    Args:
+        model: trained model
+        dataloader: dataloader containing both normal and anomalous sequences
+        device: torch device
+        all_val_norm_errors: errors already computed on normal validation data [N_normal, C, L]
+        normalization_factor: optional normalization factor per channel
+        epsilon: small number to avoid div by zero
+        normal_to_anomalies_ratio: ratio of normal to anomaly sequences for F1 computation
+        seed: for reproducible sampling of normal sequences
+        shuffle: whether to shuffle normal samples when sampling
     Returns:
-        anomaly_scores: tensor [N, L]
-        roc_auc: float
-        best thresholds (Youden + F1)
-        normalization_factor: tensor [C]
+        dict with anomaly metrics
     """
 
     model.eval()
-    all_errors = []
-    all_masks = []
+    anomaly_errors = []
+    anomaly_masks = []
 
     # -----------------------------------------------------------
-    # 1) Collect reconstruction errors for all batches
+    # 1) Filter sequences with at least one anomalous point
     # -----------------------------------------------------------
-    for x, target, mask in tqdm(dataloader, desc=desc):
-        x = x.to(device)
-        target = target.to(device)
+    for batch in tqdm(dataloader, desc=desc):
+        x, target, mask, *rest = batch
 
-        recon = model(x)
-        error = torch.abs(recon - target)  # shape: [B, C, L]
+        # Consider a sequence anomalous if it has at least one non-zero in mask
+        is_anomaly_seq = mask.view(mask.size(0), -1).sum(dim=1) > 0
+        if is_anomaly_seq.sum() == 0:
+            continue  # skip sequences fully normal
 
-        all_errors.append(error.cpu())
-        all_masks.append(mask.cpu())
+        # Keep only anomalous sequences
+        x_anom = x[is_anomaly_seq].to(device)
+        target_anom = target[is_anomaly_seq].to(device)
+        mask_anom = mask[is_anomaly_seq]
 
-    # Concatenate over batches
-    all_errors = torch.cat(all_errors, dim=0)  # [N, 1, C, L] or [N, C, L]
-    all_masks  = torch.cat(all_masks,  dim=0)  # [N, 1, C, L] or [N, C, L]
+        recon = model(x_anom)
+        error = torch.abs(recon - target_anom)  # [B_anom, C, L]
+        anomaly_errors.append(error.cpu())
+        anomaly_masks.append(mask_anom.cpu())
 
-    # -----------------------------------------------------------
-    # 2) Detect model type and adjust shapes
-    # -----------------------------------------------------------
+    if len(anomaly_errors) == 0:
+        raise ValueError("No anomalous sequences found in the dataloader.")
+
+    anomaly_errors = torch.cat(anomaly_errors, dim=0)  # [N_anom, 1, C, L] or [N_anom, C, L]
+    anomaly_masks = torch.cat(anomaly_masks, dim=0)    # [N_anom, 1, L]
+
     model_type, last_layer = infer_model_type(model)
 
-    # all_errors may be [N,1,C,L], squeeze appropriately
+    # -----------------------------------------------------------
+    # 2) Sample normal sequences to maintain ratio
+    # -----------------------------------------------------------
+    if all_val_norm_errors is None:
+        raise ValueError("all_val_norm_errors must be provided for normalization.")
+
+    N_anom = anomaly_errors.shape[0]
+    N_normal_needed = N_anom * normal_anomalies_ratio
+
+    if shuffle:
+        g = torch.Generator()
+        g.manual_seed(seed)
+        # 972, 1475, 2312
+        indices = torch.randperm(all_val_norm_errors.shape[0], generator=g)[:N_normal_needed]
+    else:
+        indices = torch.arange(min(N_normal_needed, all_val_norm_errors.shape[0]))
+
+    normal_errors_sampled = all_val_norm_errors[indices]  # [N_normal_needed, C, L] or [N_normal_needed, C, L]
+
     if model_type == "cnn":
         if last_layer == 'Conv2d':
-            # remove channel dimension if it's a singleton
-            if all_errors.dim() == 4:
-                # shape: [N, 1, C, L] → [N, C, L]
-                all_errors = all_errors.squeeze(1)
+            C = anomaly_errors.shape[2]
+            anomaly_errors = torch.squeeze(anomaly_errors)
+            normal_errors_sampled = torch.squeeze(normal_errors_sampled)
+        else:
+            C = anomaly_errors.shape[1]
     elif model_type == "lstm":
-        # expected shape already [N, C, L]
-        pass
+        C = anomaly_errors.shape[2]
     else:
-        raise ValueError("Unknown model type: expected cnn or lstm")
-
-    N, C, L = all_errors.shape
+        raise ValueError("Unknown model type")
 
     # -----------------------------------------------------------
-    # 2) Compute normalization factor using the *mathematical median*
+    # 3) Concatenate normal + anomaly sequences
     # -----------------------------------------------------------
+
+    all_errors_combined = torch.cat([normal_errors_sampled, anomaly_errors], dim=0)
+    all_masks_combined = torch.cat([
+        torch.zeros((len(normal_errors_sampled), anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int),  # normal = 0
+        anomaly_masks
+    ], dim=0)
+
+    # -----------------------------------------------------------
+    # 4) Compute normalization factor if not provided
+    # -----------------------------------------------------------
+    C = all_errors_combined.shape[1]
     if normalization_factor is None:
-        # Flatten over all samples and time steps: [N*L, C]
-        flat = all_errors.permute(0, 2, 1).reshape(-1, C).float()
+        flat = normal_errors_sampled.permute(0, 2, 1).reshape(-1, C).float()  # [N_normal * L, C]
+        normalization_factor = torch.quantile(flat, 0.5, dim=0)  # median per channel
 
-        # Mathematical median (50th percentile)
-        # torch.quantile(..., 0.5) computes the true median, including interpolation.
-        normalization_factor = torch.quantile(flat, 0.5, dim=0)  # [C]
-
-    # Prepare for broadcasting: [1, C, 1]
     norm = normalization_factor.view(1, C, 1) + epsilon
+    normalized_errors = all_errors_combined / norm
 
     # -----------------------------------------------------------
-    # 3) Normalize errors
+    # 5) Compute anomaly scores (mean across channels) per sequence
     # -----------------------------------------------------------
-    normalized_errors = all_errors / norm   # [N, C, L]
-
-    # Score per time step = mean across channels
     anomaly_scores = normalized_errors.mean(dim=1)  # [N, L]
 
-    # -----------------------------------------------------------
-    # 4) Compute AUC + optimal thresholds
-    # -----------------------------------------------------------
-    y_scores = anomaly_scores.reshape(-1).numpy()  # [N*L]
-    y_true = all_masks.reshape(-1).numpy().astype(int)
+    # Aggregate mask per sequence: 1 if at least one point is anomalous
+    seq_true = (all_masks_combined.view(all_masks_combined.size(0), -1).sum(dim=1) > 0).numpy().astype(int)
+    seq_scores = anomaly_scores.mean(dim=1).numpy()  # mean over time steps per sequence
 
-    # 4.1 AUC calculation remains exact (fast)
-    fpr, tpr, thresholds_full = roc_curve(y_true, y_scores)
+    # -----------------------------------------------------------
+    # 6) Compute ROC, AUC, thresholds, F1 per sequence
+    # -----------------------------------------------------------
+    fpr, tpr, thresholds_full = roc_curve(seq_true, seq_scores)
     roc_auc = auc(fpr, tpr)
 
-    # 4.2 Reduce threshold grid using quantiles
-    NUM_THRESH = 10  # adjustable
-    candidate_thresholds = np.quantile(y_scores, np.linspace(0, 1, NUM_THRESH))
-
-    # Compute F1 for each candidate threshold
+    # candidate thresholds
+    NUM_THRESH = num_thresh
+    candidate_thresholds = np.quantile(seq_scores, np.linspace(0, 1, NUM_THRESH))
     f1s = []
     for t in candidate_thresholds:
-        preds = (y_scores >= t).astype(int)
-        f1s.append(f1_score(y_true, preds))
+        preds = (seq_scores >= t).astype(int)
+        f1s.append(f1_score(seq_true, preds))
 
     ix_f1 = np.argmax(f1s)
     best_thresh_f1 = candidate_thresholds[ix_f1]
     best_f1 = f1s[ix_f1]
 
-    # Compute optimal Youden index on the full ROC (fast anyway)
+    # Youden index
     J = tpr - fpr
     ix_youden = np.argmax(J)
     best_thresh_youden = thresholds_full[ix_youden]
 
-    return {"metrics_results":{
-        "val_anomaly_scores": anomaly_scores,
-        "val_roc_auc": roc_auc,
-        "val_fpr": fpr,
-        "val_tpr": tpr,
-        "val_best_thresh_youden": best_thresh_youden,
-        "val_best_thresh_f1": best_thresh_f1,
-        "val_f1_score": best_f1,
-        "val_normalization_factor": normalization_factor,
-    }}
+    return {
+        "metrics_results": {
+            "val_anomaly_scores": anomaly_scores,
+            "val_roc_auc": roc_auc,
+            "val_fpr": fpr,
+            "val_tpr": tpr,
+            "val_best_thresh_youden": best_thresh_youden,
+            "val_best_thresh_f1": best_thresh_f1,
+            "val_f1_score": best_f1,
+            "val_normalization_factor": normalization_factor,
+        }
+    }
 
 
 

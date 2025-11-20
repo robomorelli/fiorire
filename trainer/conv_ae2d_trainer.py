@@ -16,6 +16,7 @@ class trainCONVAE2D(tune.Trainable):
         self.cfg, _, _ = update_input_output(self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.max_epochs = self.cfg.opt.epochs
         self.current_epoch = 0
+        self.best_val_loss = float(np.inf)
         self.best_f1_score = -float(np.inf)
         self.best_val_roc_auc = -float(np.inf)
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
@@ -25,20 +26,12 @@ class trainCONVAE2D(tune.Trainable):
             self.scaler_pre_training_params = None
         # Load data
         # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
-        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(self.cfg, filter_anomalies=True,
+        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(self.cfg,
                                                                                                                           dataset_subset=self.cfg.dataset.dataset_subset)   # filter anomalies means that use only normal for standardization and use anomalies for metric loader
-        self.metrics_loader = get_metric_dataloader(self.cfg, filter_anomalies=True,
-                          data_path=self.cfg.opt.metrics_dataset_path,scale=True,
-                          scaler=self.scaler, dataset_subset=self.cfg.opt.anomalies_dataset_subset) if self.cfg.opt.evaluate_metrics else None
-
-
-        #                                        scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
-        # If the anomalous sequences are not present in the main dataset, the metrics_loader will be None.
-        # Try to load it from the path specified in the config file
-        #self.metrics_loader = get_metric_loader(self.cfg, self.metrics_loader,
-        #                                        data_path=self.cfg.opt.metrics_dataset_path,
-        #                                        scale=True,
-        #                                        scaler=self.scaler) if self.cfg.opt.evaluate_metrics else None
+        self.metrics_loader = get_metric_dataloader(self.cfg, # it takes the ano_column to separate normal from anomalous
+                          data_path=self.cfg.opt.metrics_dataset_path, scale=True,
+                          scaler=self.scaler, dataset_subset=self.cfg.opt.anomalies_dataset_subset,
+                          take_only_anomalies=True) if self.cfg.opt.evaluate_metrics else None
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (
@@ -102,32 +95,33 @@ class trainCONVAE2D(tune.Trainable):
             desc=f"Epoch {self.current_epoch} [Val]",
             evaluate_metrics=evaluate_metrics,
             n_std=self.n_std,
-            anomaly_threshold=train_results.get('anomaly_threshold', None)
+            anomaly_threshold=train_results.get('anomaly_threshold', None),
+            normal_anomalous_ratio=self.cfg.opt.normal_anomalous_ratio,
         )
-        val_loss = self.val_results["val_loss"]
-        print(f"Epoch {self.current_epoch} - Avg Val Loss: {val_loss:.6f}")
 
-        self.scheduler.step(val_loss)
+        #if self.metric_key in self.val_results:
+        #    result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, self.best_metric)  # 👈 Always included
+        result = {}
         # Combine loggable metrics
-
-        result = {
-            "epoch": self.current_epoch,
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-            "parameters_number": self.parameters_number,
-        }
-
-        if self.metric_key in self.val_results:
-            result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, -float(np.inf))  # 👈 Always included
-
+        current_val_loss = self.val_results["val_loss"]
+        # optional metrics
         current_f1, current_roc_auc = self.val_results.get("val_f1_score", -float(np.inf)), self.val_results.get("val_roc_auc", -float(np.inf))
-        result["val_f1_score"], result["val_roc_auc"] = current_f1, current_roc_auc
+        result["val_f1_score"], result["val_roc_auc"], result['val_loss'] = current_f1, current_roc_auc, current_val_loss
+
         if current_f1 > self.best_f1_score:
             self.best_f1_score = current_f1
             print(f"INFO: New best F1 score: {self.best_f1_score:.4f} at epoch {self.current_epoch}")
         if current_roc_auc > self.best_val_roc_auc:
             self.best_val_roc_auc = current_roc_auc
             print(f"INFO: New best ROC AUC: {self.best_val_roc_auc:.4f} at epoch {self.current_epoch}")
+        if current_roc_auc > self.best_val_roc_auc:
+            self.best_val_roc_auc = current_roc_auc
+            print(f"INFO: New best ROC AUC: {self.best_val_roc_auc:.4f} at epoch {self.current_epoch}")
+        if current_val_loss > self.best_val_loss:
+            self.best_val_loss = current_val_loss
+            print(f"INFO: New best Val Loss: {self.best_val_loss:.6f} at epoch {self.current_epoch}")
+
+        result["best_val_loss"] = self.best_val_loss
         result["best_val_roc_auc"] = self.best_val_roc_auc
         result["best_val_f1_score"] = self.best_f1_score
 
@@ -135,12 +129,21 @@ class trainCONVAE2D(tune.Trainable):
         # example of self.cfg.opt_metric: {'val_loss': 'min'}
         # Step 2: Save model only if current metric is better
         # 🔑 Unified improvement + early stopping
-        current_metric = result[self.metric_key]
-        improved, best_metric = self.early_stopping(current_metric)
+
+        result = {
+            "epoch": self.current_epoch,
+            "train_loss": train_loss,
+            "val_loss": current_val_loss,
+            "parameters_number": self.parameters_number,
+        }
+
+        print(f"Epoch {self.current_epoch} - Avg Val Loss: {current_val_loss:.6f}")
+        current_metric = result[self.metric_key]    # which one ios used as a metric?
+        improved, self.best_metric = self.early_stopping(current_metric)
+        self.scheduler.step(current_val_loss)
 
         result["should_checkpoint"] = improved
-        result[f"best_{self.metric_key}"] = best_metric
-        #result["best_n_std"] = self.val_results.get("best_n_std", 0.0)
+        result[f"best_{self.metric_key}"] = self.best_metric
 
         print(result)
 

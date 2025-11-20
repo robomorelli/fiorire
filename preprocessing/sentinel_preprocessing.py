@@ -418,7 +418,8 @@ def upsample_and_augment(
 
 
 def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, transform=None, ano_col=None
-                                    ,scale=True, scaler=None, seed=42, only_metric_loader=False, dataset_subset=None):
+                                    ,scale=True, scaler=None, seed=42, only_metric_loader=False, dataset_subset=None
+                                    ,take_only_anomalies=False):
 
 
     # target can be a list of columns or a single column
@@ -455,10 +456,10 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
     # To do use decorator on the same function to divide ano searches behaviour
     # Train df_scaling is without eventual ano_col, so it can be used to fit the scaler
     seed = cfg.opt.get("seed", seed)
+    # Use thee seed to get always the same train and val indexes
     # val indexes on zook array([8029780, 8029781, 8029782, ..., 6508345, 6508346, 6508347])
     train_indexes, val_indexes, train_df_for_scaling, anomalous_indexes = (
                     create_train_val_df_indexes(cfg=cfg, df=df, return_anomalies=use_anomaly_split, ano_col=ano_col, seed=seed))
-    #excludelist(set(anomalous_indexes) & set(val_indexes))
     #len(val_indexes) 3097422
     # Scaling
     if scale:
@@ -488,53 +489,59 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
     # -------------------------------
     # Handle metric loader with desired normal-anomalous ratio
     # -------------------------------
-
     if anomalous_indexes is not None:
-        normal_ratio = cfg.opt.normal_anomalous_ratio
 
-        random.seed(seed)
-        val_indexes_injection = val_indexes.copy()
-        random.shuffle(val_indexes_injection)
+        if not take_only_anomalies:
+            print("🔧 Creating metric loader with specified normal-anomalous ratio")
+            normal_ratio = cfg.opt.normal_anomalous_ratio
 
-        normals = len(val_indexes_injection)
-        anomalies = len(anomalous_indexes)
+            random.seed(seed)
+            val_indexes_injection = val_indexes.copy()
+            random.shuffle(val_indexes_injection)
 
-        # -------------------------------
-        # Adjust based on ratio
-        # -------------------------------
-        if normal_ratio == 1:
-            # Equal number of normal and anomalies
-            target = min(normals, anomalies)
-            val_indexes_injection = val_indexes_injection[:target]
-            anomalous_indexes = anomalous_indexes[:target]
+            normals = len(val_indexes_injection)
+            anomalies = len(anomalous_indexes)
 
-        elif normal_ratio > 1:
-            # Want MORE normals than anomalies
-            anomalies_target = int(normals / normal_ratio)
-            if anomalies >= anomalies_target:
-                # Enough anomalies → trim anomalies
-                anomalous_indexes = anomalous_indexes[:anomalies_target]
+            # -------------------------------
+            # Adjust based on ratio
+            # -------------------------------
+            if normal_ratio == 1:
+                # Equal number of normal and anomalies
+                target = min(normals, anomalies)
+                val_indexes_injection = val_indexes_injection[:target]
+                anomalous_indexes = anomalous_indexes[:target]
+
+            elif normal_ratio > 1:
+                # Want MORE normals than anomalies
+                anomalies_target = int(normals / normal_ratio)
+                if anomalies >= anomalies_target:
+                    # Enough anomalies → trim anomalies
+                    anomalous_indexes = anomalous_indexes[:anomalies_target]
+                else:
+                    # Not enough anomalies → reduce normal samples
+                    print("⚠️ Not enough anomalies to reach ratio >1 → reducing normal samples.")
+                    normals_target = int(anomalies * normal_ratio)
+                    val_indexes_injection = val_indexes_injection[:normals_target]
+
             else:
-                # Not enough anomalies → reduce normal samples
-                print("⚠️ Not enough anomalies to reach ratio >1 → reducing normal samples.")
-                normals_target = int(anomalies * normal_ratio)
-                val_indexes_injection = val_indexes_injection[:normals_target]
+                # normal_ratio < 1 → want MORE anomalies than normals
+                anomalies_target = int(normals / normal_ratio)
+                if anomalies >= anomalies_target:
+                    # Enough anomalies → trim anomalies
+                    anomalous_indexes = anomalous_indexes[:anomalies_target]
+                else:
+                    # Not enough anomalies → reduce normal samples
+                    print("⚠️ Not enough anomalies to reach ratio <1 → reducing normal samples.")
+                    normals_target = int(anomalies * normal_ratio)
+                    normals_target = max(1, normals_target)
+                    val_indexes_injection = val_indexes_injection[:normals_target]
 
+            # Union for metric loader
+            metric_indexes = np.union1d(val_indexes_injection, anomalous_indexes)
         else:
-            # normal_ratio < 1 → want MORE anomalies than normals
-            anomalies_target = int(normals / normal_ratio)
-            if anomalies >= anomalies_target:
-                # Enough anomalies → trim anomalies
-                anomalous_indexes = anomalous_indexes[:anomalies_target]
-            else:
-                # Not enough anomalies → reduce normal samples
-                print("⚠️ Not enough anomalies to reach ratio <1 → reducing normal samples.")
-                normals_target = int(anomalies * normal_ratio)
-                normals_target = max(1, normals_target)
-                val_indexes_injection = val_indexes_injection[:normals_target]
+            print("🔧 Creating metric loader with only anomalous sequences")
+            metric_indexes = anomalous_indexes
 
-        # Union for metric loader
-        metric_indexes = np.union1d(val_indexes_injection, anomalous_indexes)
         index_sets["metric"] = (metric_indexes, seq_len, False)
 
     samplers = get_samplers_from_index_sets(index_sets)

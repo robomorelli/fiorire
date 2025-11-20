@@ -242,7 +242,7 @@ def get_train_val_dataloader(cfg, filter_anomalies=True, data_path=None, dataset
     return trainloader, valloader, metric_loader, scaler, scaler_params
 
 def get_metric_dataloader(cfg, filter_anomalies=True, data_path=None, scale=True,
-                          scaler=None, dataset_subset=None,
+                          scaler=None, dataset_subset=None, take_only_anomalies=False,
                              **kwargs):
     """
     Load and prepare train/validation dataloaders.
@@ -309,7 +309,7 @@ def get_metric_dataloader(cfg, filter_anomalies=True, data_path=None, scale=True
         cfg, df, seq_len=cfg.dataset.seq_in_length,
         filter_anomalies=filter_anomalies, transform=transform,
         ano_col=cfg.dataset.is_anomaly_column, scale=scale, scaler=scaler, only_metric_loader=True,
-        dataset_subset=dataset_subset)
+        dataset_subset=dataset_subset, take_only_anomalies=take_only_anomalies)
 
     n_features = len(cfg.dataset.feats)
     cfg.dataset.n_features = n_features
