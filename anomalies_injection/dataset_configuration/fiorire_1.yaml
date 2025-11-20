@@ -1,0 +1,26 @@
+# Dataset
+dataset:
+  name: 'fiorire_1'
+  flag_col: null
+  align_data: 0
+  detect_flag: 0
+  data_path: '../data/fiorire_1/all_2016-2018_clean_4s.pkl' #'./data/fiorire_1/all_2016-2018_clean_4s.pkl'    #'./data/fiorire_2/nominal_merged.csv'
+  feats: ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
+          'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
+          'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
+          'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
+  #dataset_subset: 1000_000
+  anomalies_type: ['GWN', 'Constant', 'Step', 'Impulse', 'PrincipalSubspaceAlteration']
+  anomaly_percentage: 5    # N%
+  delta_mean: 0.01
+  delta_std: 0.1
+  window_skewness: -3
+  window_mean: 128
+  window_std: 40
+  reset_interval: 100    #100 mean only one decay and length
+  min_channels: 1
+  max_channels: null
+  channel_prob_decay: null    # null means no decay so all channels
+  random_seed: 123
+  target: null    # only to eventually remove a presistent target column
+
