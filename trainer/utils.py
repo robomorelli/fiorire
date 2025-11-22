@@ -567,16 +567,19 @@ def adjust_model_for_finetuning(
     # 0️⃣ FREEZE LAYERS (after modifications)
     # ============================================================
 
-    def freeze_layers_with_logging(model, freeze_layers):
+    def freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=None):
         """
-        Congela layer in base alle regole richieste e produce logging ESTESO.
-
-        freeze_list può contenere:
-        - "encoder"
-        - "decoder"
-        - "bottleneck"
-        - numeri di layer (es. "3")
-        - "all"
+        Congela layer con logging esteso.
+        'freeze_layers' può contenere:
+           - encoder
+           - decoder
+           - bottleneck
+           - numeri (es. '1', '2')
+           - latent_space
+           - encoder-decoder
+           - all
+           - "0" → nessun freeze
+        'fine_tuning_mode' può essere 'latent_space' o altro
         """
 
         print("\n" + "=" * 80)
@@ -584,130 +587,87 @@ def adjust_model_for_finetuning(
         print("=" * 80)
 
         # ------------------------------------------------------------------
-        # 1) Identifica componenti del modello
+        # Normalizza freeze_layers
+        # ------------------------------------------------------------------
+        if freeze_layers is None:
+            freeze_layers = []
+        elif isinstance(freeze_layers, int):
+            freeze_layers = [str(freeze_layers)]
+        elif isinstance(freeze_layers, str):
+            freeze_layers = [freeze_layers]
+
+        # Se è "0" → nessun freeze
+        if "0" in freeze_layers:
+            print("\nℹ️ Freeze layers = '0' → nessun freeze applicato (solo protetti KEEP)")
+            freeze_layers = []
+
+        # ------------------------------------------------------------------
+        # Identifica componenti
         # ------------------------------------------------------------------
         has_encoder = hasattr(model, "encoder")
         has_decoder = hasattr(model, "decoder")
         has_bottleneck = hasattr(model, "bottleneck")
+        is_latent_strategy = fine_tuning_mode == "latent_space"
 
         print(f"🔍 Rilevamento componenti:")
         print(f"   - encoder:    {has_encoder}")
         print(f"   - decoder:    {has_decoder}")
         print(f"   - bottleneck: {has_bottleneck}")
-
-        # Liste utili per i log e le decisioni
-        protected_keywords = ["adapter", "adaptive", "latent"]
-        protected_modules = []
-
-        # Raccogli i layer protetti
-        for name, module in model.named_modules():
-            if any(k in name.lower() for k in protected_keywords):
-                protected_modules.append(name)
-
-        print("\n🛡 Layer protetti (mai congelati):")
-        for p in protected_modules:
-            print(f"   - {p}")
+        print(f"   - strategia latent_space: {is_latent_strategy}")
 
         # ------------------------------------------------------------------
-        # 2) Funzioni utili
+        # Definisci PROTECTED (layer che NON devono mai essere congelati)
         # ------------------------------------------------------------------
+        protected_keywords = ["adapter", "adaptive"]  # sempre protetti
+        if is_latent_strategy:
+            protected_keywords.append("bottleneck")
+            protected_keywords.append("latent")
 
-        def should_protect(name):
-            return any(k in name.lower() for k in protected_keywords)
+        def is_protected(name):
+            name = name.lower()
+            return any(k in name for k in protected_keywords)
 
+        # ------------------------------------------------------------------
+        # Funzioni di freeze / keep
+        # ------------------------------------------------------------------
         def freeze_module(name, module):
-            """Congela modulo con logging dettagliato."""
             print(f"   🧊 FREEZE → {name}")
             for p in module.parameters(recurse=True):
                 p.requires_grad = False
 
-        def keep_module(name, module, reason=""):
-            """Lascia modulo allenabile."""
-            print(f"   🔥 KEEP  → {name}   {reason}")
+        def keep_module(name, module, reason="", protected=False):
+            icon = "❄️" if protected else "🔥"
+            print(f"   {icon} KEEP  → {name}   {reason}")
             for p in module.parameters(recurse=True):
                 p.requires_grad = True
 
         # ------------------------------------------------------------------
-        # 3) Caso "all": congela tutto tranne adapter
+        # Caso 'all'
         # ------------------------------------------------------------------
         if "all" in freeze_layers:
             print("\n🚨 Modalità FREEZE = 'all'")
-            print("→ Congelo tutto tranne gli adattatori e latent-space")
-
+            print("→ Congelo TUTTO tranne i layer protetti")
             for name, module in model.named_modules():
-                if should_protect(name):
-                    keep_module(name, module, reason="(protetto)")
+                if is_protected(name):
+                    keep_module(name, module, "(protetto)", protected=True)
                 else:
                     freeze_module(name, module)
-
             print("\n✅ FREEZE COMPLETATO (modalità 'all')")
             return
 
         # ------------------------------------------------------------------
-        # 4) Se NON esiste encoder → fallback
+        # Modalità standard o vuota (freeze_layers=[] → nessun freeze)
         # ------------------------------------------------------------------
-        if "encoder" in freeze_layers and not has_encoder:
-            print("\n⚠️ Richiesto FREEZE 'encoder' ma il modello NON ha un encoder!")
-            print("→ FALLBACK: congelo tutto fino al bottleneck")
-
-            found_bottleneck = False
-            for name, module in model.named_modules():
-                if should_protect(name):
-                    keep_module(name, module, reason="(protetto)")
-                    continue
-
-                if "bottleneck" in name.lower():
-                    print(f"   🎯 Trovato bottleneck: {name}")
-                    found_bottleneck = True
-                    break
-
-                freeze_module(name, module)
-
-            if not found_bottleneck:
-                print("❗ Nessun bottleneck trovato → congelo tutto tranne adapter")
-                for name, module in model.named_modules():
-                    if should_protect(name):
-                        keep_module(name, module, reason="(protetto)")
-                    else:
-                        freeze_module(name, module)
-
-            print("\n✅ FREEZE COMPLETATO (fallback: missing encoder)")
-            return
-
-        # ------------------------------------------------------------------
-        # 5) Se NON esiste bottleneck e richiesto
-        # ------------------------------------------------------------------
-        if "bottleneck" in freeze_layers and not has_bottleneck:
-            print("\n⚠️ Richiesto FREEZE 'bottleneck' ma non esiste!")
-            print("→ FALLBACK: congelo tutto tranne decoder e adapter")
-
-            for name, module in model.named_modules():
-                if should_protect(name):
-                    keep_module(name, module, reason="(protetto)")
-                    continue
-
-                if has_decoder and "decoder" in name.lower():
-                    keep_module(name, module, reason="(decoder)")
-                else:
-                    freeze_module(name, module)
-
-            print("\n✅ FREEZE COMPLETATO (fallback: missing bottleneck)")
-            return
-
-        # ------------------------------------------------------------------
-        # 6) Caso generale: processa la lista
-        # ------------------------------------------------------------------
-        print("\n📌 Modalità FREEZE: normale")
-        print(f"   Freeze list: {freeze_layers}")
+        print("\n📌 Modalità FREEZE: standard")
+        print(f"   Freeze layers richiesti: {freeze_layers if freeze_layers else 'nessuno'}")
 
         for name, module in model.named_modules():
-
-            # Adapter/latent protetti
-            if should_protect(name):
-                keep_module(name, module, reason="(protetto)")
-                continue
-
             lname = name.lower()
+
+            # Protetti → KEEP sempre
+            if is_protected(name):
+                keep_module(name, module, "(protetto)", protected=True)
+                continue
 
             # Encoder
             if "encoder" in freeze_layers and "encoder" in lname:
@@ -719,19 +679,23 @@ def adjust_model_for_finetuning(
                 freeze_module(name, module)
                 continue
 
-            # Bottleneck
-            if "bottleneck" in freeze_layers and "bottleneck" in lname:
-                freeze_module(name, module)
+            # Bottleneck / latent-space → freeze SOLO se non protetto
+            if ("bottleneck" in lname or "latent" in lname):
+                if not is_latent_strategy and "bottleneck" in freeze_layers:
+                    freeze_module(name, module)
+                else:
+                    keep_module(name, module, "(protetto)" if is_latent_strategy else "", protected=is_latent_strategy)
                 continue
 
-            # Freeze numerico (1,2,3…)
+            # Freeze numerico
+            frozen = False
             for item in freeze_layers:
                 if item.isdigit():
-                    if f"_{item}" in lname or f"layer{item}" in lname or f"lay_{item}" in lname:
+                    if f"_{item}" in lname or f"lay_{item}" in lname or f"layer{item}" in lname:
                         freeze_module(name, module)
+                        frozen = True
                         break
-            else:
-                # default: keep
+            if not frozen:
                 keep_module(name, module)
 
         print("\n✅ FREEZE COMPLETATO")

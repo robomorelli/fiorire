@@ -17,7 +17,7 @@ dataset:
   #dataset_subset: 1000_000
   anomalies_type: [ 'GWN', 'Constant', 'Step', 'Impulse', 'PrincipalSubspaceAlteration' ]
   anomaly_percentage: 5    # N%
-  delta_mean: 0.05
+  delta_mean: 0.1
   delta_std: 0.1
   window_skewness: -3
   window_mean: 128
