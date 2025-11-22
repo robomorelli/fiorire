@@ -97,7 +97,6 @@ class trainCONVAE2D(tune.Trainable):
             device=self.device,
             desc=f"Epoch {self.current_epoch} [Val]",
             evaluate_metrics=evaluate_metrics,
-            anomaly_threshold=train_results.get('anomaly_threshold', None),
             normal_anomalous_ratio=self.cfg.opt.normal_anomalous_ratio,
         )
 
@@ -120,24 +119,27 @@ class trainCONVAE2D(tune.Trainable):
             'val_loss'] = current_f1, current_roc_auc, current_val_loss
         result["val_fpr"], result["val_tpr"], result["val_thresh_f1"] = current_fpr, current_tpr, current_thresh_f1
 
-        if current_f1 > self.best_f1_score:
-            self.best_f1_score = current_f1
-            print(f"INFO: New best F1 score: {self.best_f1_score:.4f} at epoch {self.current_epoch}")
-        if current_roc_auc > self.best_val_roc_auc:
-            self.best_val_roc_auc = current_roc_auc
-            print(f"INFO: New best ROC AUC: {self.best_val_roc_auc:.4f} at epoch {self.current_epoch}")
-        if current_roc_auc > self.best_val_roc_auc:
-            self.best_val_roc_auc = current_roc_auc
-            print(f"INFO: New best ROC AUC: {self.best_val_roc_auc:.4f} at epoch {self.current_epoch}")
-        if current_val_loss > self.best_val_loss:
-            self.best_val_loss = current_val_loss
-            print(f"INFO: New best Val Loss: {self.best_val_loss:.6f} at epoch {self.current_epoch}")
-        if current_fpr > self.best_fpr:
-            self.best_fpr = current_fpr
-        if current_tpr > self.best_tpr:
-            self.best_tpr = current_tpr
-        if current_thresh_f1 > self.best_thresh_f1:
-            self.best_thresh_f1 = current_thresh_f1
+        try:
+            if current_f1 > self.best_f1_score:
+                self.best_f1_score = current_f1
+                print(f"INFO: New best F1 score: {self.best_f1_score:.4f} at epoch {self.current_epoch}")
+            if current_roc_auc > self.best_val_roc_auc:
+                self.best_val_roc_auc = current_roc_auc
+                print(f"INFO: New best ROC AUC: {self.best_val_roc_auc:.4f} at epoch {self.current_epoch}")
+            if current_roc_auc > self.best_val_roc_auc:
+                self.best_val_roc_auc = current_roc_auc
+                print(f"INFO: New best ROC AUC: {self.best_val_roc_auc:.4f} at epoch {self.current_epoch}")
+            if current_val_loss > self.best_val_loss:
+                self.best_val_loss = current_val_loss
+                print(f"INFO: New best Val Loss: {self.best_val_loss:.6f} at epoch {self.current_epoch}")
+            if current_fpr > self.best_fpr:
+                self.best_fpr = current_fpr
+            if current_tpr > self.best_tpr:
+                self.best_tpr = current_tpr
+            if current_thresh_f1 > self.best_thresh_f1:
+                self.best_thresh_f1 = current_thresh_f1
+        except:
+            print('Metrics not available')
 
         result["best_val_loss"] = self.best_val_loss
         result["best_val_roc_auc"] = self.best_val_roc_auc

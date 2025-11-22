@@ -467,7 +467,7 @@ def main(args):
     cfg = OmegaConf.load(args.conf_file)
     data_path = cfg.dataset.data_path
     features = list(cfg.dataset.feats)
-    exp_name = '_'.join((str(cfg.dataset.delta_mean).replace('.', '_'), str(cfg.dataset.window_mean)))
+    exp_name = '_'.join((str(cfg.dataset.delta_mean).split('.')[1], str(cfg.dataset.window_mean)))
 
     print("\n" + "=" * 70)
     print("WOMBAT MULTI-CHANNEL ADAPTIVE INJECTION")
@@ -577,7 +577,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Adaptive multi-channel anomaly injection (WOMBAT-style)")
-    parser.add_argument("--conf_file", "-c", type=str, default="./dataset_configuration/fiorire_1.yaml",
+    parser.add_argument("--conf_file", "-c", type=str, default="./dataset_configuration/fiorire_2.yaml",
                         help="Path to config YAML")
     args = parser.parse_args()
     main(args)

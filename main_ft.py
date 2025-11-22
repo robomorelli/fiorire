@@ -61,9 +61,10 @@ def main(args):
         metric_columns=[metric, f'best_{metric}'] + list(cfg.opt.metrics_to_report) + list(cfg.opt.other_reports))
     sched = ASHAScheduler(metric=metric, mode=mode, max_t = 10 ** 18, grace_period=50)
     sync_config = get_sync_config()
+
     analysis = tune.run(trainer,
                         scheduler=sched, resources_per_trial=resources_per_trial,
-                        num_samples=int(args.num_samples), checkpoint_at_end=True, #otherwise it fails on multinode?
+                        num_samples=int(args.num_samples),
                         #local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
                         local_dir=local_dir,
                         #sync_config=tune.SyncConfig(syncer=None),
@@ -90,7 +91,7 @@ if __name__ == "__main__":
     parser.add_argument("--project_name", default='fiorire_hpc_conv_2d', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
-    parser.add_argument("--debug_mode", default=0, help="the model you want to hpo")
+    parser.add_argument("--debug_mode", default=1, help="the model you want to hpo")
     args = parser.parse_args()
 
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"

@@ -9,6 +9,63 @@ from ray.tune.syncer import SyncConfig
 
 from config import *
 
+
+import os
+import shutil
+from ray.tune import Callback
+from ray.air import Checkpoint
+
+class SaveBestMetricCheckpoint(Callback):
+    """
+    Save a checkpoint only when a given metric improves.
+    Works with Ray Tune AIR (session.report).
+    """
+
+    def __init__(self, metric="val_loss", mode="min", checkpoint_dir="best_checkpoints"):
+        self.metric = metric
+        self.mode = mode
+        self.checkpoint_dir = checkpoint_dir
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        self.best_value = None
+
+    def _is_better(self, current, best):
+        if best is None:
+            return True
+        if self.mode == "min":
+            return current < best
+        else:  # "max"
+            return current > best
+
+    def on_trial_result(self, iteration, trials, trial, result, **info):
+        # Skip if metric not present
+        if self.metric not in result:
+            return
+
+        metric_value = result[self.metric]
+
+        # Check improvement
+        if not self._is_better(metric_value, self.best_value):
+            return
+
+        self.best_value = metric_value
+
+        # The trial will have a latest_checkpoint, created in session.report
+        ckpt = trial.checkpoint
+        if ckpt is None:
+            return
+
+        # Save the improved checkpoint to a custom directory
+        save_path = os.path.join(self.checkpoint_dir, f"{trial.trial_id}")
+        os.makedirs(save_path, exist_ok=True)
+        dst = os.path.join(save_path, "checkpoint")
+
+        # Copy checkpoint directory
+        shutil.rmtree(dst, ignore_errors=True)
+        shutil.copytree(ckpt.path, dst)
+
+        print(f"[Callback] Improved {self.metric}: {metric_value}. Saved checkpoint at: {dst}")
+
+
 def find_project_root(current: Path, markers=('config', 'main.py')) -> Path:
     """
     Ascend from the current directory to find the project root based on common markers.

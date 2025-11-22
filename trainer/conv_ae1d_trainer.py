@@ -12,32 +12,29 @@ class trainCONVAE1D(tune.Trainable):
 
     def setup(self, config):
         # Load and set up the configuration
-        self.cfg = model_setup(conv_ae_1D_config_file, config, root)
-        self.cfg, _, _ = update_input_output(
-            self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
+        self.cfg = model_setup(conv_ae_2D_ft_config_file, config, root) if config.get('opt.fine_tuning') else model_setup(conv_ae_2D_config_file, config, root)
+        self.cfg, _, _ = update_input_output(self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.max_epochs = self.cfg.opt.epochs
         self.current_epoch = 0
         self.best_val_loss = float(np.inf)
         self.best_f1_score = -float(np.inf)
         self.best_val_roc_auc = -float(np.inf)
+        self.best_fpr = 0
+        self.best_tpr = 0
+        self.best_thresh_f1 = -float(np.inf)
         self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
-        if config.get('opt.fine_tuning') and 'scaler_params_pre_training' in torch.load(
-                self.cfg.opt.get('checkpoint_path')).keys():
-            self.scaler_pre_training_params = None if not (self.cfg.opt.get('fine_tuning', False)) else \
-            torch.load(self.cfg.opt.get('checkpoint_path'))['scaler_params_pre_training']
+        if  config.get('opt.fine_tuning') and 'scaler_params_pre_training' in torch.load(self.cfg.opt.get('checkpoint_path')).keys():
+            self.scaler_pre_training_params = None if not(self.cfg.opt.get('fine_tuning', False)) else torch.load(self.cfg.opt.get('checkpoint_path'))['scaler_params_pre_training']
         else:
             self.scaler_pre_training_params = None
         # Load data
         # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
-        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
-            self.cfg,
-            dataset_subset=self.cfg.dataset.dataset_subset)  # filter anomalies means that use only normal for standardization and use anomalies for metric loader
-        self.metrics_loader = get_metric_dataloader(self.cfg,
-                                                    # it takes the ano_column to separate normal from anomalous
-                                                    data_path=self.cfg.opt.metrics_dataset_path, scale=True,
-                                                    scaler=self.scaler,
-                                                    dataset_subset=self.cfg.opt.anomalies_dataset_subset,
-                                                    take_only_anomalies=True) if self.cfg.opt.evaluate_metrics else None
+        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(self.cfg,
+                                                                                                                          dataset_subset=self.cfg.dataset.dataset_subset)   # filter anomalies means that use only normal for standardization and use anomalies for metric loader
+        self.metrics_loader = get_metric_dataloader(self.cfg, # it takes the ano_column to separate normal from anomalous
+                          data_path=self.cfg.opt.metrics_dataset_path, scale=True,
+                          scaler=self.scaler, dataset_subset=self.cfg.opt.anomalies_dataset_subset,
+                          take_only_anomalies=True) if self.cfg.opt.evaluate_metrics else None
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (
@@ -89,7 +86,8 @@ class trainCONVAE1D(tune.Trainable):
 
         evaluate_metrics = self.cfg.opt.evaluate_metrics and (
                 self.metrics_loader is not None and
-                (self.current_epoch % self.cfg.opt.detect_anomaly_epoch_freq == 0))
+                (self.current_epoch % self.cfg.opt.detect_anomaly_epoch_freq == 0)
+        )
 
         self.val_results, indices = validate_one_epoch(
             model=self.model,
@@ -99,7 +97,8 @@ class trainCONVAE1D(tune.Trainable):
             device=self.device,
             desc=f"Epoch {self.current_epoch} [Val]",
             evaluate_metrics=evaluate_metrics,
-            normal_anomalous_ratio=self.cfg.opt.normal_anomalous_ratio)
+            normal_anomalous_ratio=self.cfg.opt.normal_anomalous_ratio,
+        )
 
         # if self.metric_key in self.val_results:
         #    result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, self.best_metric)  # 👈 Always included
@@ -113,8 +112,12 @@ class trainCONVAE1D(tune.Trainable):
         # optional metrics
         current_f1, current_roc_auc = self.val_results.get("val_f1_score", -float(np.inf)), self.val_results.get(
             "val_roc_auc", -float(np.inf))
+        current_fpr, current_tpr, current_thresh_f1 = (self.val_results.get("val_fpr", None), self.val_results.get("val_tpr", None),
+                                                            self.val_results.get("val_best_thresh_f1", None))
+
         result["val_f1_score"], result["val_roc_auc"], result[
             'val_loss'] = current_f1, current_roc_auc, current_val_loss
+        result["val_fpr"], result["val_tpr"], result["val_thresh_f1"] = current_fpr, current_tpr, current_thresh_f1
 
         if current_f1 > self.best_f1_score:
             self.best_f1_score = current_f1
@@ -128,10 +131,19 @@ class trainCONVAE1D(tune.Trainable):
         if current_val_loss > self.best_val_loss:
             self.best_val_loss = current_val_loss
             print(f"INFO: New best Val Loss: {self.best_val_loss:.6f} at epoch {self.current_epoch}")
+        if current_fpr > self.best_fpr:
+            self.best_fpr = current_fpr
+        if current_tpr > self.best_tpr:
+            self.best_tpr = current_tpr
+        if current_thresh_f1 > self.best_thresh_f1:
+            self.best_thresh_f1 = current_thresh_f1
 
         result["best_val_loss"] = self.best_val_loss
         result["best_val_roc_auc"] = self.best_val_roc_auc
         result["best_val_f1_score"] = self.best_f1_score
+        result["best_val_fpr"] = self.best_fpr
+        result["best_val_tpr"] = self.best_tpr
+        result["best_val_thresh_f1"] = self.best_thresh_f1
 
         # Track best model
         # example of self.cfg.opt_metric: {'val_loss': 'min'}

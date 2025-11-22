@@ -36,6 +36,7 @@ def main(args):
     else:
         callbacks = []
 
+
     # Set the resources for each trial
     resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial} if (
             cfg.resources.gpu_trial != 0) else {"cpu": cfg.resources.cpu_trial}
@@ -46,7 +47,7 @@ def main(args):
     sync_config = get_sync_config()
     analysis = tune.run(trainer,
                         scheduler=sched, resources_per_trial=resources_per_trial,
-                        num_samples=int(args.num_samples), checkpoint_at_end=True, #otherwise it fails on multinode?
+                        num_samples=int(args.num_samples),
                         #local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
                         local_dir='./ray_results/{}_{}'.format(cfg.opt.exp_name, date_str),
                         #sync_config=tune.SyncConfig(syncer=None),
@@ -54,6 +55,9 @@ def main(args):
                         progress_reporter=progress_reporter,   # <-- add this here
                         sync_config=sync_config,
                         config=ray_config, callbacks=callbacks,
+                        checkpoint_at_end=False,
+                        checkpoint_freq=0,
+                        keep_checkpoints_num=1,
                         trial_dirname_creator=lambda trial: trial_dirname_creator(trial, max_params=5),
                         stop = {"training_iteration": cfg.opt.max_epochs},)
 
@@ -67,10 +71,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default = '10.141.1.28:6379', help="adress of master")
     parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='conv_ae1D', help="[conv_ae1D, conv_ae2D, lstm]")
+    parser.add_argument("--config_file", default='conv_ae2D', help="[conv_ae1D, conv_ae2D, lstm]")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
     parser.add_argument("--wandb", default=0, type=int, help="the model you want to hpo")
-    parser.add_argument("--project_name", default='fiorire_hpc_conv_1d', help="the model you want to hpo")
+    parser.add_argument("--project_name", default='fiorire_zbook_conv_2d', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
     parser.add_argument("--debug_mode", default=0, help="the model you want to hpo")

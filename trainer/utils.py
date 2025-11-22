@@ -1,3 +1,5 @@
+from pandas.core.computation.ops import isnumeric
+
 from utils.general import resolve_paths, infer_model_type, reduce_anomaly_mask
 from omegaconf import OmegaConf, ListConfig
 import torch
@@ -346,13 +348,14 @@ def test_anomaly_step_normalized(
     N_normal_needed = N_anom * normal_anomalies_ratio
 
     if shuffle:
-        g = torch.Generator()
-        g.manual_seed(seed)
-        # 972, 1475, 2312
-        indices = torch.randperm(all_val_norm_errors.shape[0], generator=g)[:N_normal_needed]
+        np.random.seed(seed)
+        perm = np.random.permutation(all_val_norm_errors.shape[0])
+        indices = torch.tensor(perm[:N_normal_needed], dtype=torch.long)
+        # # tensor([20135, 23208, 27894, 29421, 15666, 22685, 28507, 11643, 20073, 14600])
     else:
         indices = torch.arange(min(N_normal_needed, all_val_norm_errors.shape[0]))
 
+    print(f"these are the first 10 indices sampled from normal errore ov val  {indices[:10]}")
     normal_errors_sampled = all_val_norm_errors[indices]  # [N_normal_needed, C, L] or [N_normal_needed, C, L]
 
     if model_type == "cnn":
@@ -419,21 +422,20 @@ def test_anomaly_step_normalized(
     J = tpr - fpr
     ix_youden = np.argmax(J)
     best_thresh_youden = thresholds_full[ix_youden]
+    fpr_f1max, tpr_f1max = fpr[ix_youden], tpr[ix_youden]
 
     metrics_dict =  {
         "metrics_results": {
             "val_anomaly_scores": anomaly_scores,
             "val_roc_auc": roc_auc,
-            "val_fpr": fpr,
-            "val_tpr": tpr,
+            "val_fpr": fpr_f1max,
+            "val_tpr": tpr_f1max,
             "val_best_thresh_youden": best_thresh_youden,
             "val_best_thresh_f1": best_thresh_f1,
             "val_f1_score": best_f1,
             "val_normalization_factor": normalization_factor,
         }
     }
-
-
 
     return metrics_dict, indices
 
@@ -551,78 +553,291 @@ def adjust_model_for_finetuning(
     device='cuda:0'
 ):
     """
-    Adjust the model structure for fine-tuning when input dimensions change.
-
-    Args:
-        fine_tuning_cfg: fine-tuning configuration object
-        model: PyTorch model
-        checkpoint: pretrained model checkpoint
-        pre_feats: number of features (height) in pre-training
-        fine_feats: number of features (height) in fine-tuning
-        pre_seq_len: input sequence length during pre-training (width)
-        fine_seq_len: input sequence length during fine-tuning (width)
-        conv_type: "conv_ae1d" or "conv_ae2d"
-        device: computation device
+    Adjust the model structure for fine-tuning when input dimensions change,
+    and optionally freeze selected layers.
     """
+
     features_changed = pre_feats != fine_feats
     seq_changed = pre_seq_len != fine_seq_len
 
     print(f"🔍 Pre-training: feats={pre_feats}, seq={pre_seq_len}")
     print(f"🔍 Fine-tuning: feats={fine_feats}, seq={fine_seq_len}")
 
-    # -------------------------------
+    # ============================================================
+    # 0️⃣ FREEZE LAYERS (after modifications)
+    # ============================================================
+
+    def freeze_layers_with_logging(model, freeze_layers):
+        """
+        Congela layer in base alle regole richieste e produce logging ESTESO.
+
+        freeze_list può contenere:
+        - "encoder"
+        - "decoder"
+        - "bottleneck"
+        - numeri di layer (es. "3")
+        - "all"
+        """
+
+        print("\n" + "=" * 80)
+        print("🧊 FREEZE-LAYERS: INIZIO PROCEDURA")
+        print("=" * 80)
+
+        # ------------------------------------------------------------------
+        # 1) Identifica componenti del modello
+        # ------------------------------------------------------------------
+        has_encoder = hasattr(model, "encoder")
+        has_decoder = hasattr(model, "decoder")
+        has_bottleneck = hasattr(model, "bottleneck")
+
+        print(f"🔍 Rilevamento componenti:")
+        print(f"   - encoder:    {has_encoder}")
+        print(f"   - decoder:    {has_decoder}")
+        print(f"   - bottleneck: {has_bottleneck}")
+
+        # Liste utili per i log e le decisioni
+        protected_keywords = ["adapter", "adaptive", "latent"]
+        protected_modules = []
+
+        # Raccogli i layer protetti
+        for name, module in model.named_modules():
+            if any(k in name.lower() for k in protected_keywords):
+                protected_modules.append(name)
+
+        print("\n🛡 Layer protetti (mai congelati):")
+        for p in protected_modules:
+            print(f"   - {p}")
+
+        # ------------------------------------------------------------------
+        # 2) Funzioni utili
+        # ------------------------------------------------------------------
+
+        def should_protect(name):
+            return any(k in name.lower() for k in protected_keywords)
+
+        def freeze_module(name, module):
+            """Congela modulo con logging dettagliato."""
+            print(f"   🧊 FREEZE → {name}")
+            for p in module.parameters(recurse=True):
+                p.requires_grad = False
+
+        def keep_module(name, module, reason=""):
+            """Lascia modulo allenabile."""
+            print(f"   🔥 KEEP  → {name}   {reason}")
+            for p in module.parameters(recurse=True):
+                p.requires_grad = True
+
+        # ------------------------------------------------------------------
+        # 3) Caso "all": congela tutto tranne adapter
+        # ------------------------------------------------------------------
+        if "all" in freeze_layers:
+            print("\n🚨 Modalità FREEZE = 'all'")
+            print("→ Congelo tutto tranne gli adattatori e latent-space")
+
+            for name, module in model.named_modules():
+                if should_protect(name):
+                    keep_module(name, module, reason="(protetto)")
+                else:
+                    freeze_module(name, module)
+
+            print("\n✅ FREEZE COMPLETATO (modalità 'all')")
+            return
+
+        # ------------------------------------------------------------------
+        # 4) Se NON esiste encoder → fallback
+        # ------------------------------------------------------------------
+        if "encoder" in freeze_layers and not has_encoder:
+            print("\n⚠️ Richiesto FREEZE 'encoder' ma il modello NON ha un encoder!")
+            print("→ FALLBACK: congelo tutto fino al bottleneck")
+
+            found_bottleneck = False
+            for name, module in model.named_modules():
+                if should_protect(name):
+                    keep_module(name, module, reason="(protetto)")
+                    continue
+
+                if "bottleneck" in name.lower():
+                    print(f"   🎯 Trovato bottleneck: {name}")
+                    found_bottleneck = True
+                    break
+
+                freeze_module(name, module)
+
+            if not found_bottleneck:
+                print("❗ Nessun bottleneck trovato → congelo tutto tranne adapter")
+                for name, module in model.named_modules():
+                    if should_protect(name):
+                        keep_module(name, module, reason="(protetto)")
+                    else:
+                        freeze_module(name, module)
+
+            print("\n✅ FREEZE COMPLETATO (fallback: missing encoder)")
+            return
+
+        # ------------------------------------------------------------------
+        # 5) Se NON esiste bottleneck e richiesto
+        # ------------------------------------------------------------------
+        if "bottleneck" in freeze_layers and not has_bottleneck:
+            print("\n⚠️ Richiesto FREEZE 'bottleneck' ma non esiste!")
+            print("→ FALLBACK: congelo tutto tranne decoder e adapter")
+
+            for name, module in model.named_modules():
+                if should_protect(name):
+                    keep_module(name, module, reason="(protetto)")
+                    continue
+
+                if has_decoder and "decoder" in name.lower():
+                    keep_module(name, module, reason="(decoder)")
+                else:
+                    freeze_module(name, module)
+
+            print("\n✅ FREEZE COMPLETATO (fallback: missing bottleneck)")
+            return
+
+        # ------------------------------------------------------------------
+        # 6) Caso generale: processa la lista
+        # ------------------------------------------------------------------
+        print("\n📌 Modalità FREEZE: normale")
+        print(f"   Freeze list: {freeze_layers}")
+
+        for name, module in model.named_modules():
+
+            # Adapter/latent protetti
+            if should_protect(name):
+                keep_module(name, module, reason="(protetto)")
+                continue
+
+            lname = name.lower()
+
+            # Encoder
+            if "encoder" in freeze_layers and "encoder" in lname:
+                freeze_module(name, module)
+                continue
+
+            # Decoder
+            if "decoder" in freeze_layers and "decoder" in lname:
+                freeze_module(name, module)
+                continue
+
+            # Bottleneck
+            if "bottleneck" in freeze_layers and "bottleneck" in lname:
+                freeze_module(name, module)
+                continue
+
+            # Freeze numerico (1,2,3…)
+            for item in freeze_layers:
+                if item.isdigit():
+                    if f"_{item}" in lname or f"layer{item}" in lname or f"lay_{item}" in lname:
+                        freeze_module(name, module)
+                        break
+            else:
+                # default: keep
+                keep_module(name, module)
+
+        print("\n✅ FREEZE COMPLETATO")
+        print("=" * 80 + "\n")
+
+    freeze_layers = fine_tuning_cfg.opt.get("freeze_layers", None)
+    if freeze_layers:
+        print(f"🧊 Requested freeze layers: {freeze_layers}")
+
+    # ============================================================
     # 1️⃣ Conv1D case
-    # -------------------------------
+    # ============================================================
     if conv_type.lower() == "conv_ae1d":
         warnings.warn("🧩 Detected Conv1D model — check adapter behavior", UserWarning)
 
+        # -----------------------------------------
+        # INPUT ADAPTER (C_fine → C_pre)
+        # -----------------------------------------
         if features_changed:
-            print(f"🔧 Adding Conv1D adapter: {fine_feats} → {pre_feats}")
-            # Map fine-tuning input features → pretrained feature dimension
-            adapter = nn.Conv1d(
+            print(f"🔧 Adding Conv1D INPUT adapter: feats {fine_feats} → {pre_feats}")
+
+            adapter_in = nn.Conv1d(
                 in_channels=fine_feats,
                 out_channels=pre_feats,
                 kernel_size=1
             )
-            if hasattr(adapter, "weight"):
-                nn.init.kaiming_normal_(adapter.weight)
-            model.adapter_layer = adapter.to(device)
-            print("✅ Added Conv1D adapter layer")
+            nn.init.kaiming_normal_(adapter_in.weight)
+
+            model.input_adapter = adapter_in.to(device)
+            print("✅ Added Conv1D input adapter")
+
+        # -----------------------------------------
+        # OUTPUT ADAPTER (C_pre → C_fine)
+        # -----------------------------------------
+        if features_changed:
+            print(f"🔧 Adding Conv1D OUTPUT adapter: feats {pre_feats} → {fine_feats}")
+
+            adapter_out = nn.Conv1d(
+                in_channels=pre_feats,
+                out_channels=fine_feats,
+                kernel_size=1
+            )
+            nn.init.kaiming_normal_(adapter_out.weight)
+
+            model.output_adapter = adapter_out.to(device)
+            print("✅ Added Conv1D output adapter")
+
+        # freeze AFTER adapters
+        if freeze_layers:
+            freeze_layers_with_logging(model, freeze_layers)
 
         return model
 
-    # -------------------------------
+    # ============================================================
     # 2️⃣ Conv2D case
-    # -------------------------------
+    # ============================================================
     elif conv_type.lower() == "conv_ae2d":
         print("🧩 Detected Conv2D model")
 
+        # If dimensions mismatch → input adapter and output adapter
         if features_changed or seq_changed:
-            print("🔧 Adjusting latent space for Conv2D (features or sequence changed)")
+            print("🔧 Adjusting Conv2D (features or sequence changed)")
 
             mode = fine_tuning_cfg.opt.get('fine_tuning_mode', None)
-
             if mode == "adaptive_layer":
                 print("⚙️ Fine-tuning mode: 'adaptive_layer' (learnable resizer)")
 
-                if features_changed:
-                    # Add a learnable resizer to map feature height fine→pre
-                    adapter = AdaptiveLearnableResizer2D(
-                        h_in=fine_feats,
-                        h_out=pre_feats,
-                        channels=1
-                    )
-                    model.input_adapter = nn.Sequential(
-                        adapter.to(device),
-                        nn.BatchNorm2d(1),
-                        nn.ReLU(inplace=True)
-                    )
-                    print(f"✅ Added learnable adapter {adapter.mode}: {fine_feats} → {pre_feats}")
-                else:
-                    print("✅ Sequence length changed but feature height identical — no adapter needed")
+                # -----------------------------------------
+                # INPUT ADAPTER (Hf,Wf → Hp,Wp)
+                # -----------------------------------------
+                print(f"🔧 Adding Conv2D INPUT adapter: {fine_feats},{fine_seq_len} → {pre_feats},{pre_seq_len}")
+                adapter_in = AdaptiveLearnableResizer2D(
+                    h_in=fine_feats,
+                    h_out=pre_feats,
+                    channels=1
+                )
+                model.input_adapter = nn.Sequential(
+                    adapter_in.to(device),
+                    nn.BatchNorm2d(1),
+                    nn.ReLU(inplace=True)
+                )
+                print(f"✅ Added learnable input adapter")
+
+                # -----------------------------------------
+                # OUTPUT ADAPTER (Hpre,Wpre → Hf,Wft)
+                # -----------------------------------------
+                print(
+                    f"🔧 Adding Conv2D OUTPUT adapter (LEARNABLE): {pre_feats},{pre_seq_len} → {fine_feats},{fine_seq_len}")
+
+                adapter_out = AdaptiveLearnableResizer2D(
+                    h_in=pre_feats,
+                    h_out=fine_feats,
+                    channels=1
+                )
+
+                model.output_adapter = nn.Sequential(
+                    adapter_out.to(device),
+                    nn.BatchNorm2d(1),
+                    nn.ReLU(inplace=True)
+                )
+
+                print("✅ Added learnable output adapter")
 
             else:
-                print(f"ℹ️ Fine-tuning mode '{mode}' — running structural diagnostics only")
+                # Diagnostic mode — prints architecture info
+                print(f"ℹ️ Fine-tuning mode '{mode}' — structural diagnostics only")
 
                 old_flattened = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size", None)
                 new_flattened = getattr(getattr(model, "encoder", None), "flattened_size", None)
@@ -636,14 +851,26 @@ def adjust_model_for_finetuning(
                 print(f"  - new_h: {new_h}, new_w: {new_w}")
                 print(f"🧱 New model architecture: {model}")
 
+            # freeze AFTER adding adapters
+            if freeze_layers:
+                freeze_layers_with_logging(model, freeze_layers)
+
             return model
 
+        # ======================================================
+        # No dimension mismatch → just freeze if requested
+        # ======================================================
         else:
             print("✅ Feature and sequence dimensions identical — no adapter needed")
+
+            if freeze_layers:
+                freeze_layers_with_logging(model, freeze_layers)
+
             return model
 
     else:
         raise ValueError(f"Unsupported conv_type '{conv_type}' (expected 'conv_ae1d' or 'conv_ae2d')")
+
 
 
 
@@ -710,7 +937,7 @@ def load_pretrained_checkpoint(model, config, device):
 
         # Load checkpoint
         checkpoint = torch.load(checkpoint_path, map_location=device)
-        pre_trained_number_of_feats = list(checkpoint['model_state_dict'].items())[0][1].shape[0]
+        pre_trained_number_of_feats = len(checkpoint['cfg'].dataset.feats)
         fine_tuning_number_of_feats = config.dataset.n_features
 
         pre_training_seq_len = checkpoint['cfg'].dataset.seq_in_length
