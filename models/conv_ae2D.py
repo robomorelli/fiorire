@@ -240,8 +240,8 @@ class CONV_AE2D(nn.Module):
         self.kernel_size = model_cfg.kernel_size
         self.base_filters = model_cfg.base_filters if not isinstance(model_cfg.base_filters, str) else cfg.dataset.n_features
         self.num_layers = model_cfg.num_layers
-        self.act = activation_dict.get(model_cfg.activation, None)
-        self.bottleneck_act = activation_dict.get(model_cfg.bottleneck_activation, None)
+        self.act = activation_dict.get(model_cfg.get("activation", None), None)
+        self.bottleneck_act = activation_dict.get(model_cfg.get("bottleneck_activation", None), None)
         self.pool = model_cfg.pool
         self.flattened = model_cfg.flattened
         self.compression_factor = model_cfg.compression_factor

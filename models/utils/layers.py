@@ -193,7 +193,7 @@ def deconv_block1D(
 
 
 
-def bottleneck1D(in_channels, out_channels, activation=nn.ReLU(), batch_norm=True):
+def bottleneck1D(in_channels, out_channels, activation=nn.ReLU(), bottleneck_activation=nn.ReLU(), batch_norm=True):
     """
     Crea un bottleneck 1D con conv 1x1, optional BatchNorm e attivazione.
     """
@@ -201,8 +201,10 @@ def bottleneck1D(in_channels, out_channels, activation=nn.ReLU(), batch_norm=Tru
     layers["bottleneck_conv"] = nn.Conv1d(in_channels, out_channels, kernel_size=1)
     if batch_norm:
         layers["bottleneck_bn"] = nn.BatchNorm1d(out_channels)
-    if activation:
-        layers["bottleneck_act"] = activation
+    if bottleneck_activation is not None:
+        layers["act1"] = bottleneck_activation
+    else:
+        layers["act1"] = activation
     return nn.Sequential(layers)
 
 
@@ -288,6 +290,8 @@ def bottleneck2D(bottleneck_conv_layer, flattened=True, flattened_size=None, lat
         layers["to_latent"] = nn.Linear(flattened_size, latent_dim)
         if bottleneck_activation is not None:
             layers["act1"] = bottleneck_activation
+        else:
+            layers["act1"] = activation
         if batch_norm is not None:
             layers["batch_norm_latent"] = nn.BatchNorm1d(latent_dim)
     else:

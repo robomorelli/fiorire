@@ -17,6 +17,7 @@ class Encoder1D(nn.Module):
                  pool_ks=2,
                  pool_stride=2,
                  activation=nn.ReLU(),
+                 bottleneck_act=None,
                  compression_factor=2,
                  seq_length=16,
                  flattened=True):
@@ -31,6 +32,7 @@ class Encoder1D(nn.Module):
         self.compression_factor = compression_factor
         self.seq_length = seq_length
         self.act = activation
+        self.bottleneck_act = bottleneck_act
         self.flattened = flattened
 
         layers = []
@@ -55,7 +57,8 @@ class Encoder1D(nn.Module):
 
         # Bottleneck: 1x1 conv doubling channels
         self.bottleneck_out_channels = in_f * 2
-        self.bottleneck = bottleneck1D(in_f, self.bottleneck_out_channels, activation=self.act, batch_norm=True)
+        self.bottleneck = bottleneck1D(in_f, self.bottleneck_out_channels, activation=self.act,
+                                       bottleneck_activation=self.bottleneck_act, batch_norm=True)
 
         # Compute flattened size after bottleneck
         self.flattened_size, self.seq_enc = self._get_final_flattened_size()
@@ -238,7 +241,8 @@ class CONV_AE1D(nn.Module):
         self.base_filters = model_cfg.base_filters
         self.double_deconv = model_cfg.double_deconv
         self.num_layers = model_cfg.num_layers
-        self.act = activation_dict[model_cfg.activation]
+        self.act = activation_dict.get(model_cfg.get("activation", None), None)
+        self.bottleneck_act = activation_dict.get(model_cfg.get("bottleneck_activation", None), None)
         self.stride = model_cfg.stride
         self.pool = model_cfg.pool
         self.increasing = model_cfg.increasing
@@ -261,7 +265,8 @@ class CONV_AE1D(nn.Module):
             seq_length=self.seq_length,
             activation=self.act,
             flattened=self.flattened,
-            compression_factor=self.compression_factor
+            compression_factor=self.compression_factor,
+            bottleneck_act = self.bottleneck_act
         )
 
         self.flattened_size = self.encoder.flattened_size

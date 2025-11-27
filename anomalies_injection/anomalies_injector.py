@@ -96,6 +96,7 @@ class AdaptiveMultiChannelInjector:
         self.channel_prob_decay = None if self.max_channels is None else self.channel_prob_decay
         self.random_seed = ds.get("random_seed", None)
 
+
         # registry with anomaly classes (strings -> classes)
         self.anomaly_registry = anomaly_registry if anomaly_registry is not None else ANOMALIES_REGISTRY
 
@@ -467,7 +468,20 @@ def main(args):
     cfg = OmegaConf.load(args.conf_file)
     data_path = cfg.dataset.data_path
     features = list(cfg.dataset.feats)
-    exp_name = '_'.join((str(cfg.dataset.delta_mean).split('.')[1], str(cfg.dataset.window_mean)))
+    anomalies_types = cfg.dataset.anomalies_type
+
+    # Canali target per iniezione: se None -> tutti i features
+    target_channels = cfg.dataset.get("target_channels", None)
+    if target_channels is None or len(target_channels) == 0:
+        target_channels = features
+    else:
+        # verifica che siano validi
+        target_channels = [ch for ch in target_channels if ch in features]
+    print(f"Channels selected for anomaly injection: {target_channels}")
+
+    exp_name = '_'.join(('delta_' + str(cfg.dataset.delta_mean).split('.')[1], 'window_mean_' + str(cfg.dataset.window_mean),
+                         "perc_" + str(cfg.dataset.anomaly_percentage), '_'.join([x for x in anomalies_types])
+                         , 'num_target_channels_' + str(len(target_channels))))
 
     print("\n" + "=" * 70)
     print("WOMBAT MULTI-CHANNEL ADAPTIVE INJECTION")
@@ -487,8 +501,8 @@ def main(args):
     # Create injector
     injector = AdaptiveMultiChannelInjector(cfg, anomaly_registry=ANOMALIES_REGISTRY)
 
-    # Run injection (lazy fitting + adaptive schedule)
-    df_with_anom_std, anomalies_log, schedule_df = injector.inject(df_std, features)
+    # Run injection (lazy fitting + adaptive schedule) on target_channels only
+    df_with_anom_std, anomalies_log, schedule_df = injector.inject(df_std, target_channels)
 
     # De-standardize
     df_with_anom = handler.inverse_transform(df_with_anom_std)
@@ -521,6 +535,8 @@ def main(args):
             "total_points": int(n_points),
             "features": features,
             "n_features": len(features),
+            "target_channels": target_channels,
+            "n_target_channels": len(target_channels),
             "random_seed": int(cfg.dataset.random_seed) if cfg.dataset.random_seed is not None else None
         },
         "injection_config": {
@@ -534,6 +550,7 @@ def main(args):
             "min_channels": int(cfg.dataset.get("min_channels", 1)) if cfg.dataset.get("min_channels", 1) is not None else None,
             "max_channels": int(cfg.dataset.get("max_channels", 1)) if cfg.dataset.get("max_channels", 1) is not None else None,
             "channel_prob_decay": float(cfg.dataset.get("channel_prob_decay", 0)) if cfg.dataset.get("channel_prob_decay", 0)is not None else None,
+            "injection_channels": target_channels
         },
         "summary": {
             "target_anomalous_points": int(round(n_points * (float(cfg.dataset.anomaly_percentage) / 100.0))),
@@ -570,14 +587,14 @@ def main(args):
         df_with_anom=df_with_anom,  # denormalized
         df_labels=df_with_anom_std["is_anomaly"],  # 0/1 labels
         anomalies_log=anomalies_metadata["anomalies"],
-        output_dir=os.path.join(dir_path, f"anomaly_samples_{exp_name}"),
-        sample_pct=5.0,
+        output_dir=sample_dir,
+        sample_pct=0.5,
         extend_window_plot_factor=2,
     )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Adaptive multi-channel anomaly injection (WOMBAT-style)")
-    parser.add_argument("--conf_file", "-c", type=str, default="./dataset_configuration/fiorire_2.yaml",
+    parser.add_argument("--conf_file", "-c", type=str, default="./dataset_configuration/fiorire_1.yaml",
                         help="Path to config YAML")
     args = parser.parse_args()
     main(args)

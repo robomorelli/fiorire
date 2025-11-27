@@ -20,7 +20,7 @@ dataset:
   delta_mean: 0.1
   delta_std: 0.1
   window_skewness: -3
-  window_mean: 128
+  window_mean: 16
   window_std: 40
   reset_interval: 100    #100 mean only one decay and length
   min_channels: 1

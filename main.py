@@ -71,10 +71,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default = '10.141.1.28:6379', help="adress of master")
     parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='conv_ae2D', help="[conv_ae1D, conv_ae2D, lstm]")
+    parser.add_argument("--config_file", default='conv_ae1D', help="[conv_ae1D, conv_ae2D, lstm]")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
-    parser.add_argument("--wandb", default=0, type=int, help="the model you want to hpo")
-    parser.add_argument("--project_name", default='fiorire_zbook_conv_2d', help="the model you want to hpo")
+    parser.add_argument("--wandb", default=1, type=int, help="the model you want to hpo")
+    parser.add_argument("--project_name", default='fiorire_zbook_conv_1d_anomalies_16', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
     parser.add_argument("--debug_mode", default=0, help="the model you want to hpo")
@@ -96,6 +96,7 @@ if __name__ == "__main__":
 
     #ray.init(address='192.168.43.136:6379')
     #ray.init(address='auto', _node_ip_address=args.address.split(":")[0], _redis_password=args.password)
+
 
     main(args)
 

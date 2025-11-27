@@ -12,7 +12,7 @@ class trainCONVAE1D(tune.Trainable):
 
     def setup(self, config):
         # Load and set up the configuration
-        self.cfg = model_setup(conv_ae_2D_ft_config_file, config, root) if config.get('opt.fine_tuning') else model_setup(conv_ae_2D_config_file, config, root)
+        self.cfg = model_setup(conv_ae_1D_ft_config_file, config, root) if config.get('opt.fine_tuning') else model_setup(conv_ae_1D_config_file, config, root)
         self.cfg, _, _ = update_input_output(self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.max_epochs = self.cfg.opt.epochs
         self.current_epoch = 0
@@ -34,7 +34,7 @@ class trainCONVAE1D(tune.Trainable):
         self.metrics_loader = get_metric_dataloader(self.cfg, # it takes the ano_column to separate normal from anomalous
                           data_path=self.cfg.opt.metrics_dataset_path, scale=True,
                           scaler=self.scaler, dataset_subset=self.cfg.opt.anomalies_dataset_subset,
-                          take_only_anomalies=True) if self.cfg.opt.evaluate_metrics else None
+                          take_only_anomalies=False) if self.cfg.opt.evaluate_metrics else None
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (

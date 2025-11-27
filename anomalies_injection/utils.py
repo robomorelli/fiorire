@@ -282,7 +282,9 @@ def sample_and_plot_anomalies_with_labels(
             )
 
             ax1.set_ylabel("Signal")
-            ax1.set_title(f"{ch} — {anomaly_type}  (Δ={delta:.3f})")
+            ax1.set_title(
+                f"{ch} — {anomaly_type}  (Δ={delta:.3f})  | start={start}, end={end}"
+            )
 
             # Labels su asse secondario
             ax2 = ax1.twinx()

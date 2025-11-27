@@ -239,14 +239,19 @@ def validate_one_epoch(
     }
 
     # Optionally evaluate anomaly detection metrics
+
     if evaluate_metrics:
-        test_results, indices = test_anomaly_step_normalized(
+        test_results, indices = test_anomaly_step(
             model=model,
-            dataloader=metric_loader,
+            metric_dataloader=metric_loader,
             device=device,
-            all_val_norm_errors=all_errors,
-            normalization_factor=None,
-            normal_anomalies_ratio=normal_anomalous_ratio
+            #external_normal_errors=all_errors,
+            num_thresh=10,
+            epsilon=1e-5,
+            desc="Testing anomalies",
+            normal_anomalies_ratio=normal_anomalous_ratio,
+            seed=123,
+            shuffle=True,
             )
 
         # Flatten only necessary fields for logging
@@ -273,174 +278,238 @@ def validate_one_epoch(
 
 
 @torch.no_grad()
-def test_anomaly_step_normalized(
-    model,
-    dataloader,
-    device,
-    all_val_norm_errors=None,
-    normalization_factor=None,
-    num_thresh: int = 10,
-    epsilon=1e-5,
-    desc="Testing anomalies (feature weighting approach)",
-    normal_anomalies_ratio: int = 1,
-    seed=123,
-    shuffle: bool = True
+def test_anomaly_step(
+        model,
+        metric_dataloader,
+        device="cuda",
+        external_normal_errors=None,  # only for alternative metrics
+        num_thresh=10,
+        epsilon=1e-5,
+        desc="Testing anomalies",
+        normal_anomalies_ratio=1,
+        seed=123,
+        shuffle=True,
 ):
     """
-    Computes anomaly detection scores using reconstruction error.
-    Only sequences with at least one anomalous point are used for inference.
-    Normal sequences are used only for normalization and F1 computation.
+    Anomaly testing (Method B only: L1 feature-wise errors)
 
-    Args:
-        model: trained model
-        dataloader: dataloader containing both normal and anomalous sequences
-        device: torch device
-        all_val_norm_errors: errors already computed on normal validation data [N_normal, C, L]
-        normalization_factor: optional normalization factor per channel
-        epsilon: small number to avoid div by zero
-        normal_to_anomalies_ratio: ratio of normal to anomaly sequences for F1 computation
-        seed: for reproducible sampling of normal sequences
-        shuffle: whether to shuffle normal samples when sampling
-    Returns:
-        dict with anomaly metrics
+    Extra features:
+    - Two tqdm bars:
+        * Normal sequences: batch mean error + global mean error
+        * Anomalous sequences: batch mean error + global mean error
+    - Everything printed through tqdm bars (no raw prints)
     """
 
     model.eval()
-    anomaly_errors = []
-    anomaly_masks = []
 
-    # -----------------------------------------------------------
-    # 1) Filter sequences with at least one anomalous point
-    # -----------------------------------------------------------
-    for batch in tqdm(dataloader, desc=desc):
-        x, target, mask, *rest = batch
+    anomaly_errors_list = []
+    anomaly_masks_list = []
+    normal_errors_list = []
 
-        # Consider a sequence anomalous if it has at least one non-zero in mask
-        is_anomaly_seq = mask.view(mask.size(0), -1).sum(dim=1) > 0
-        if is_anomaly_seq.sum() == 0:
-            continue  # skip sequences fully normal
+    # Running accumulators for tqdm bars
+    normal_running_sum = 0.0
+    normal_running_count = 0
+    anom_running_sum = 0.0
+    anom_running_count = 0
 
-        # Keep only anomalous sequences
-        x_anom = x[is_anomaly_seq].to(device)
-        target_anom = target[is_anomaly_seq].to(device)
-        mask_anom = mask[is_anomaly_seq]
+    # Two progress bars
+    normal_bar = tqdm(total=0, position=0, leave=True, desc="Normals")
+    anom_bar = tqdm(total=0, position=1, leave=True, desc="Anomalies")
 
-        recon = model(x_anom)
-        error = torch.abs(recon - target_anom)  # [B_anom, C, L]
-        anomaly_errors.append(error.cpu())
-        anomaly_masks.append(mask_anom.cpu())
+    # ----------------------------------------
+    # 1) Single pass over dataloader
+    # ----------------------------------------
+    for batch in tqdm(metric_dataloader, desc=desc, position=2):
+        x, target, mask, *_ = batch
+        x, target = x.to(device), target.to(device)
 
-    if len(anomaly_errors) == 0:
-        raise ValueError("No anomalous sequences found in the dataloader.")
+        is_anom = mask.view(mask.size(0), -1).sum(dim=1) > 0
+        is_norm = ~is_anom
 
-    anomaly_errors = torch.cat(anomaly_errors, dim=0)  # [N_anom, 1, C, L] or [N_anom, C, L]
-    anomaly_masks = torch.cat(anomaly_masks, dim=0)    # [N_anom, 1, L]
+        # ---------- ANOMALOUS ----------
+        if is_anom.any():
+            x_anom, target_anom, mask_anom = x[is_anom], target[is_anom], mask[is_anom]
+            recon = model(x_anom)
+            err_anom = torch.abs(recon - target_anom).cpu()  # Method B: L1 error
+            anomaly_errors_list.append(err_anom)
+            anomaly_masks_list.append(mask_anom.cpu())
 
-    model_type, last_layer = infer_model_type(model)
+            # Batch mean
+            batch_mean = err_anom.mean().item()
 
-    # -----------------------------------------------------------
-    # 2) Sample normal sequences to maintain ratio
-    # -----------------------------------------------------------
-    if all_val_norm_errors is None:
-        raise ValueError("all_val_norm_errors must be provided for normalization.")
+            # Update running global mean
+            anom_running_sum += err_anom.sum().item()
+            anom_running_count += err_anom.numel()
+            global_mean = anom_running_sum / anom_running_count
 
+            # Update tqdm bar
+            anom_bar.set_postfix({
+                "batch_mean": f"{batch_mean:.6f}",
+                "global_mean": f"{global_mean:.6f}"
+            })
+            anom_bar.update(1)
+
+        # ---------- NORMAL ----------
+        if is_norm.any():
+            x_norm, target_norm = x[is_norm], target[is_norm]
+            recon = model(x_norm)
+            err_norm = torch.abs(recon - target_norm).cpu()  # Method B
+            normal_errors_list.append(err_norm)
+
+            # Batch mean
+            batch_mean = err_norm.mean().item()
+
+            # Update running global mean
+            normal_running_sum += err_norm.sum().item()
+            normal_running_count += err_norm.numel()
+            global_mean = normal_running_sum / normal_running_count
+
+            # Update tqdm bar
+            normal_bar.set_postfix({
+                "batch_mean": f"{batch_mean:.6f}",
+                "global_mean": f"{global_mean:.6f}"
+            })
+            normal_bar.update(1)
+
+    # Close bars
+    normal_bar.close()
+    anom_bar.close()
+
+    # ----------------------------------------
+    # 2) Concatenate tensors
+    # ----------------------------------------
+    anomaly_errors = torch.cat(anomaly_errors_list, dim=0)
+    anomaly_masks = torch.cat(anomaly_masks_list, dim=0)
+    normal_errors_all = torch.cat(normal_errors_list, dim=0)
+
+    # ----------------------------------------
+    # 3) Sample normals according to ratio
+    # ----------------------------------------
     N_anom = anomaly_errors.shape[0]
-    N_normal_needed = N_anom * normal_anomalies_ratio
+    N_norm_needed = int(N_anom * normal_anomalies_ratio)
 
-    if shuffle:
-        np.random.seed(seed)
-        perm = np.random.permutation(all_val_norm_errors.shape[0])
-        indices = torch.tensor(perm[:N_normal_needed], dtype=torch.long)
-        # # tensor([20135, 23208, 27894, 29421, 15666, 22685, 28507, 11643, 20073, 14600])
-    else:
-        indices = torch.arange(min(N_normal_needed, all_val_norm_errors.shape[0]))
+    if N_norm_needed > normal_errors_all.shape[0]:
+        print(f"WARNING: Not enough normal sequences. Using all available ({normal_errors_all.shape[0]})")
+        N_norm_needed = normal_errors_all.shape[0]
 
-    print(f"these are the first 10 indices sampled from normal errore ov val  {indices[:10]}")
-    normal_errors_sampled = all_val_norm_errors[indices]  # [N_normal_needed, C, L] or [N_normal_needed, C, L]
+    np.random.seed(seed)
+    perm = np.random.permutation(normal_errors_all.shape[0])
+    sampled_idx = perm[:N_norm_needed]
+    normal_errors = normal_errors_all[sampled_idx]
+    normal_indices = sampled_idx
 
-    if model_type == "cnn":
-        if last_layer == 'Conv2d':
-            C = anomaly_errors.shape[2]
-            anomaly_errors = torch.squeeze(anomaly_errors)
-            normal_errors_sampled = torch.squeeze(normal_errors_sampled)
-        else:
-            C = anomaly_errors.shape[1]
-    elif model_type == "lstm":
-        C = anomaly_errors.shape[2]
-    else:
-        raise ValueError("Unknown model type")
+    # ----------------------------------------
+    # 4) Infer number of features
+    # ----------------------------------------
+    model_type, last_layer = infer_model_type(model)
+    if last_layer == 'Conv2d':
+        anomaly_errors = torch.squeeze(anomaly_errors)
+        normal_errors = torch.squeeze(normal_errors)
 
-    # -----------------------------------------------------------
-    # 3) Concatenate normal + anomaly sequences
-    # -----------------------------------------------------------
+    C = normal_errors.shape[1]
 
-    all_errors_combined = torch.cat([normal_errors_sampled, anomaly_errors], dim=0)
-    all_masks_combined = torch.cat([
-        torch.zeros((len(normal_errors_sampled), anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int),  # normal = 0
-        anomaly_masks
-    ], dim=0)
+    # ----------------------------------------
+    # 5) Feature-wise normalization (main metrics)
+    # ----------------------------------------
+    normal_perm = normal_errors.permute(0, 2, 1)
+    anomaly_perm = anomaly_errors.permute(0, 2, 1)
 
-    # -----------------------------------------------------------
-    # 4) Compute normalization factor if not provided
-    # -----------------------------------------------------------
-    C = all_errors_combined.shape[1]
-    if normalization_factor is None:
-        flat = normal_errors_sampled.permute(0, 2, 1).reshape(-1, C).float()  # [N_normal * L, C]
-        normalization_factor = torch.quantile(flat, 0.5, dim=0)  # median per channel
+    flat_norm = normal_perm.reshape(-1, C).float()
+    normalization_factor = torch.quantile(flat_norm, 0.5, dim=0)
+    norm = normalization_factor.view(1, 1, C) + epsilon
 
-    norm = normalization_factor.view(1, C, 1) + epsilon
-    normalized_errors = all_errors_combined / norm
+    normal_norm = normal_perm / norm
+    anomaly_norm = anomaly_perm / norm
 
-    # -----------------------------------------------------------
-    # 5) Compute anomaly scores (mean across channels) per sequence
-    # -----------------------------------------------------------
-    anomaly_scores = normalized_errors.mean(dim=1)  # [N, L]
+    all_errors = torch.cat([normal_norm, anomaly_norm], dim=0)
+    masks_norm = torch.zeros((normal_norm.shape[0], anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int)
+    all_masks = torch.cat([masks_norm, anomaly_masks], dim=0)
 
-    # Aggregate mask per sequence: 1 if at least one point is anomalous
-    seq_true = (all_masks_combined.view(all_masks_combined.size(0), -1).sum(dim=1) > 0).numpy().astype(int)
-    seq_scores = anomaly_scores.mean(dim=1).numpy()  # mean over time steps per sequence
+    # ----------------------------------------
+    # 6) Compute per-sequence scores (main metrics)
+    # ----------------------------------------
+    anomaly_scores = all_errors.mean(dim=1)
+    seq_true = (all_masks.view(all_masks.size(0), -1).sum(dim=1) > 0).numpy().astype(int)
+    seq_scores = anomaly_scores.mean(dim=1).numpy()
 
-    # -----------------------------------------------------------
-    # 6) Compute ROC, AUC, thresholds, F1 per sequence
-    # -----------------------------------------------------------
-    fpr, tpr, thresholds_full = roc_curve(seq_true, seq_scores)
+    from sklearn.metrics import roc_curve, auc, f1_score
+
+    fpr, tpr, thresholds = roc_curve(seq_true, seq_scores)
     roc_auc = auc(fpr, tpr)
-
-    # candidate thresholds
-    NUM_THRESH = num_thresh
-    candidate_thresholds = np.quantile(seq_scores, np.linspace(0, 1, NUM_THRESH))
-    f1s = []
-    for t in candidate_thresholds:
-        preds = (seq_scores >= t).astype(int)
-        f1s.append(f1_score(seq_true, preds))
+    candidate_thresholds = np.quantile(seq_scores, np.linspace(0, 1, num_thresh))
+    f1s = [f1_score(seq_true, (seq_scores >= t).astype(int)) for t in candidate_thresholds]
 
     ix_f1 = np.argmax(f1s)
-    best_thresh_f1 = candidate_thresholds[ix_f1]
-    best_f1 = f1s[ix_f1]
+    ix_youden = np.argmax(tpr - fpr)
 
-    # Youden index
-    J = tpr - fpr
-    ix_youden = np.argmax(J)
-    best_thresh_youden = thresholds_full[ix_youden]
-    fpr_f1max, tpr_f1max = fpr[ix_youden], tpr[ix_youden]
+    # ----------------------------------------
+    # 7) Alternative metrics (optional)
+    # ----------------------------------------
+    metrics_alt = None
+    if external_normal_errors is not None:
+        model_type, last_layer = infer_model_type(model)
+        if last_layer == 'Conv2d':
+            external_normal_errors = torch.squeeze(external_normal_errors)
 
-    metrics_dict =  {
+        N_ext = external_normal_errors.shape[0]
+        flat_ext = external_normal_errors.permute(0, 2, 1).reshape(-1, C).float()
+        norm_ext_factor = torch.quantile(flat_ext, 0.5, dim=0)
+        norm_ext = norm_ext_factor.view(1, 1, C) + epsilon
+        ext_norm = external_normal_errors.permute(0, 2, 1) / norm_ext
+
+        all_errors_ext = torch.cat([ext_norm, anomaly_norm], dim=0)
+        masks_ext = torch.cat([
+            torch.zeros((N_ext, anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int),
+            anomaly_masks
+        ], dim=0)
+
+        scores_ext = all_errors_ext.mean(dim=1)
+        seq_scores_ext = scores_ext.mean(dim=1).numpy()
+        seq_true_ext = (masks_ext.view(masks_ext.size(0), -1).sum(dim=1) > 0).numpy().astype(int)
+
+        fpr_ext, tpr_ext, thresholds_ext = roc_curve(seq_true_ext, seq_scores_ext)
+        roc_auc_ext = auc(fpr_ext, tpr_ext)
+        candidate_thresholds_ext = np.quantile(seq_scores_ext, np.linspace(0, 1, num_thresh))
+        f1s_ext = [f1_score(seq_true_ext, (seq_scores_ext >= t).astype(int)) for t in candidate_thresholds_ext]
+        ix_f1_ext = np.argmax(f1s_ext)
+        ix_youden_ext = np.argmax(tpr_ext - fpr_ext)
+
+        print("\n--- Comparison Metrics ---")
+        print(f"ROC AUC main: {roc_auc:.6f}")
+        print(f"ROC AUC external: {roc_auc_ext:.6f}")
+        print(f"F1 main: {f1s[ix_f1]:.6f}")
+        print(f"F1 external: {f1s_ext[ix_f1_ext]:.6f}")
+
+        metrics_alt = {
+            "val_roc_auc_alt": roc_auc_ext,
+            "val_fpr_alt": fpr_ext[ix_youden_ext],
+            "val_tpr_alt": tpr_ext[ix_youden_ext],
+            "val_best_thresh_youden_alt": thresholds_ext[ix_youden_ext],
+            "val_best_thresh_f1_alt": candidate_thresholds_ext[ix_f1_ext],
+            "val_f1_score_alt": f1s_ext[ix_f1_ext],
+            "val_normalization_factor_alt": norm_ext_factor
+        }
+
+    metrics_dict = {
         "metrics_results": {
             "val_anomaly_scores": anomaly_scores,
             "val_roc_auc": roc_auc,
-            "val_fpr": fpr_f1max,
-            "val_tpr": tpr_f1max,
-            "val_best_thresh_youden": best_thresh_youden,
-            "val_best_thresh_f1": best_thresh_f1,
-            "val_f1_score": best_f1,
+            "val_fpr": fpr[ix_youden],
+            "val_tpr": tpr[ix_youden],
+            "val_best_thresh_youden": thresholds[ix_youden],
+            "val_best_thresh_f1": candidate_thresholds[ix_f1],
+            "val_f1_score": f1s[ix_f1],
             "val_normalization_factor": normalization_factor,
         }
     }
 
-    return metrics_dict, indices
+    if metrics_alt is not None:
+        metrics_dict["metrics_results"].update(metrics_alt)
+
+    return metrics_dict, normal_indices
 
 
-def test_anomaly_step(model, dataloader, device,
+def test_anomaly_step_bkp_0(model, dataloader, device,
                       n_std: List[int]=None, anomaly_threshold=None,
                       desc="Testing for Anomalies"):
     model.eval()
@@ -569,26 +638,21 @@ def adjust_model_for_finetuning(
 
     def freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=None):
         """
-        Congela layer con logging esteso.
-        'freeze_layers' può contenere:
-           - encoder
-           - decoder
-           - bottleneck
-           - numeri (es. '1', '2')
-           - latent_space
-           - encoder-decoder
-           - all
-           - "0" → nessun freeze
-        'fine_tuning_mode' può essere 'latent_space' o altro
+        Congela layer con logging dettagliato.
+
+        Args:
+            model: PyTorch model
+            freeze_layers: lista o singolo valore (es. 'encoder', '0', 'all', numeri)
+            fine_tuning_mode: 'latent_space' o altro
         """
 
         print("\n" + "=" * 80)
         print("🧊 FREEZE-LAYERS: INIZIO PROCEDURA")
         print("=" * 80)
 
-        # ------------------------------------------------------------------
+        # -----------------------
         # Normalizza freeze_layers
-        # ------------------------------------------------------------------
+        # -----------------------
         if freeze_layers is None:
             freeze_layers = []
         elif isinstance(freeze_layers, int):
@@ -596,14 +660,14 @@ def adjust_model_for_finetuning(
         elif isinstance(freeze_layers, str):
             freeze_layers = [freeze_layers]
 
-        # Se è "0" → nessun freeze
+        # "0" → nessun freeze
         if "0" in freeze_layers:
             print("\nℹ️ Freeze layers = '0' → nessun freeze applicato (solo protetti KEEP)")
             freeze_layers = []
 
-        # ------------------------------------------------------------------
+        # -----------------------
         # Identifica componenti
-        # ------------------------------------------------------------------
+        # -----------------------
         has_encoder = hasattr(model, "encoder")
         has_decoder = hasattr(model, "decoder")
         has_bottleneck = hasattr(model, "bottleneck")
@@ -615,35 +679,36 @@ def adjust_model_for_finetuning(
         print(f"   - bottleneck: {has_bottleneck}")
         print(f"   - strategia latent_space: {is_latent_strategy}")
 
-        # ------------------------------------------------------------------
-        # Definisci PROTECTED (layer che NON devono mai essere congelati)
-        # ------------------------------------------------------------------
+        # -----------------------
+        # Definisci layer protetti (non congelabili)
+        # -----------------------
         protected_keywords = ["adapter", "adaptive"]  # sempre protetti
         if is_latent_strategy:
-            protected_keywords.append("bottleneck")
-            protected_keywords.append("latent")
+            protected_keywords += ["latent", "bottleneck"]
 
         def is_protected(name):
             name = name.lower()
             return any(k in name for k in protected_keywords)
 
-        # ------------------------------------------------------------------
+        # -----------------------
         # Funzioni di freeze / keep
-        # ------------------------------------------------------------------
+        # -----------------------
         def freeze_module(name, module):
-            print(f"   🧊 FREEZE → {name}")
+            print(f"❄️ FREEZE → {name}")
             for p in module.parameters(recurse=True):
                 p.requires_grad = False
 
         def keep_module(name, module, reason="", protected=False):
-            icon = "❄️" if protected else "🔥"
-            print(f"   {icon} KEEP  → {name}   {reason}")
+            # Tutti i layer addestrabili → 🔥 KEEP
+            icon = "🔥"
+            suffix = " (protetto dal freeze)" if protected else ""
+            print(f"   {icon} KEEP  → {name} {reason}{suffix}")
             for p in module.parameters(recurse=True):
                 p.requires_grad = True
 
-        # ------------------------------------------------------------------
-        # Caso 'all'
-        # ------------------------------------------------------------------
+        # -----------------------
+        # Caso 'all' → congela tutto tranne protetti
+        # -----------------------
         if "all" in freeze_layers:
             print("\n🚨 Modalità FREEZE = 'all'")
             print("→ Congelo TUTTO tranne i layer protetti")
@@ -655,11 +720,11 @@ def adjust_model_for_finetuning(
             print("\n✅ FREEZE COMPLETATO (modalità 'all')")
             return
 
-        # ------------------------------------------------------------------
-        # Modalità standard o vuota (freeze_layers=[] → nessun freeze)
-        # ------------------------------------------------------------------
+        # -----------------------
+        # Modalità standard
+        # -----------------------
         print("\n📌 Modalità FREEZE: standard")
-        print(f"   Freeze layers richiesti: {freeze_layers if freeze_layers else 'nessuno'}")
+        print(f"   Freeze layers richiesti: {freeze_layers if freeze_layers else 'nessuno'}\n")
 
         for name, module in model.named_modules():
             lname = name.lower()
@@ -684,7 +749,7 @@ def adjust_model_for_finetuning(
                 if not is_latent_strategy and "bottleneck" in freeze_layers:
                     freeze_module(name, module)
                 else:
-                    keep_module(name, module, "(protetto)" if is_latent_strategy else "", protected=is_latent_strategy)
+                    keep_module(name, module, "(protetto)" if is_latent_strategy else "")
                 continue
 
             # Freeze numerico
@@ -745,7 +810,7 @@ def adjust_model_for_finetuning(
 
         # freeze AFTER adapters
         if freeze_layers:
-            freeze_layers_with_logging(model, freeze_layers)
+            freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=fine_tuning_cfg.opt.fine_tuning_mode)
 
         return model
 
@@ -817,7 +882,7 @@ def adjust_model_for_finetuning(
 
             # freeze AFTER adding adapters
             if freeze_layers:
-                freeze_layers_with_logging(model, freeze_layers)
+                freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=fine_tuning_cfg.opt.fine_tuning_mode)
 
             return model
 
@@ -828,7 +893,7 @@ def adjust_model_for_finetuning(
             print("✅ Feature and sequence dimensions identical — no adapter needed")
 
             if freeze_layers:
-                freeze_layers_with_logging(model, freeze_layers)
+                freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=fine_tuning_cfg.opt.fine_tuning_mode)
 
             return model
 
@@ -982,6 +1047,8 @@ def load_pretrained_checkpoint(model, config, device):
         print(f"✅ Loaded pretrained weights from epoch {pretrained_epoch}")
 
         print(f"{'=' * 60}\n")
+
+        print('Model to fine tune', model)
 
         return model, True
 

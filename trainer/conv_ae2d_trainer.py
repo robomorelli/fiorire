@@ -34,7 +34,7 @@ class trainCONVAE2D(tune.Trainable):
         self.metrics_loader = get_metric_dataloader(self.cfg, # it takes the ano_column to separate normal from anomalous
                           data_path=self.cfg.opt.metrics_dataset_path, scale=True,
                           scaler=self.scaler, dataset_subset=self.cfg.opt.anomalies_dataset_subset,
-                          take_only_anomalies=True) if self.cfg.opt.evaluate_metrics else None
+                          take_only_anomalies=False) if self.cfg.opt.evaluate_metrics else None
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (
@@ -57,6 +57,7 @@ class trainCONVAE2D(tune.Trainable):
             config=self.cfg,
             device=self.device
         )
+
 
         # Optimizer and scheduler
         self.optimizer, self.scheduler, self.criterion, self.early_stopping = get_optimizazion_objects(self.cfg,
@@ -99,6 +100,7 @@ class trainCONVAE2D(tune.Trainable):
             evaluate_metrics=evaluate_metrics,
             normal_anomalous_ratio=self.cfg.opt.normal_anomalous_ratio,
         )
+
 
         # if self.metric_key in self.val_results:
         #    result[f"{self.metric_key}"] = self.val_results.get(self.metric_key, self.best_metric)  # 👈 Always included
