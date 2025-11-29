@@ -192,7 +192,25 @@ class AdaptiveMultiChannelInjector:
             pbar.update(1)
 
         pbar.close()
-        print(f"\nInjection finished: total anomalous points={int((df_out['is_anomaly']==1).sum())}")
+        actual_points = int((df_out['is_anomaly'] == 1).sum())
+        target_points = int(round(len(df_standardized) * (self.anomaly_percentage / 100)))
+
+        print(f"\nInjection finished: total anomalous points={actual_points}")
+
+        # ---------------------------------------
+        # WARNING PER DISCREPANZE NEI PUNTI
+        # ---------------------------------------
+        if abs(actual_points - target_points) > target_points * 0.01:
+            print("\n" + "!" * 80)
+            print("⚠️  WARNING: Discrepanza tra punti anomali target ed effettivi")
+            print(f"    Target:    {target_points}")
+            print(f"    Effettivi: {actual_points}")
+            print("\nPossibili cause:")
+            print("  • Alcune anomalie NON alterano tutti i 16 punti della finestra")
+            print("  • Alcune anomalie (es. GWN, PSA) modificano solo alcune dimensioni")
+            print("  • La finestra può essere valida ma l'anomalia applicata non cambia tutti i valori")
+            print("\nQuesta discrepanza è normale e dipende dalla natura dell'anomalia.")
+            print("!" * 80 + "\n")
         return df_out, anomalies_log, pd.DataFrame([])  # no schedule resets
 
 
