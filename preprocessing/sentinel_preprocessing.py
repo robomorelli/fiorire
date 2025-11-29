@@ -467,7 +467,7 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
     # If the dataset is the same (train-val split and metrics loaders) the val indexes must be the same but the anomalous are built on different val indexes respect the other val indexes
     train_indexes, val_indexes, train_df_for_scaling, anomalous_indexes = (
                     create_train_val_df_indexes(cfg=cfg, df=df, return_anomalies=use_anomaly_split, ano_col=ano_col, seed=seed,
-                                                keep_anoms_only_from_val=cfg.opt.get('keep_anoms_only_from_val', False)))
+                                                keep_anoms_only_from_val=cfg.opt.keep_anoms_only_from_val))
     #len(val_indexes) 3097422
     # Scaling
     if scale:
