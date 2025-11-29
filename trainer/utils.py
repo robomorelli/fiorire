@@ -293,13 +293,6 @@ def test_anomaly_step(
         seed=123,
         shuffle=True,
 ):
-    """
-    Extended anomaly testing function with optional comparison table.
-
-    - Uses external errors as main normal sequences
-    - Optional comparison with normal errors from the dataloader
-    - Produces a comparison table when compare_external_with_loader=True
-    """
 
     model.eval()
     anomaly_errors_list = []
@@ -316,7 +309,9 @@ def test_anomaly_step(
 
     model_type, last_layer = infer_model_type(model)
 
-    # 1) Pass through dataloader
+    # ==============================
+    # 1) PASS THROUGH DATALOADER
+    # ==============================
     for batch in tqdm(metric_dataloader, desc=desc, position=2):
         x, target, mask, *_ = batch
         x, target = x.to(device), target.to(device)
@@ -324,35 +319,44 @@ def test_anomaly_step(
         is_anom = mask.view(mask.size(0), -1).sum(dim=1) > 0
         is_norm = ~is_anom
 
+        # Anomalies
         if is_anom.any():
             x_anom, target_anom, mask_anom = x[is_anom], target[is_anom], mask[is_anom]
             recon = model(x_anom)
             err_anom = torch.abs(recon - target_anom).cpu()
+
             if last_layer == "Conv2d":
                 err_anom = torch.squeeze(err_anom)
+
             anomaly_errors_list.append(err_anom)
             anomaly_masks_list.append(mask_anom.cpu())
 
+            # update progress
             batch_mean = err_anom.mean().item()
             anom_running_sum += err_anom.sum().item()
             anom_running_count += err_anom.numel()
             global_mean = anom_running_sum / anom_running_count
+
             anom_bar.set_postfix({"batch_mean": f"{batch_mean:.6f}",
                                   "global_mean": f"{global_mean:.6f}"})
             anom_bar.update(1)
 
+        # Normals
         if is_norm.any() and normal_errors_list is not None:
             x_norm, target_norm = x[is_norm], target[is_norm]
             recon = model(x_norm)
             err_norm = torch.abs(recon - target_norm).cpu()
+
             if last_layer == "Conv2d":
                 err_norm = torch.squeeze(err_norm)
+
             normal_errors_list.append(err_norm)
 
             batch_mean = err_norm.mean().item()
             normal_running_sum += err_norm.sum().item()
             normal_running_count += err_norm.numel()
             global_mean = normal_running_sum / normal_running_count
+
             normal_bar.set_postfix({"batch_mean": f"{batch_mean:.6f}",
                                     "global_mean": f"{global_mean:.6f}"})
             normal_bar.update(1)
@@ -363,28 +367,58 @@ def test_anomaly_step(
     anomaly_errors = torch.cat(anomaly_errors_list, dim=0)
     anomaly_masks  = torch.cat(anomaly_masks_list, dim=0)
 
-    # 2) Determine main normal sequences
+    # ============================================
+    # 2) NORMAL ERROR SOURCE DETERMINATION
+    # ============================================
     if external_normal_errors is not None:
         if last_layer == "Conv2d":
             external_normal_errors = torch.squeeze(external_normal_errors)
+
         normal_errors_all = external_normal_errors.cpu()
-        normal_loader_all = torch.cat(normal_errors_list, dim=0) if compare_external_with_loader and normal_errors_list is not None else None
+        normal_error_source = "external"
+        normal_loader_all = torch.cat(normal_errors_list, dim=0) if compare_external_with_loader else None
     else:
         normal_errors_all = torch.cat(normal_errors_list, dim=0)
         normal_loader_all = None
+        normal_error_source = "loader"
 
-    # 3) Sampling main normals
+    # ============================================
+    # 3) SAMPLE MAIN NORMAL SEQUENCES
+    # ============================================
     N_anom = anomaly_errors.shape[0]
     N_norm_needed = int(N_anom * normal_anomalies_ratio)
-    if N_norm_needed > normal_errors_all.shape[0]:
-        N_norm_needed = normal_errors_all.shape[0]
+    N_norm_needed = min(N_norm_needed, normal_errors_all.shape[0])
 
     np.random.seed(seed)
     idx_main = np.random.permutation(normal_errors_all.shape[0])[:N_norm_needed]
     normal_errors = normal_errors_all[idx_main]
 
-    # 4) Normalization
+    # PRINTS
+    print(f"\n[INFO] Selected anomalous sequences: {N_anom}")
+    print(f"[INFO] Selected normal sequences:    {normal_errors.shape[0]}")
+    print(f"[INFO] Normal error source:          {normal_error_source}")
+
+    # ============================================
+    # 4) PRINT ERROR DISTRIBUTIONS
+    # ============================================
+    def print_error_stats(name, tensor):
+        flat = tensor.flatten().numpy()
+        print(f"\n[ERROR DISTRIBUTION] {name}")
+        print(f"  mean:      {flat.mean():.6f}")
+        print(f"  std:       {flat.std():.6f}")
+        print(f"  min/max:   {flat.min():.6f} / {flat.max():.6f}")
+        print(f"  q1,q5,q25: {np.quantile(flat, [0.01, 0.05, 0.25])}")
+        print(f"  median:    {np.quantile(flat, 0.50):.6f}")
+        print(f"  q75,q95:   {np.quantile(flat, [0.75, 0.95])}")
+
+    print_error_stats("NORMAL sequences", normal_errors)
+    print_error_stats("ANOMALOUS sequences", anomaly_errors)
+
+    # ============================================
+    # 5) NORMALIZATION
+    # ============================================
     C = normal_errors.shape[1]
+
     normal_perm  = normal_errors.permute(0, 2, 1)
     anomaly_perm = anomaly_errors.permute(0, 2, 1)
 
@@ -394,69 +428,41 @@ def test_anomaly_step(
 
     normal_norm  = normal_perm  / norm
     anomaly_norm = anomaly_perm / norm
-    masks_norm = torch.zeros((normal_norm.shape[0], anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int)
+
+    masks_norm = torch.zeros((normal_norm.shape[0], anomaly_masks.shape[1], anomaly_masks.shape[2]),
+                             dtype=torch.int)
+
     all_errors = torch.cat([normal_norm, anomaly_norm], dim=0)
     all_masks  = torch.cat([masks_norm, anomaly_masks], dim=0)
 
-    # 5) Compute main metrics
+    # ============================================
+    # 6) METRIC COMPUTATION
+    # ============================================
     anomaly_scores = all_errors.mean(dim=1)
     seq_true   = (all_masks.view(all_masks.size(0), -1).sum(dim=1) > 0).numpy().astype(int)
     seq_scores = anomaly_scores.mean(dim=1).numpy()
 
     from sklearn.metrics import roc_curve, auc, f1_score
+
     fpr, tpr, thresholds = roc_curve(seq_true, seq_scores)
     roc_auc = auc(fpr, tpr)
+
     candidate_thresholds = np.quantile(seq_scores, np.linspace(0, 1, num_thresh))
     f1s = [f1_score(seq_true, (seq_scores >= t).astype(int)) for t in candidate_thresholds]
+
     ix_f1 = np.argmax(f1s)
     ix_youden = np.argmax(tpr - fpr)
 
-    # 6) Optional comparison with loader normals
-    comparison_table = None
-    if normal_loader_all is not None:
-        N_norm_needed2 = min(N_norm_needed, normal_loader_all.shape[0])
-        idx2 = np.random.permutation(normal_loader_all.shape[0])[:N_norm_needed2]
-        normal_loader_sampled = normal_loader_all[idx2]
+    # ============================================
+    # FINAL SUMMARY PRINTS
+    # ============================================
+    print("\n[INFO] FINAL CHECK --- sequences used:")
+    print(f"   - anomalous: {anomaly_errors.shape[0]}")
+    print(f"   - normal:    {normal_errors.shape[0]}")
 
-        loader_perm = normal_loader_sampled.permute(0, 2, 1)
-        flat_norm2 = loader_perm.reshape(-1, C).float()
-        norm_factor2 = torch.quantile(flat_norm2, 0.5, dim=0)
-        denom2 = norm_factor2.view(1, 1, C) + epsilon
-
-        normal_loader_norm = loader_perm / denom2
-        anomaly_loader_norm = anomaly_perm / denom2
-        masks_loader = torch.zeros((normal_loader_norm.shape[0], anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int)
-        all_errors2 = torch.cat([normal_loader_norm, anomaly_loader_norm], dim=0)
-        all_masks2  = torch.cat([masks_loader, anomaly_masks], dim=0)
-
-        seq_scores2 = all_errors2.mean(dim=1).mean(dim=1).numpy()
-        seq_true2   = (all_masks2.view(all_masks2.size(0), -1).sum(dim=1) > 0).numpy().astype(int)
-
-        fpr2, tpr2, thr2 = roc_curve(seq_true2, seq_scores2)
-        auc2 = auc(fpr2, tpr2)
-        cand2 = np.quantile(seq_scores2, np.linspace(0, 1, num_thresh))
-        f1s2 = [f1_score(seq_true2, (seq_scores2 >= t).astype(int)) for t in cand2]
-        ix_f1_2 = np.argmax(f1s2)
-        ix_yd2  = np.argmax(tpr2 - fpr2)
-
-        # Create comparison table
-        comparison_table = pd.DataFrame({
-            "Metric": [
-                "ROC_AUC", "FPR_Youden", "TPR_Youden",
-                "Best_Threshold_Youden", "Best_Threshold_F1", "F1_Score"
-            ],
-            "External_Errors": [
-                roc_auc, fpr[ix_youden], tpr[ix_youden],
-                thresholds[ix_youden], candidate_thresholds[ix_f1], f1s[ix_f1]
-            ],
-            "Loader_Errors": [
-                auc2, fpr2[ix_yd2], tpr2[ix_yd2],
-                thr2[ix_yd2], cand2[ix_f1_2], f1s2[ix_f1_2]
-            ]
-        })
-        print(comparison_table)
-
-    # 7) Final output
+    # ============================================
+    # 7) BUILD RETURN OBJECT
+    # ============================================
     metrics_dict = {
         "metrics_results": {
             "val_anomaly_scores": anomaly_scores,
@@ -468,11 +474,13 @@ def test_anomaly_step(
             "val_f1_score": f1s[ix_f1],
             "val_normalization_factor": normalization_factor,
         },
-        "comparison_table": comparison_table  # None if no comparison requested
+
+        # new fields requested
+        "sampled_normal_indices": idx_main,         # <=== SAVED INDICES
+        "normal_error_source": normal_error_source  # <=== external / loader
     }
 
     return metrics_dict, idx_main
-
 
 
 
