@@ -246,7 +246,7 @@ def validate_one_epoch(
             metric_dataloader=metric_loader,
             device=device,
             external_normal_errors=all_errors,
-            compare_external_with_loader=True,
+            compare_external_with_loader=False,
             num_thresh=10,
             epsilon=1e-5,
             desc="Testing anomalies",
