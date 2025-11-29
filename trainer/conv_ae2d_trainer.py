@@ -41,6 +41,7 @@ class trainCONVAE2D(tune.Trainable):
             self.opt_metric_dict[k] for k in opt_metric_dict_keys
         )
 
+
         # Set up device
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
 

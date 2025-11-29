@@ -157,7 +157,7 @@ def load_data(cfg):
 
     df = df[columns].dropna()
     #if cfg.dataset.dataset_subset:
-    #p    df = df.iloc[:cfg.dataset.dataset_subset, :]
+    #    df = df.iloc[:cfg.dataset.dataset_subset, :]
 
     flag_col = getattr(cfg.dataset, "flag_col", None)
     align_data = getattr(cfg.dataset, "align_data", False)

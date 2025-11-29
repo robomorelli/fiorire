@@ -268,6 +268,8 @@ def get_metric_dataloader(cfg, filter_anomalies=True, data_path=None, scale=True
     data_path = cfg.opt.metrics_dataset_path if data_path is None else data_path
     if data_path is None:
         raise ValueError("Metrics dataset path is not specified in the configuration.")
+
+    print("📂 Loading dataset from:", data_path)
     df = load_dataframe(cfg, data_path=data_path)
 
     flag_col = getattr(cfg.dataset, "flag_col", None)

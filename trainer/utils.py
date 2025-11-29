@@ -245,7 +245,8 @@ def validate_one_epoch(
             model=model,
             metric_dataloader=metric_loader,
             device=device,
-            #external_normal_errors=all_errors,
+            external_normal_errors=all_errors,
+            compare_external_with_loader=True,
             num_thresh=10,
             epsilon=1e-5,
             desc="Testing anomalies",
@@ -276,9 +277,207 @@ def validate_one_epoch(
 
     return results, indices
 
+import pandas as pd
 
 @torch.no_grad()
 def test_anomaly_step(
+        model,
+        metric_dataloader,
+        device="cuda",
+        external_normal_errors=None,
+        compare_external_with_loader=False,
+        num_thresh=10,
+        epsilon=1e-5,
+        desc="Testing anomalies",
+        normal_anomalies_ratio=1,
+        seed=123,
+        shuffle=True,
+):
+    """
+    Extended anomaly testing function with optional comparison table.
+
+    - Uses external errors as main normal sequences
+    - Optional comparison with normal errors from the dataloader
+    - Produces a comparison table when compare_external_with_loader=True
+    """
+
+    model.eval()
+    anomaly_errors_list = []
+    anomaly_masks_list = []
+    normal_errors_list = [] if external_normal_errors is None or compare_external_with_loader else None
+
+    normal_running_sum = 0.0
+    normal_running_count = 0
+    anom_running_sum = 0.0
+    anom_running_count = 0
+
+    normal_bar = tqdm(total=0, position=0, leave=True, desc="Normals")
+    anom_bar   = tqdm(total=0, position=1, leave=True, desc="Anomalies")
+
+    model_type, last_layer = infer_model_type(model)
+
+    # 1) Pass through dataloader
+    for batch in tqdm(metric_dataloader, desc=desc, position=2):
+        x, target, mask, *_ = batch
+        x, target = x.to(device), target.to(device)
+
+        is_anom = mask.view(mask.size(0), -1).sum(dim=1) > 0
+        is_norm = ~is_anom
+
+        if is_anom.any():
+            x_anom, target_anom, mask_anom = x[is_anom], target[is_anom], mask[is_anom]
+            recon = model(x_anom)
+            err_anom = torch.abs(recon - target_anom).cpu()
+            if last_layer == "Conv2d":
+                err_anom = torch.squeeze(err_anom)
+            anomaly_errors_list.append(err_anom)
+            anomaly_masks_list.append(mask_anom.cpu())
+
+            batch_mean = err_anom.mean().item()
+            anom_running_sum += err_anom.sum().item()
+            anom_running_count += err_anom.numel()
+            global_mean = anom_running_sum / anom_running_count
+            anom_bar.set_postfix({"batch_mean": f"{batch_mean:.6f}",
+                                  "global_mean": f"{global_mean:.6f}"})
+            anom_bar.update(1)
+
+        if is_norm.any() and normal_errors_list is not None:
+            x_norm, target_norm = x[is_norm], target[is_norm]
+            recon = model(x_norm)
+            err_norm = torch.abs(recon - target_norm).cpu()
+            if last_layer == "Conv2d":
+                err_norm = torch.squeeze(err_norm)
+            normal_errors_list.append(err_norm)
+
+            batch_mean = err_norm.mean().item()
+            normal_running_sum += err_norm.sum().item()
+            normal_running_count += err_norm.numel()
+            global_mean = normal_running_sum / normal_running_count
+            normal_bar.set_postfix({"batch_mean": f"{batch_mean:.6f}",
+                                    "global_mean": f"{global_mean:.6f}"})
+            normal_bar.update(1)
+
+    normal_bar.close()
+    anom_bar.close()
+
+    anomaly_errors = torch.cat(anomaly_errors_list, dim=0)
+    anomaly_masks  = torch.cat(anomaly_masks_list, dim=0)
+
+    # 2) Determine main normal sequences
+    if external_normal_errors is not None:
+        if last_layer == "Conv2d":
+            external_normal_errors = torch.squeeze(external_normal_errors)
+        normal_errors_all = external_normal_errors.cpu()
+        normal_loader_all = torch.cat(normal_errors_list, dim=0) if compare_external_with_loader and normal_errors_list is not None else None
+    else:
+        normal_errors_all = torch.cat(normal_errors_list, dim=0)
+        normal_loader_all = None
+
+    # 3) Sampling main normals
+    N_anom = anomaly_errors.shape[0]
+    N_norm_needed = int(N_anom * normal_anomalies_ratio)
+    if N_norm_needed > normal_errors_all.shape[0]:
+        N_norm_needed = normal_errors_all.shape[0]
+
+    np.random.seed(seed)
+    idx_main = np.random.permutation(normal_errors_all.shape[0])[:N_norm_needed]
+    normal_errors = normal_errors_all[idx_main]
+
+    # 4) Normalization
+    C = normal_errors.shape[1]
+    normal_perm  = normal_errors.permute(0, 2, 1)
+    anomaly_perm = anomaly_errors.permute(0, 2, 1)
+
+    flat_norm = normal_perm.reshape(-1, C).float()
+    normalization_factor = torch.quantile(flat_norm, 0.5, dim=0)
+    norm = normalization_factor.view(1, 1, C) + epsilon
+
+    normal_norm  = normal_perm  / norm
+    anomaly_norm = anomaly_perm / norm
+    masks_norm = torch.zeros((normal_norm.shape[0], anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int)
+    all_errors = torch.cat([normal_norm, anomaly_norm], dim=0)
+    all_masks  = torch.cat([masks_norm, anomaly_masks], dim=0)
+
+    # 5) Compute main metrics
+    anomaly_scores = all_errors.mean(dim=1)
+    seq_true   = (all_masks.view(all_masks.size(0), -1).sum(dim=1) > 0).numpy().astype(int)
+    seq_scores = anomaly_scores.mean(dim=1).numpy()
+
+    from sklearn.metrics import roc_curve, auc, f1_score
+    fpr, tpr, thresholds = roc_curve(seq_true, seq_scores)
+    roc_auc = auc(fpr, tpr)
+    candidate_thresholds = np.quantile(seq_scores, np.linspace(0, 1, num_thresh))
+    f1s = [f1_score(seq_true, (seq_scores >= t).astype(int)) for t in candidate_thresholds]
+    ix_f1 = np.argmax(f1s)
+    ix_youden = np.argmax(tpr - fpr)
+
+    # 6) Optional comparison with loader normals
+    comparison_table = None
+    if normal_loader_all is not None:
+        N_norm_needed2 = min(N_norm_needed, normal_loader_all.shape[0])
+        idx2 = np.random.permutation(normal_loader_all.shape[0])[:N_norm_needed2]
+        normal_loader_sampled = normal_loader_all[idx2]
+
+        loader_perm = normal_loader_sampled.permute(0, 2, 1)
+        flat_norm2 = loader_perm.reshape(-1, C).float()
+        norm_factor2 = torch.quantile(flat_norm2, 0.5, dim=0)
+        denom2 = norm_factor2.view(1, 1, C) + epsilon
+
+        normal_loader_norm = loader_perm / denom2
+        anomaly_loader_norm = anomaly_perm / denom2
+        masks_loader = torch.zeros((normal_loader_norm.shape[0], anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int)
+        all_errors2 = torch.cat([normal_loader_norm, anomaly_loader_norm], dim=0)
+        all_masks2  = torch.cat([masks_loader, anomaly_masks], dim=0)
+
+        seq_scores2 = all_errors2.mean(dim=1).mean(dim=1).numpy()
+        seq_true2   = (all_masks2.view(all_masks2.size(0), -1).sum(dim=1) > 0).numpy().astype(int)
+
+        fpr2, tpr2, thr2 = roc_curve(seq_true2, seq_scores2)
+        auc2 = auc(fpr2, tpr2)
+        cand2 = np.quantile(seq_scores2, np.linspace(0, 1, num_thresh))
+        f1s2 = [f1_score(seq_true2, (seq_scores2 >= t).astype(int)) for t in cand2]
+        ix_f1_2 = np.argmax(f1s2)
+        ix_yd2  = np.argmax(tpr2 - fpr2)
+
+        # Create comparison table
+        comparison_table = pd.DataFrame({
+            "Metric": [
+                "ROC_AUC", "FPR_Youden", "TPR_Youden",
+                "Best_Threshold_Youden", "Best_Threshold_F1", "F1_Score"
+            ],
+            "External_Errors": [
+                roc_auc, fpr[ix_youden], tpr[ix_youden],
+                thresholds[ix_youden], candidate_thresholds[ix_f1], f1s[ix_f1]
+            ],
+            "Loader_Errors": [
+                auc2, fpr2[ix_yd2], tpr2[ix_yd2],
+                thr2[ix_yd2], cand2[ix_f1_2], f1s2[ix_f1_2]
+            ]
+        })
+        print(comparison_table)
+
+    # 7) Final output
+    metrics_dict = {
+        "metrics_results": {
+            "val_anomaly_scores": anomaly_scores,
+            "val_roc_auc": roc_auc,
+            "val_fpr": fpr[ix_youden],
+            "val_tpr": tpr[ix_youden],
+            "val_best_thresh_youden": thresholds[ix_youden],
+            "val_best_thresh_f1": candidate_thresholds[ix_f1],
+            "val_f1_score": f1s[ix_f1],
+            "val_normalization_factor": normalization_factor,
+        },
+        "comparison_table": comparison_table  # None if no comparison requested
+    }
+
+    return metrics_dict, idx_main
+
+
+
+
+@torch.no_grad()
+def test_anomaly_step_kp(
         model,
         metric_dataloader,
         device="cuda",
@@ -509,104 +708,6 @@ def test_anomaly_step(
     return metrics_dict, normal_indices
 
 
-def test_anomaly_step_bkp_0(model, dataloader, device,
-                      n_std: List[int]=None, anomaly_threshold=None,
-                      desc="Testing for Anomalies"):
-    model.eval()
-    all_errors = []
-    all_masks = []
-
-    if n_std is None:
-        n_std = [1]  # default value
-
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc=desc):
-            x, target, mask = batch
-            x = x.to(device)
-            target = target.to(device)
-
-            recon = model(x).to(device)
-            error = torch.abs(recon - target)  # [B, C, L]
-            all_errors.append(error.cpu())
-            all_masks.append(mask.cpu())
-
-    # Stack all errors and masks
-    all_errors = torch.cat(all_errors, dim=0)  # [N, C, L]
-    all_masks = torch.cat(all_masks, dim=0)    # [N, C, L]
-
-    # Compute mean and std per channel
-    if anomaly_threshold is not None:
-        # Validate presence and shape
-        assert "channel_means" in anomaly_threshold and "channel_stds" in anomaly_threshold, \
-            "Missing 'channel_means' or 'channel_stds' in anomaly_threshold"
-
-        channel_means = np.array(anomaly_threshold["channel_means"])  # shape: [C]
-        channel_stds = np.array(anomaly_threshold["channel_stds"])  # shape: [C]
-
-        assert channel_means.ndim == 1 and channel_stds.ndim == 1, "channel_means and channel_stds must be 1D arrays"
-        assert channel_means.shape == channel_stds.shape, "channel_means and channel_stds must have the same shape"
-        model_type, last_layer = infer_model_type(model)
-
-        if model_type == "cnn":
-            if last_layer == 'Conv2d':
-                C = all_errors.shape[2]
-            else:
-                C = all_errors.shape[1]
-        elif model_type == "lstm":
-            C = all_errors.shape[2]
-        else:
-            raise ValueError("Unknown model type")
-
-        assert channel_means.shape[0] == C, f"Expected {C} channels, but got {channel_means.shape[0]}"
-
-    else:
-        flat_errors = all_errors.view(all_errors.size(0), all_errors.size(1), -1)  # [N, C, L]
-        mean_errors = flat_errors.mean(dim=2)  # [N, C]
-        channel_means = mean_errors.mean(dim=0).numpy()  # [C]
-        channel_stds = mean_errors.std(dim=0).numpy()  # [C]
-
-    best_f1 = -1
-    best_n_std = None
-    best_pred_mask = None
-
-    results_per_std = {}
-
-    for curr_std in n_std:
-        # Compute thresholds per channel
-        thresholds = channel_means + curr_std * channel_stds  # [C]
-
-        # Flatten for F1
-        model_type, last_layer = infer_model_type(model)
-        anomaly_mask_pred_reduced = reduce_anomaly_mask(all_errors, thresholds, model_type)
-
-        # Flatten and evaluate
-        y_pred = anomaly_mask_pred_reduced.view(-1).numpy()
-        y_true = all_masks.view(-1).numpy()
-        f1 = f1_score(y_true, y_pred)
-
-        # Save results
-        results_per_std[curr_std] = {
-            "val_f1_score": f1,
-            "thresholds": thresholds,
-            "anomaly_mask_pred": anomaly_mask_pred_reduced,
-        }
-
-        # Track best
-        if f1 > best_f1:
-            best_f1 = f1
-            best_n_std = curr_std
-            best_pred_mask = anomaly_mask_pred_reduced
-
-    return {"metrics_results":{
-        "best_f1_score": best_f1,
-        "best_n_std": best_n_std,
-        "channel_means": channel_means,
-        "channel_stds": channel_stds,
-        "channel_thresholds": channel_means + best_n_std * channel_stds,
-        "anomaly_mask_pred": best_pred_mask,
-        "ground_truth_mask": all_masks,
-        "results_per_std": results_per_std  # Optional: full history
-    }}
 
 
 

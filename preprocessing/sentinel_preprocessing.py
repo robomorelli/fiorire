@@ -158,6 +158,7 @@ def create_train_val_df_indexes(
     min_chunk_size=None,
     max_chunks=200,
     tolerance=0.01,
+    keep_anoms_only_from_val=False
 ):
     """
      Split a dataframe into training/validation sets by chunk sampling,
@@ -272,13 +273,17 @@ def create_train_val_df_indexes(
     train_anomalous_indexes = np.intersect1d(full_anomalous_idx, train_indexes)
     val_anomalous_indexes = np.intersect1d(full_anomalous_idx, val_indexes)
 
+    keep_anoms_only_from_val = cfg.opt.get('keep_anoms_only_from_val', keep_anoms_only_from_val)
+
+    anomalous_window_indexes = list(get_anomaly_window_indexes(full_anomalous_idx, total_len))
     train_anomalous_windows = get_anomaly_window_indexes(train_anomalous_indexes, total_len)
     val_anomalous_windows = get_anomaly_window_indexes(val_anomalous_indexes, total_len)
 
+    if keep_anoms_only_from_val:
+        anomalous_window_indexes = list(val_anomalous_windows)
+
     train_normal_indexes = np.setdiff1d(train_indexes, list(train_anomalous_windows), assume_unique=True)
     val_normal_indexes = np.setdiff1d(val_indexes, list(val_anomalous_windows), assume_unique=True)
-
-    anomalous_window_indexes = list(get_anomaly_window_indexes(full_anomalous_idx, total_len))
 
     scaling_cols = df.columns.difference([ano_col]) if ano_col in df.columns else df.columns
     scaling_cols = [x for x in df.columns if x in scaling_cols]
@@ -458,8 +463,11 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
     seed = cfg.opt.get("seed", seed)
     # Use thee seed to get always the same train and val indexes
     # val indexes on zook array([8029780, 8029781, 8029782, ..., 6508345, 6508346, 6508347])
+    # with 4M, val indnexes: array([576000, 576001, 576002, ..., 1023997, 1023998, 1023999])
+    # If the dataset is the same (train-val split and metrics loaders) the val indexes must be the same but the anomalous are built on different val indexes respect the other val indexes
     train_indexes, val_indexes, train_df_for_scaling, anomalous_indexes = (
-                    create_train_val_df_indexes(cfg=cfg, df=df, return_anomalies=use_anomaly_split, ano_col=ano_col, seed=seed))
+                    create_train_val_df_indexes(cfg=cfg, df=df, return_anomalies=use_anomaly_split, ano_col=ano_col, seed=seed,
+                                                keep_anoms_only_from_val=cfg.opt.get('keep_anoms_only_from_val', False)))
     #len(val_indexes) 3097422
     # Scaling
     if scale:
