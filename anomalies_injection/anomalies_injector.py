@@ -202,14 +202,14 @@ class AdaptiveMultiChannelInjector:
         # ---------------------------------------
         if abs(actual_points - target_points) > target_points * 0.01:
             print("\n" + "!" * 80)
-            print("⚠️  WARNING: Discrepanza tra punti anomali target ed effettivi")
+            print("⚠️  WARNING: Mismatch between target and actual anomalous points")
             print(f"    Target:    {target_points}")
-            print(f"    Effettivi: {actual_points}")
-            print("\nPossibili cause:")
-            print("  • Alcune anomalie NON alterano tutti i 16 punti della finestra")
-            print("  • Alcune anomalie (es. GWN, PSA) modificano solo alcune dimensioni")
-            print("  • La finestra può essere valida ma l'anomalia applicata non cambia tutti i valori")
-            print("\nQuesta discrepanza è normale e dipende dalla natura dell'anomalia.")
+            print(f"    Actual:    {actual_points}")
+            print("\nPossible causes:")
+            print("  • Some anomalies do NOT alter all 16 points of the window")
+            print("  • Some anomalies (e.g., Impulse, Step, PSA) modify only certain feature dimensions")
+            print("  • The window may be valid, but the applied anomaly does not affect every value")
+            print("\nThis discrepancy is expected and depends on the intrinsic nature of each anomaly type.")
             print("!" * 80 + "\n")
         return df_out, anomalies_log, pd.DataFrame([])  # no schedule resets
 
