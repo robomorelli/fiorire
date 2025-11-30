@@ -100,6 +100,7 @@ class trainCONVAE2D(tune.Trainable):
             desc=f"Epoch {self.current_epoch} [Val]",
             evaluate_metrics=evaluate_metrics,
             normal_anomalous_ratio=self.cfg.opt.normal_anomalous_ratio,
+            use_error=self.cfg.opt.get("use_error", "abs")
         )
 
 

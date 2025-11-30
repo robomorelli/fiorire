@@ -322,8 +322,25 @@ def get_opt_metric_kp(cfg, metrics_loader=None):
 
     return  opt_metric_dict
 
-def compute_errors(outputs: torch.Tensor, targets: torch.Tensor):
-    return torch.abs(outputs.detach() - targets)
+def compute_errors(outputs: torch.Tensor, targets: torch.Tensor, error_type: str = "abs"):
+    """
+    Calcola l'errore di ricostruzione richiesto.
+
+    Args:
+        outputs: modello output [N, C, L]
+        targets: target [N, C, L]
+        error_type: "abs" per MAE, "se" per squared error
+
+    Returns:
+        errors: tensore degli errori [N, C, L]
+    """
+    if error_type == "abs":
+        return torch.abs(outputs.detach() - targets)
+    elif error_type == "se":
+        return (outputs.detach() - targets) ** 2
+    else:
+        raise ValueError(f"Unknown error_type='{error_type}', must be 'abs' or 'se'")
+
 
 def mean_std_per_channel(errors: torch.Tensor, model_type: str, last_layer:str = None):
     if model_type == "cnn":
@@ -391,7 +408,8 @@ def validate_one_epoch(
     device,
     desc: str = "Validation",
     evaluate_metrics: bool = True,
-    normal_anomalous_ratio: int = 1):
+    normal_anomalous_ratio: int = 1,
+    use_error:str = "abs" ):
 
     model.eval()
     epoch_loss = 0
@@ -405,26 +423,22 @@ def validate_one_epoch(
             outputs = model(inputs).to(device)
             loss = criterion(outputs, targets)
 
-            errors = compute_errors(outputs, targets)
+            errors = compute_errors(outputs, targets, error_type=use_error)
             all_errors.append(errors.cpu())
 
             epoch_loss += loss.item()
             pbar.set_postfix(loss=loss.item())
 
     all_errors = torch.cat(all_errors, dim=0)  # [N, C, L]
-    #model_type, last_layer = infer_model_type(model)
-    #channel_mean_errors, channel_std_errors = mean_std_per_channel(all_errors, model_type)
 
     # Core validation results
     results = {
         "val_loss": epoch_loss / len(dataloader),
-        #"val_channel_mean_errors": channel_mean_errors,
-        #"val_channel_std_errors": channel_std_errors,
     }
 
     # Optionally evaluate anomaly detection metrics
-
     if evaluate_metrics:
+        print("\n[INFO] Evaluating anomaly detection metrics...usige_error =", use_error)
         test_results, indices = test_anomaly_step(
             model=model,
             metric_dataloader=metric_loader,
@@ -433,11 +447,12 @@ def validate_one_epoch(
             compare_external_with_loader=False,
             num_thresh=10,
             epsilon=1e-5,
-            desc="Testing anomalies",
+            desc=f"Testing anomalies ({use_error})",
             normal_anomalies_ratio=normal_anomalous_ratio,
             seed=123,
             shuffle=True,
-            )
+            use_error=use_error
+        )
 
         # Flatten only necessary fields for logging
         if "metrics_results" in test_results:
@@ -461,20 +476,20 @@ def validate_one_epoch(
 
     return results, indices
 
-
 @torch.no_grad()
 def test_anomaly_step(
-        model,
-        metric_dataloader,
-        device="cuda",
-        external_normal_errors=None,
-        compare_external_with_loader=False,
-        num_thresh=10,
-        epsilon=1e-5,
-        desc="Testing anomalies",
-        normal_anomalies_ratio=1,
-        seed=123,
-        shuffle=True,
+    model,
+    metric_dataloader,
+    device="cuda",
+    external_normal_errors=None,
+    compare_external_with_loader=False,
+    num_thresh=10,
+    epsilon=1e-5,
+    desc="Testing anomalies",
+    normal_anomalies_ratio=1,
+    seed=123,
+    shuffle=True,
+    use_error="abs"  # "abs" = |x - y|, "se" = (x - y)^2
 ):
     model.eval()
     anomaly_errors_list = []
@@ -505,9 +520,16 @@ def test_anomaly_step(
         if is_anom.any():
             x_anom, target_anom, mask_anom = x[is_anom], target[is_anom], mask[is_anom]
             recon = model(x_anom)
-            err_anom = torch.abs(recon - target_anom).cpu()
+            if use_error == "abs":
+                err_anom = torch.abs(recon - target_anom).cpu()
+            elif use_error == "se":
+                err_anom = (recon - target_anom).cpu() ** 2
+            else:
+                raise ValueError(f"Unknown use_error: {use_error}")
+
             if last_layer == "Conv2d":
                 err_anom = torch.squeeze(err_anom)
+
             anomaly_errors_list.append(err_anom)
             anomaly_masks_list.append(mask_anom.cpu())
 
@@ -516,23 +538,30 @@ def test_anomaly_step(
             anom_running_sum += err_anom.sum().item()
             anom_running_count += err_anom.numel()
             global_mean = anom_running_sum / anom_running_count
-            anom_bar.set_postfix({"batch_mean": f"{batch_mean:.6f}", "global_mean": f"{global_mean:.6f}"})
+            anom_bar.set_postfix({"batch_mean": f"{batch_mean:.6f}",
+                                  "global_mean": f"{global_mean:.6f}"})
             anom_bar.update(1)
 
         # Normals
         if is_norm.any() and normal_errors_list is not None:
             x_norm, target_norm = x[is_norm], target[is_norm]
             recon = model(x_norm)
-            err_norm = torch.abs(recon - target_norm).cpu()
+            if use_error == "abs":
+                err_norm = torch.abs(recon - target_norm).cpu()
+            elif use_error == "se":
+                err_norm = (recon - target_norm).cpu() ** 2
+
             if last_layer == "Conv2d":
                 err_norm = torch.squeeze(err_norm)
+
             normal_errors_list.append(err_norm)
 
             batch_mean = err_norm.mean().item()
             normal_running_sum += err_norm.sum().item()
             normal_running_count += err_norm.numel()
             global_mean = normal_running_sum / normal_running_count
-            normal_bar.set_postfix({"batch_mean": f"{batch_mean:.6f}", "global_mean": f"{global_mean:.6f}"})
+            normal_bar.set_postfix({"batch_mean": f"{batch_mean:.6f}",
+                                    "global_mean": f"{global_mean:.6f}"})
             normal_bar.update(1)
 
     normal_bar.close()
@@ -547,6 +576,7 @@ def test_anomaly_step(
     if external_normal_errors is not None:
         if last_layer == "Conv2d":
             external_normal_errors = torch.squeeze(external_normal_errors)
+
         normal_errors_all = external_normal_errors.cpu()
         normal_error_source = "external"
         normal_loader_all = torch.cat(normal_errors_list, dim=0) if compare_external_with_loader else None
@@ -561,6 +591,7 @@ def test_anomaly_step(
     N_anom = anomaly_errors.shape[0]
     N_norm_needed = int(N_anom * normal_anomalies_ratio)
     N_norm_needed = min(N_norm_needed, normal_errors_all.shape[0])
+
     np.random.seed(seed)
     idx_main = np.random.permutation(normal_errors_all.shape[0])[:N_norm_needed]
     normal_errors = normal_errors_all[idx_main]
@@ -570,10 +601,32 @@ def test_anomaly_step(
     print(f"[INFO] Normal error source:          {normal_error_source}")
 
     # ==============================
-    # 4) NORMALIZE
+    # 4) DISTRIBUTIONS
     # ==============================
-    normal_perm  = normal_errors.permute(0, 2, 1)
+    def compute_error_stats(errors_tensor):
+        flat = errors_tensor.flatten().numpy()
+        return {
+            "mean": flat.mean(),
+            "std": flat.std(),
+            "min": flat.min(),
+            "max": flat.max(),
+            "q1": np.quantile(flat, 0.01),
+            "q5": np.quantile(flat, 0.05),
+            "q25": np.quantile(flat, 0.25),
+            "median": np.quantile(flat, 0.50),
+            "q75": np.quantile(flat, 0.75),
+            "q95": np.quantile(flat, 0.95)
+        }
+
+    normal_stats = compute_error_stats(normal_errors)
+    anomaly_stats = compute_error_stats(anomaly_errors)
+
+    # ==============================
+    # 5) NORMALIZATION
+    # ==============================
+    normal_perm  = normal_errors.permute(0, 2, 1)  # [N, L, C]
     anomaly_perm = anomaly_errors.permute(0, 2, 1)
+
     C = normal_perm.shape[2]
 
     flat_norm = normal_perm.reshape(-1, C).float()
@@ -591,12 +644,15 @@ def test_anomaly_step(
     N, T, C = all_errors.shape
 
     # ==============================
-    # 5) STEP-WISE ERROR (L2)
+    # 6) STEP-WISE SCORE
     # ==============================
-    val_anomaly_scores = torch.norm(all_errors, p=2, dim=2)  # [N, T]
+    if use_error == "abs":
+        val_anomaly_scores = torch.norm(all_errors, p=2, dim=2)  # L2 norm per timestep
+    else:  # "se"
+        val_anomaly_scores = all_errors.mean(dim=2)  # mean over features
+
     val_labels = (all_masks.view(N, T, -1).sum(dim=2) > 0).int()  # [N, T]
 
-    # Flatten for global ROC/F1 like before
     flat_scores = val_anomaly_scores.flatten().numpy()
     flat_labels = val_labels.flatten().numpy()
 
@@ -610,28 +666,12 @@ def test_anomaly_step(
     ix_youden = np.argmax(tpr - fpr)
 
     # ==============================
-    # 6) DISTRIBUTION ERROR STATS (optional)
-    # ==============================
-    def print_error_stats(name, tensor):
-        flat = tensor.flatten().numpy()
-        print(f"\n[ERROR DISTRIBUTION] {name}")
-        print(f"  mean:      {flat.mean():.6f}")
-        print(f"  std:       {flat.std():.6f}")
-        print(f"  min/max:   {flat.min():.6f} / {flat.max():.6f}")
-        print(f"  q1,q5,q25: {np.quantile(flat, [0.01, 0.05, 0.25])}")
-        print(f"  median:    {np.quantile(flat, 0.50):.6f}")
-        print(f"  q75,q95:   {np.quantile(flat, [0.75, 0.95])}")
-
-    print_error_stats("NORMAL sequences", normal_errors)
-    print_error_stats("ANOMALOUS sequences", anomaly_errors)
-
-    # ==============================
-    # 7) BUILD RETURN DICT (original metric names)
+    # 7) BUILD RETURN OBJECT
     # ==============================
     metrics_dict = {
         "metrics_results": {
-            "val_anomaly_scores": val_anomaly_scores,  # [N, T]
-            "val_labels": val_labels,                  # [N, T]
+            "val_anomaly_scores": val_anomaly_scores,      # [N, T]
+            "val_labels": val_labels,                      # [N, T]
 
             "val_roc_auc": roc_auc,
             "val_fpr": fpr[ix_youden],
@@ -640,16 +680,15 @@ def test_anomaly_step(
             "val_best_thresh_f1": candidate_thresholds[ix_f1],
             "val_f1_score": f1s[ix_f1],
 
+            "val_normal_stats": normal_stats,
+            "val_anomaly_stats": anomaly_stats,
             "val_normalization_factor": normalization_factor
         },
         "sampled_normal_indices": idx_main,
-        "normal_error_source": normal_error_source,
-        "raw_normal_errors": normal_errors,
-        "raw_anomaly_errors": anomaly_errors
+        "normal_error_source": normal_error_source
     }
 
     return metrics_dict, idx_main
-
 
 
 @torch.no_grad()

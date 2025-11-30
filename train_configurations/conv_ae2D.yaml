@@ -72,7 +72,8 @@ opt:
                       'val_roc_auc', 'best_val_roc_auc', "val_fpr", "best_val_fpr", "val_tpr", "best_val_tpr",
                       "best_val_thresh_f1"]  # list of metrics to report in the summary of the results
   other_reports: ['parameters_number']
-  order_by: 'val_loss'    # summary of the results is ordered by this value
+  #order_by: 'val_loss'    # summary of the results is ordered by this value
+  use_error: 'abs'   # 'abs' or 'se'
   num_workers: 12
   evaluate_metrics: True
   anomalies_dataset_subset: null  # subset used to compute the metrics during training
