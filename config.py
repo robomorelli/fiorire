@@ -43,6 +43,8 @@ DEFAULT_METRIC_MODES = {
     "mse": "min",
 }
 
+PREFERRED_METRICS = ["val_loss", "val_roc_auc", "val_f1_score", "val_tpr", "val_fpr"]
+
 all_feats_dict = {'fiorire': ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
                   'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
                   'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',

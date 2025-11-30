@@ -220,63 +220,76 @@ def infer_metric_mode(metric_name: str) -> str:
 
     return "max"  # default sicuro
 
-def get_opt_metric(cfg, metrics_loader=None):
+def get_opt_metric(cfg, metrics_loader=None, available_metrics=None):
     """
-    yeld dict like:
-    {
-        "metric_key": "...",
-        "mode": "min/max",
-        "best_metric": +/- inf
-    }
-    automatic iferece if opt_metric is NULL
+    Determines the optimization metric for early stopping or tuning.
+    Returns dict: {"metric_key":..., "mode":..., "best_metric":...}
     """
 
+    if available_metrics is None:
+        available_metrics = PREFERRED_METRICS + ["val_loss"]
+
+    metric_key = None
+    mode = None
+
     # -------------------------------
-    # Caso 1 → Config specify a metric
+    # Case 1 → opt_metric specified
     # -------------------------------
     if cfg.opt.opt_metric:
-        metric_key, mode = list(cfg.opt.opt_metric.items())[0]
+        opt_metric_dict = cfg.opt.opt_metric
+        if not isinstance(opt_metric_dict, dict):
+            raise ValueError(f"opt_metric must be a dict, got {type(opt_metric_dict)}")
 
-        # validate metric_key
+        # Take first key:mode pair
+        metric_key = list(opt_metric_dict.keys())[0]
+        mode_from_cfg = list(opt_metric_dict.values())[0] if list(opt_metric_dict.values())[0] else None
+
+        # Validate metric_key
         if metric_key not in available_metrics:
-            print(f"[WARN] Metric '{metric_key}' not valid → use 'val_loss'")
+            print(f"[WARN] Metric '{metric_key}' not valid → fallback to 'val_loss'")
             metric_key = "val_loss"
             mode = "min"
+        else:
+            # Infer mode if missing
+            default_mode = DEFAULT_METRIC_MODES.get(metric_key.replace("val_", ""), "min")
+            if mode_from_cfg is None:
+                mode = default_mode
+            else:
+                mode = mode_from_cfg
+                # Check consistency with default
+                if mode != default_mode:
+                    print(f"[WARNING] Provided mode '{mode}' for metric '{metric_key}' differs from standard '{default_mode}'. Using '{default_mode}' instead.")
+                    mode = default_mode
 
-        # if metric_loader necessary but absent → fallback
-        if metric_key != 'val_loss' and metrics_loader is None:
-            print(f"[WARN] Metric '{metric_key}'requires metrics_loader → use 'val_loss'")
+        # Check if metrics_loader required but missing
+        if metric_key != "val_loss" and metrics_loader is None:
+            print(f"[WARN] Metric '{metric_key}' requires metrics_loader → fallback 'val_loss'")
             metric_key = "val_loss"
             mode = "min"
 
     # -------------------------------
-    # Caso 2 → Config does not specify a metric
+    # Case 2 → opt_metric not specified
     # -------------------------------
     else:
-        # try to infer from preferred list
-        preferred = ["val_roc_auc", "val_f1_score", "val_loss", "val_tpr", "val_fpr"]
-
-        metric_key = None
-        for m in preferred:
+        # Try preferred metrics
+        for m in PREFERRED_METRICS:
             if m in cfg.opt.metrics_to_report:
                 metric_key = m
                 break
-
-        # fallback
         if metric_key is None:
             metric_key = "val_loss"
 
-        # infer mode
-        mode = infer_metric_mode(metric_key)
+        # Infer mode from DEFAULT_METRIC_MODES
+        mode = DEFAULT_METRIC_MODES.get(metric_key.replace("val_", ""), "min")
 
-        # if metric_loader necessary but absent → fallback
+        # If metrics_loader necessary but missing
         if metric_key != "val_loss" and metrics_loader is None:
-            print(f"Warning: opt_metric is set to {metric_key} but no metrics_loader is provided. Setting opt_metric to 'loss'.")
+            print(f"[WARN] Metric '{metric_key}' requires metrics_loader → fallback 'val_loss'")
             metric_key = "val_loss"
             mode = "min"
 
     # -------------------------------
-    # BEST METRIC INITIALIZATION
+    # Initialize best_metric
     # -------------------------------
     best_metric = float("inf") if mode == "min" else -float("inf")
 
@@ -1045,9 +1058,13 @@ def adjust_model_for_finetuning(
     # 0️⃣ Freeze Layers Function
     # -------------------------------
     def freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=None):
-        print("\n" + "="*80)
+        """
+        Congela selettivamente i layer del modello secondo freeze_layers.
+        Tiene conto dei layer “protetti” (es. bottleneck, adapter, latent).
+        """
+        print("\n" + "=" * 80)
         print("🧊 FREEZE-LAYERS: STARTING PROCEDURE")
-        print("="*80)
+        print("=" * 80)
 
         if freeze_layers is None:
             freeze_layers = []
@@ -1056,12 +1073,14 @@ def adjust_model_for_finetuning(
         elif isinstance(freeze_layers, str):
             freeze_layers = [freeze_layers]
 
+        # Caso speciale: '0' → nessun freeze
         if "0" in freeze_layers:
             print("\nℹ️ Freeze layers = '0' → no freezing applied (only protected layers)")
             freeze_layers = []
 
-        is_latent_strategy = fine_tuning_mode == "latent_space"
+        # Identifica layer protetti
         protected_keywords = ["adapter", "adaptive"]
+        is_latent_strategy = fine_tuning_mode == "latent_space"
         if is_latent_strategy:
             protected_keywords += ["latent", "bottleneck"]
 
@@ -1069,67 +1088,79 @@ def adjust_model_for_finetuning(
             return any(k in name.lower() for k in protected_keywords)
 
         def freeze_module(name, module):
-            print(f"❄️ FREEZE → {name}")
             for p in module.parameters(recurse=True):
                 p.requires_grad = False
+            print(f"❄️ FREEZE → {name}")
 
         def keep_module(name, module, reason="", protected=False):
             icon = "🔥"
             suffix = " (protected)" if protected else ""
-            print(f"   {icon} KEEP  → {name} {reason}{suffix}")
+            print(f"{icon} KEEP  → {name} {reason}{suffix}")
             for p in module.parameters(recurse=True):
                 p.requires_grad = True
 
-        if "all" in freeze_layers:
-            print("\n🚨 Freeze mode = 'all' (except protected)")
-            for name, module in model.named_modules():
-                if is_protected(name):
-                    keep_module(name, module, "(protected)", protected=True)
-                else:
-                    freeze_module(name, module)
-            print("\n✅ FREEZE COMPLETE (all)")
-            return
-
-        # Numeric freeze
-        numeric_layers = [int(item) for item in freeze_layers if item.isdigit()]
-        if numeric_layers:
-            max_n = max(numeric_layers)
-            print(f"\n🔢 Numeric freeze: freeze first {max_n} items")
-            frozen_count = 0
-            for name, module in model.named_modules():
-                if frozen_count >= max_n:
-                    keep_module(name, module)
-                    continue
-                if is_protected(name):
-                    keep_module(name, module, "(protected)", protected=True)
-                elif is_latent_strategy and "bottleneck" in name.lower():
-                    keep_module(name, module, "(latent_space trainable)")
-                else:
-                    freeze_module(name, module)
-                frozen_count += 1
-            print(f"\n✅ Numeric freeze complete ({frozen_count}/{max_n} items)")
-            return
-
-        # Standard freeze
+        # -----------------------------
+        # Gestione dei casi principali
+        # -----------------------------
         for name, module in model.named_modules():
             lname = name.lower()
-            if is_protected(name):
+            protected = is_protected(name)
+
+            if protected:
                 keep_module(name, module, "(protected)", protected=True)
                 continue
+
+            # Modalità 'all' → congela tutto tranne protetti
+            if "all" in freeze_layers:
+                freeze_module(name, module)
+                continue
+
+            # Modalità 'encoder-bottleneck' → congela encoder + bottleneck solo se non protetto
+            if "encoder-bottelneck" in freeze_layers or "encoder-bottleneck" in freeze_layers:
+                if "encoder" in lname:
+                    freeze_module(name, module)
+                elif "bottleneck" in lname:
+                    freeze_module(name, module)
+                else:
+                    keep_module(name, module)
+                continue
+
+            # Modalità 'encoder-decoder' → congela encoder + decoder, lascia libero bottleneck
+            if "encoder-decoder" in freeze_layers:
+                if "encoder" in lname or "decoder" in lname:
+                    freeze_module(name, module)
+                else:
+                    keep_module(name, module)
+                continue
+
+            # Modalità singoli layer
             if "encoder" in freeze_layers and "encoder" in lname:
                 freeze_module(name, module)
                 continue
             if "decoder" in freeze_layers and "decoder" in lname:
                 freeze_module(name, module)
                 continue
-            if "bottleneck" in lname or "latent" in lname:
-                if not is_latent_strategy and "bottleneck" in freeze_layers:
-                    freeze_module(name, module)
-                else:
-                    keep_module(name, module, "(protected)" if is_latent_strategy else "")
+            if "bottleneck" in freeze_layers and "bottleneck" in lname:
+                freeze_module(name, module)
                 continue
-            keep_module(name, module)
-        print("\n✅ FREEZE COMPLETE\n" + "="*80 + "\n")
+
+            # Freeze numerico: primi N moduli (opzionale, già gestito prima)
+            if any(item.isdigit() for item in freeze_layers):
+                numeric_layers = [int(item) for item in freeze_layers if item.isdigit()]
+                max_n = max(numeric_layers)
+                # Contatore dei moduli già congelati
+                freeze_count = getattr(model, "_freeze_count", 0)
+                if freeze_count < max_n:
+                    freeze_module(name, module)
+                    model._freeze_count = freeze_count + 1
+                else:
+                    keep_module(name, module)
+                continue
+
+            # Tutto il resto → non congelato
+            keep_module(name, module, "(default)")
+
+        print("\n✅ FREEZE COMPLETE\n" + "=" * 80 + "\n")
 
     freeze_layers = fine_tuning_cfg.opt.get("freeze_layers", None)
     if freeze_layers:
