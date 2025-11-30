@@ -49,7 +49,7 @@ def main(args):
                         scheduler=sched, resources_per_trial=resources_per_trial,
                         num_samples=int(args.num_samples),
                         #local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
-                        local_dir='./ray_results/{}_{}'.format(cfg.opt.exp_name, date_str),
+                        local_dir='./ray_results/{}_{}_{}'.format(args.project_name, cfg.opt.exp_name, date_str),
                         #sync_config=tune.SyncConfig(syncer=None),
                         name="{}".format(cfg.opt.exp_name),
                         progress_reporter=progress_reporter,   # <-- add this here

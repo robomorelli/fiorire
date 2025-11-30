@@ -106,16 +106,119 @@ def update_input_output(cfg):
 
 def get_optimizazion_objects(cfg, model, opt_metric_dict):
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.opt.lr)
+
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 'min', factor=0.8, patience=cfg.opt.lr_patience, threshold=0.0001,
-        threshold_mode='rel', cooldown=0,min_lr=9e-8, verbose=True)
+        optimizer,
+        mode=opt_metric_dict["mode"],        # 👈 ADESSO AUTOMATICO
+        factor=0.8,
+        patience=cfg.opt.lr_patience,
+        threshold=0.0001,
+        threshold_mode='rel',
+        cooldown=0,
+        min_lr=9e-8,
+        verbose=True
+    )
+
     criterion = nn.MSELoss()
-    early_stopping = EarlyStopping(patience=cfg.opt.es_patience, min_delta=0.0000001,
-                                   opt_metric_dict=opt_metric_dict) if cfg.opt.es_patience and opt_metric_dict else None
+
+    mode = opt_metric_dict["mode"]
+
+    if mode == "min":
+        min_delta = 1e-6
+    else:
+        min_delta = 3e-3
+
+    early_stopping = EarlyStopping(
+        patience=cfg.opt.es_patience,
+        min_delta=min_delta,
+        opt_metric_dict=opt_metric_dict
+    ) if cfg.opt.es_patience else None
 
     return optimizer, scheduler, criterion, early_stopping
 
+
+
+def infer_metric_mode(metric_name: str) -> str:
+    name = metric_name.lower()
+
+    # Abbiniamo pattern → mode
+    for key, mode in DEFAULT_METRIC_MODES.items():
+        if key in name:
+            return mode
+
+    # fallback: loss non matchato sopra
+    if "loss" in name:
+        return "min"
+
+    return "max"  # default sicuro
+
 def get_opt_metric(cfg, metrics_loader=None):
+    """
+    yeld dict like:
+    {
+        "metric_key": "...",
+        "mode": "min/max",
+        "best_metric": +/- inf
+    }
+    automatic iferece if opt_metric is NULL
+    """
+
+    # -------------------------------
+    # Caso 1 → Config specify a metric
+    # -------------------------------
+    if cfg.opt.opt_metric:
+        metric_key, mode = list(cfg.opt.opt_metric.items())[0]
+
+        # validate metric_key
+        if metric_key not in available_metrics:
+            print(f"[WARN] Metric '{metric_key}' not valid → use 'val_loss'")
+            metric_key = "val_loss"
+            mode = "min"
+
+        # if metric_loader necessary but absent → fallback
+        if metric_key != 'val_loss' and metrics_loader is None:
+            print(f"[WARN] Metric '{metric_key}'requires metrics_loader → use 'val_loss'")
+            metric_key = "val_loss"
+            mode = "min"
+
+    # -------------------------------
+    # Caso 2 → Config does not specify a metric
+    # -------------------------------
+    else:
+        # try to infer from preferred list
+        preferred = ["val_roc_auc", "val_f1_score", "val_loss", "val_tpr", "val_fpr"]
+
+        metric_key = None
+        for m in preferred:
+            if m in cfg.opt.metrics_to_report:
+                metric_key = m
+                break
+
+        # fallback
+        if metric_key is None:
+            metric_key = "val_loss"
+
+        # infer mode
+        mode = infer_metric_mode(metric_key)
+
+        # if metric_loader necessary but absent → fallback
+        if metric_key != "val_loss" and metrics_loader is None:
+            print(f"Warning: opt_metric is set to {metric_key} but no metrics_loader is provided. Setting opt_metric to 'loss'.")
+            metric_key = "val_loss"
+            mode = "min"
+
+    # -------------------------------
+    # BEST METRIC INITIALIZATION
+    # -------------------------------
+    best_metric = float("inf") if mode == "min" else -float("inf")
+
+    return {
+        "metric_key": metric_key,
+        "mode": mode,
+        "best_metric": best_metric
+    }
+
+def get_opt_metric_kp(cfg, metrics_loader=None):
     opt_metric_dict = {}
     metric_key, mode = list(cfg.opt.opt_metric.items())[0]
 

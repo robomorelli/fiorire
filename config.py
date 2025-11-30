@@ -24,9 +24,24 @@ conv_ae_ft_config_file = 'conv_ae_ft.yaml'
 conv_ae_1D_ft_config_file = 'conv_ae1D_ft.yaml'
 conv_ae_2D_ft_config_file = 'conv_ae2D_ft.yaml'
 
-available_metrics = ['val_loss', 'val_f1_score', 'val_roc_auc']
-available_modes = ['min', 'max']
+
+available_metrics = ["val_loss", "val_f1_score", "val_roc_auc", "val_fpr", "val_tpr"]
+available_modes = ["min", "max"]
 opt_metric_dict_keys = ["metric_key", "mode", "best_metric"]
+
+DEFAULT_METRIC_MODES = {
+    "loss": "min",
+    "f1": "max",
+    "precision": "max",
+    "recall": "max",
+    "accuracy": "max",
+    "auc": "max",
+    "fpr": "min",
+    "tpr": "max",
+    "error": "min",
+    "mae": "min",
+    "mse": "min",
+}
 
 all_feats_dict = {'fiorire': ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
                   'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
