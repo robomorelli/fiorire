@@ -236,6 +236,10 @@ class CONV_AE1D(nn.Module):
         self.cfg = cfg
         model_cfg = cfg.model
 
+        #if self.cfg.opt.get("fine_tuning",0):
+        #    self.in_channels  = len(torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.n_features)
+        #else:
+        #    self.in_channels = cfg.dataset.n_features
         self.in_channels = cfg.dataset.n_features
         self.kernel_size = model_cfg.kernel_size
         self.base_filters = model_cfg.base_filters
@@ -291,7 +295,38 @@ class CONV_AE1D(nn.Module):
             bottleneck_out_channels=self.encoder.bottleneck_out_channels,
         )
 
-    def forward(self, x):
+    def forward_with_adapters(self, x):
+        # 🔹 Input adapter (solo se presente)
+        if hasattr(self, "input_adapter") and self.input_adapter is not None:
+            x = self.input_adapter(x)
+
+        # 🔹 Encoder + bottleneck
         z = self.encoder(x)
+
+        # 🔹 Decoder
         out = self.decoder(z)
+
+        # 🔹 Output adapter (solo se presente)
+        if hasattr(self, "output_adapter") and self.output_adapter is not None:
+            out = self.output_adapter(out)
+
         return out
+
+    '''
+    def forward(self, x):
+        # input adapter (solo se presente)
+        if hasattr(self, "input_adapter") and self.input_adapter is not None:
+            x = self.input_adapter(x)
+
+        # encoder + bottleneck
+        enc = self.encoder(x)
+
+        # decoder
+        out = self.decoder(enc)
+
+        # output adapter (solo se presente)
+        if hasattr(self, "output_adapter") and self.output_adapter is not None:
+            out = self.output_adapter(out)
+
+        return out
+    '''

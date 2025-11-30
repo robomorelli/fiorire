@@ -247,8 +247,12 @@ class CONV_AE2D(nn.Module):
         self.compression_factor = model_cfg.compression_factor
         self.increasing = model_cfg.increasing
         self.dilation = model_cfg.dilation
-        self.h = cfg.dataset.n_features # or model_cfg.heigth if set there
-        self.w = cfg.dataset.seq_in_length
+        if self.cfg.opt.get("fine_tuning",0):
+            self.h = len(torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.feats)
+            self.w = torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.seq_in_length
+        else:
+            self.h = cfg.dataset.n_features  # or model_cfg.heigth if set there
+            self.w = cfg.dataset.seq_in_length
         self.halve_time = model_cfg.halve_time  # if True, halve only the time dimension when pooling
         self.halve_features = model_cfg.halve_features  # if True, halve only the feature dimension when pooling
         self.stride = model_cfg.stride if not model_cfg.pool else 1
@@ -323,8 +327,11 @@ class CONV_AE2D(nn.Module):
         pad = ((stride - 1) * in_size - stride + dilation * (kernel_size - 1) + 1) / 2
         return math.floor(pad)
 
-
     def forward(self, x):
+        if hasattr(self, "input_adapter") and self.input_adapter is not None:
+            x = self.input_adapter(x)
         enc = self.encoder(x)
         out = self.decoder(enc)
+        if hasattr(self, "output_adapter") and self.output_adapter is not None:
+            out = self.output_adapter(out)
         return out

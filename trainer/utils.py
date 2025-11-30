@@ -1,14 +1,13 @@
-from pandas.core.computation.ops import isnumeric
-
+from sklearn.metrics import roc_curve, auc, f1_score
 from utils.general import resolve_paths, infer_model_type, reduce_anomaly_mask
 from omegaconf import OmegaConf, ListConfig
 import torch
 import numpy as np
-import math
-from sklearn.metrics import roc_curve, auc, f1_score
 from tqdm import tqdm
 from typing import List, Optional
-import warnings
+import types
+import torch.nn.functional as F
+import traceback
 
 from config import *
 
@@ -105,11 +104,86 @@ def update_input_output(cfg):
     return cfg, feats, target
 
 def get_optimizazion_objects(cfg, model, opt_metric_dict):
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.opt.lr)
+
+    # ============================================================
+    # DEFAULT AUTOMATICO PER IL LR DEL BOTTLECK
+    # ============================================================
+    bottleneck_lr = getattr(cfg.opt, "bottleneck_lr", 0)
+
+    print("\n=================== OPTIMIZER SETUP ===================")
+    print(f"Main LR:          {cfg.opt.lr}")
+    print(f"Bottleneck LR:    {bottleneck_lr}  (0 → same LR as main)")
+    print("--------------------------------------------------------")
+
+    # ============================================================
+    # IDENTIFICA I PARAMETRI DEL BOTTLENECK
+    # ============================================================
+    bottleneck_params = []
+    main_params = []
+
+    for name, param in model.named_parameters():
+        if "bottleneck" in name.lower():
+            bottleneck_params.append(param)
+            print(f"   → Bottleneck param found: {name}")
+        else:
+            main_params.append(param)
+
+    # ============================================================
+    # GESTIONE WARNING: NESSUN BOTTLECK TROVATO
+    # ============================================================
+    if bottleneck_lr > 0 and len(bottleneck_params) == 0:
+        print("\n!!! WARNING: bottleneck_lr > 0 but NO bottleneck layers found in model !!!")
+        print("    → Falling back to SINGLE LR for all parameters\n")
+        bottleneck_lr = 0  # forza single LR
+
+    # ============================================================
+    # CASO 1: SINGLE LR (bottleneck_lr == 0)
+    # ============================================================
+    if bottleneck_lr == 0:
+        print(">>> [MODE] USING SINGLE LR FOR ALL MODEL PARAMETERS\n")
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=cfg.opt.lr)
+
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode=opt_metric_dict["mode"],
+            factor=0.8,
+            patience=cfg.opt.lr_patience,
+            threshold=0.0001,
+            threshold_mode='rel',
+            cooldown=0,
+            min_lr=9e-8,
+            verbose=True
+        )
+
+        criterion = nn.MSELoss()
+        min_delta = 1e-6 if opt_metric_dict["mode"] == "min" else 3e-3
+
+        early_stopping = EarlyStopping(
+            patience=cfg.opt.es_patience,
+            min_delta=min_delta,
+            opt_metric_dict=opt_metric_dict
+        ) if cfg.opt.es_patience else None
+
+        print("========================================================\n")
+        return optimizer, scheduler, criterion, early_stopping
+
+    # ============================================================
+    # CASO 2: LR DIVERSO PER BOTTLECNEK
+    # ============================================================
+    print("\n>>> [MODE] USING SEPARATE LR FOR BOTTLENECK")
+    print(f"Total bottleneck params: {len(bottleneck_params)}")
+    print(f"Total main params:       {len(main_params)}")
+    print("--------------------------------------------------------")
+
+    optimizer = torch.optim.Adam([
+        {"params": main_params,       "lr": cfg.opt.lr},
+        {"params": bottleneck_params, "lr": bottleneck_lr},
+    ])
 
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
-        mode=opt_metric_dict["mode"],        # 👈 ADESSO AUTOMATICO
+        mode=opt_metric_dict["mode"],
         factor=0.8,
         patience=cfg.opt.lr_patience,
         threshold=0.0001,
@@ -120,13 +194,7 @@ def get_optimizazion_objects(cfg, model, opt_metric_dict):
     )
 
     criterion = nn.MSELoss()
-
-    mode = opt_metric_dict["mode"]
-
-    if mode == "min":
-        min_delta = 1e-6
-    else:
-        min_delta = 3e-3
+    min_delta = 1e-6 if opt_metric_dict["mode"] == "min" else 3e-3
 
     early_stopping = EarlyStopping(
         patience=cfg.opt.es_patience,
@@ -134,8 +202,8 @@ def get_optimizazion_objects(cfg, model, opt_metric_dict):
         opt_metric_dict=opt_metric_dict
     ) if cfg.opt.es_patience else None
 
+    print("========================================================\n")
     return optimizer, scheduler, criterion, early_stopping
-
 
 
 def infer_metric_mode(metric_name: str) -> str:
@@ -380,7 +448,6 @@ def validate_one_epoch(
 
     return results, indices
 
-import pandas as pd
 
 @torch.no_grad()
 def test_anomaly_step(
@@ -544,8 +611,6 @@ def test_anomaly_step(
     anomaly_scores = all_errors.mean(dim=1)
     seq_true   = (all_masks.view(all_masks.size(0), -1).sum(dim=1) > 0).numpy().astype(int)
     seq_scores = anomaly_scores.mean(dim=1).numpy()
-
-    from sklearn.metrics import roc_curve, auc, f1_score
 
     fpr, tpr, thresholds = roc_curve(seq_true, seq_scores)
     roc_auc = auc(fpr, tpr)
@@ -742,8 +807,6 @@ def test_anomaly_step_kp(
     seq_true = (all_masks.view(all_masks.size(0), -1).sum(dim=1) > 0).numpy().astype(int)
     seq_scores = anomaly_scores.mean(dim=1).numpy()
 
-    from sklearn.metrics import roc_curve, auc, f1_score
-
     fpr, tpr, thresholds = roc_curve(seq_true, seq_scores)
     roc_auc = auc(fpr, tpr)
     candidate_thresholds = np.quantile(seq_scores, np.linspace(0, 1, num_thresh))
@@ -819,35 +882,7 @@ def test_anomaly_step_kp(
     return metrics_dict, normal_indices
 
 
-
-
-
-def adjust_model_for_finetuning(
-    fine_tuning_cfg,
-    model,
-    checkpoint,
-    pre_feats,
-    fine_feats,
-    pre_seq_len,
-    fine_seq_len,
-    conv_type="conv_ae2d",
-    device='cuda:0'
-):
-    """
-    Adjust the model structure for fine-tuning when input dimensions change,
-    and optionally freeze selected layers.
-    """
-
-    features_changed = pre_feats != fine_feats
-    seq_changed = pre_seq_len != fine_seq_len
-
-    print(f"🔍 Pre-training: feats={pre_feats}, seq={pre_seq_len}")
-    print(f"🔍 Fine-tuning: feats={fine_feats}, seq={fine_seq_len}")
-
-    # ============================================================
-    # 0️⃣ FREEZE LAYERS (after modifications)
-    # ============================================================
-
+'''
     def freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=None):
         """
         Congela layer con logging dettagliato.
@@ -977,62 +1012,153 @@ def adjust_model_for_finetuning(
 
         print("\n✅ FREEZE COMPLETATO")
         print("=" * 80 + "\n")
+'''
+
+
+
+def adjust_model_for_finetuning(
+    fine_tuning_cfg,
+    model,
+    checkpoint,
+    pre_feats,
+    fine_feats,
+    pre_seq_len,
+    fine_seq_len,
+    conv_type="conv_ae2d",
+    device='cuda:0'
+):
+    """
+    Adjust the model for fine-tuning when input dimensions change,
+    optionally freeze layers, and patch forward to handle adapters.
+
+    Conv1D and Conv2D supported. Adapters map input/output between
+    fine-tuning and pre-training shapes.
+    """
+
+    features_changed = pre_feats != fine_feats
+    seq_changed = pre_seq_len != fine_seq_len
+
+    print(f"🔍 Pre-training: feats={pre_feats}, seq={pre_seq_len}")
+    print(f"🔍 Fine-tuning: feats={fine_feats}, seq={fine_seq_len}")
+
+    # -------------------------------
+    # 0️⃣ Freeze Layers Function
+    # -------------------------------
+    def freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=None):
+        print("\n" + "="*80)
+        print("🧊 FREEZE-LAYERS: STARTING PROCEDURE")
+        print("="*80)
+
+        if freeze_layers is None:
+            freeze_layers = []
+        elif isinstance(freeze_layers, int):
+            freeze_layers = [str(freeze_layers)]
+        elif isinstance(freeze_layers, str):
+            freeze_layers = [freeze_layers]
+
+        if "0" in freeze_layers:
+            print("\nℹ️ Freeze layers = '0' → no freezing applied (only protected layers)")
+            freeze_layers = []
+
+        is_latent_strategy = fine_tuning_mode == "latent_space"
+        protected_keywords = ["adapter", "adaptive"]
+        if is_latent_strategy:
+            protected_keywords += ["latent", "bottleneck"]
+
+        def is_protected(name):
+            return any(k in name.lower() for k in protected_keywords)
+
+        def freeze_module(name, module):
+            print(f"❄️ FREEZE → {name}")
+            for p in module.parameters(recurse=True):
+                p.requires_grad = False
+
+        def keep_module(name, module, reason="", protected=False):
+            icon = "🔥"
+            suffix = " (protected)" if protected else ""
+            print(f"   {icon} KEEP  → {name} {reason}{suffix}")
+            for p in module.parameters(recurse=True):
+                p.requires_grad = True
+
+        if "all" in freeze_layers:
+            print("\n🚨 Freeze mode = 'all' (except protected)")
+            for name, module in model.named_modules():
+                if is_protected(name):
+                    keep_module(name, module, "(protected)", protected=True)
+                else:
+                    freeze_module(name, module)
+            print("\n✅ FREEZE COMPLETE (all)")
+            return
+
+        # Numeric freeze
+        numeric_layers = [int(item) for item in freeze_layers if item.isdigit()]
+        if numeric_layers:
+            max_n = max(numeric_layers)
+            print(f"\n🔢 Numeric freeze: freeze first {max_n} items")
+            frozen_count = 0
+            for name, module in model.named_modules():
+                if frozen_count >= max_n:
+                    keep_module(name, module)
+                    continue
+                if is_protected(name):
+                    keep_module(name, module, "(protected)", protected=True)
+                elif is_latent_strategy and "bottleneck" in name.lower():
+                    keep_module(name, module, "(latent_space trainable)")
+                else:
+                    freeze_module(name, module)
+                frozen_count += 1
+            print(f"\n✅ Numeric freeze complete ({frozen_count}/{max_n} items)")
+            return
+
+        # Standard freeze
+        for name, module in model.named_modules():
+            lname = name.lower()
+            if is_protected(name):
+                keep_module(name, module, "(protected)", protected=True)
+                continue
+            if "encoder" in freeze_layers and "encoder" in lname:
+                freeze_module(name, module)
+                continue
+            if "decoder" in freeze_layers and "decoder" in lname:
+                freeze_module(name, module)
+                continue
+            if "bottleneck" in lname or "latent" in lname:
+                if not is_latent_strategy and "bottleneck" in freeze_layers:
+                    freeze_module(name, module)
+                else:
+                    keep_module(name, module, "(protected)" if is_latent_strategy else "")
+                continue
+            keep_module(name, module)
+        print("\n✅ FREEZE COMPLETE\n" + "="*80 + "\n")
 
     freeze_layers = fine_tuning_cfg.opt.get("freeze_layers", None)
     if freeze_layers:
         print(f"🧊 Requested freeze layers: {freeze_layers}")
 
-    # ============================================================
-    # 1️⃣ Conv1D case
-    # ============================================================
+    # -------------------------------
+    # 1️⃣ Conv1D
+    # -------------------------------
     if conv_type.lower() == "conv_ae1d":
-        warnings.warn("🧩 Detected Conv1D model — check adapter behavior", UserWarning)
-
-        # -----------------------------------------
-        # INPUT ADAPTER (C_fine → C_pre)
-        # -----------------------------------------
         if features_changed:
             print(f"🔧 Adding Conv1D INPUT adapter: feats {fine_feats} → {pre_feats}")
-
-            adapter_in = nn.Conv1d(
-                in_channels=fine_feats,
-                out_channels=pre_feats,
-                kernel_size=1
-            )
+            adapter_in = nn.Conv1d(fine_feats, pre_feats, kernel_size=1)
             nn.init.kaiming_normal_(adapter_in.weight)
-
             model.input_adapter = adapter_in.to(device)
-            print("✅ Added Conv1D input adapter")
 
-        # -----------------------------------------
-        # OUTPUT ADAPTER (C_pre → C_fine)
-        # -----------------------------------------
-        if features_changed:
             print(f"🔧 Adding Conv1D OUTPUT adapter: feats {pre_feats} → {fine_feats}")
-
-            adapter_out = nn.Conv1d(
-                in_channels=pre_feats,
-                out_channels=fine_feats,
-                kernel_size=1
-            )
+            adapter_out = nn.Conv1d(pre_feats, fine_feats, kernel_size=1)
             nn.init.kaiming_normal_(adapter_out.weight)
-
             model.output_adapter = adapter_out.to(device)
-            print("✅ Added Conv1D output adapter")
 
-        # freeze AFTER adapters
         if freeze_layers:
             freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=fine_tuning_cfg.opt.fine_tuning_mode)
 
         return model
 
-    # ============================================================
-    # 2️⃣ Conv2D case
-    # ============================================================
+    # -------------------------------
+    # 2️⃣ Conv2D
+    # -------------------------------
     elif conv_type.lower() == "conv_ae2d":
-        print("🧩 Detected Conv2D model")
-
-        # If dimensions mismatch → input adapter and output adapter
         if features_changed or seq_changed:
             print("🔧 Adjusting Conv2D (features or sequence changed)")
 
@@ -1040,106 +1166,114 @@ def adjust_model_for_finetuning(
             if mode == "adaptive_layer":
                 print("⚙️ Fine-tuning mode: 'adaptive_layer' (learnable resizer)")
 
-                # -----------------------------------------
-                # INPUT ADAPTER (Hf,Wf → Hp,Wp)
-                # -----------------------------------------
-                print(f"🔧 Adding Conv2D INPUT adapter: {fine_feats},{fine_seq_len} → {pre_feats},{pre_seq_len}")
-                adapter_in = AdaptiveLearnableResizer2D(
-                    h_in=fine_feats,
-                    h_out=pre_feats,
-                    channels=1
-                )
+                # INPUT adapter: fine → pre
+                adapter_in = AdaptiveLearnableResizer2D(h_in=fine_feats, h_out=pre_feats, channels=1)
                 model.input_adapter = nn.Sequential(
-                    adapter_in.to(device),
+                    adapter_in,
                     nn.BatchNorm2d(1),
                     nn.ReLU(inplace=True)
-                )
-                print(f"✅ Added learnable input adapter")
+                ).to(device)
+                print(f"🔧 Added Conv2D INPUT adapter: {fine_feats},{fine_seq_len} → {pre_feats},{pre_seq_len}")
 
-                # -----------------------------------------
-                # OUTPUT ADAPTER (Hpre,Wpre → Hf,Wft)
-                # -----------------------------------------
-                print(
-                    f"🔧 Adding Conv2D OUTPUT adapter (LEARNABLE): {pre_feats},{pre_seq_len} → {fine_feats},{fine_seq_len}")
-
-                adapter_out = AdaptiveLearnableResizer2D(
-                    h_in=pre_feats,
-                    h_out=fine_feats,
-                    channels=1
-                )
-
+                # OUTPUT adapter: pre → fine
+                adapter_out = AdaptiveLearnableResizer2D(h_in=pre_feats, h_out=fine_feats, channels=1)
                 model.output_adapter = nn.Sequential(
-                    adapter_out.to(device),
+                    adapter_out,
                     nn.BatchNorm2d(1),
                     nn.ReLU(inplace=True)
-                )
-
-                print("✅ Added learnable output adapter")
+                ).to(device)
+                print(f"🔧 Added Conv2D OUTPUT adapter: {pre_feats},{pre_seq_len} → {fine_feats},{fine_seq_len}")
 
             else:
-                # Diagnostic mode — prints architecture info
+                # Diagnostic mode
                 print(f"ℹ️ Fine-tuning mode '{mode}' — structural diagnostics only")
-
                 old_flattened = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size", None)
                 new_flattened = getattr(getattr(model, "encoder", None), "flattened_size", None)
                 new_latent_dim = getattr(getattr(model, "encoder", None), "latent_dim", None)
                 new_h = getattr(getattr(model, "encoder", None), "h_enc", None)
                 new_w = getattr(getattr(model, "encoder", None), "w_enc", None)
-
                 print(f"  - old_flattened: {old_flattened}")
                 print(f"  - new_flattened: {new_flattened}")
                 print(f"  - new_latent_dim: {new_latent_dim}")
                 print(f"  - new_h: {new_h}, new_w: {new_w}")
                 print(f"🧱 New model architecture: {model}")
 
-            # freeze AFTER adding adapters
             if freeze_layers:
                 freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=fine_tuning_cfg.opt.fine_tuning_mode)
 
-            return model
-
-        # ======================================================
-        # No dimension mismatch → just freeze if requested
-        # ======================================================
         else:
             print("✅ Feature and sequence dimensions identical — no adapter needed")
-
             if freeze_layers:
                 freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=fine_tuning_cfg.opt.fine_tuning_mode)
 
-            return model
+        return model
 
     else:
         raise ValueError(f"Unsupported conv_type '{conv_type}' (expected 'conv_ae1d' or 'conv_ae2d')")
 
 
+# -------------------------------
+# Helper: patch forward dynamically
+# -------------------------------
+def patch_forward_if_needed(model):
+    """
+    Patch forward to handle input/output adapters dynamically
+    only if forward is not already compatible.
+    """
+    # Detect if forward already handles input_adapter
+    src = model.forward.__code__.co_names
+    if "input_adapter" in src or "output_adapter" in src:
+        # Forward already compatible
+        return
+
+    original_forward = model.forward
+    def new_forward(self, x):
+        if hasattr(self, "input_adapter") and self.input_adapter is not None:
+            x = self.input_adapter(x)
+        out = original_forward(x)
+        if hasattr(self, "output_adapter") and self.output_adapter is not None:
+            out = self.output_adapter(out)
+        return out
+
+    model.forward = types.MethodType(new_forward, model)
 
 
 def load_compatible_weights(model, checkpoint_state_dict):
     """
-    Load matching weights from a checkpoint into a model safely.
-    Only parameters with identical shapes are loaded.
+    Load matching weights from a checkpoint into a model safely,
+    and report exactly which keys are skipped or mismatched.
     """
     model_dict = model.state_dict()
     compatible_dict = {}
+    skipped_keys = []
 
     for k, v in checkpoint_state_dict.items():
-        if k in model_dict and isinstance(v, torch.Tensor) and v.shape == model_dict[k].shape:
-            compatible_dict[k] = v.detach()
+        if k in model_dict:
+            if isinstance(v, torch.Tensor) and v.shape == model_dict[k].shape:
+                compatible_dict[k] = v.detach()
+            else:
+                print(f"⚠️ Skipping {k} (shape mismatch: checkpoint {v.shape} vs model {model_dict[k].shape})")
+                skipped_keys.append(k)
         else:
-            print(f"⚠️ Skipping {k} (shape mismatch or missing key)")
+            print(f"⚠️ Skipping {k} (key not found in model)")
+            skipped_keys.append(k)
 
-    # Load only the compatible parameters
+    # Load only compatible
     msg = model.load_state_dict(compatible_dict, strict=False)
 
     # Summary
     print(f"✅ Loaded {len(compatible_dict)} compatible tensors")
+    print(f"⚠️ Skipped {len(skipped_keys)} incompatible/missing tensors:")
+    for k in skipped_keys:
+        print(f"   - {k}")
+
     if msg.missing_keys:
-        print(f"ℹ️ Missing keys in checkpoint: {len(msg.missing_keys)}")
+        print(f"ℹ️ Missing keys reported by PyTorch: {msg.missing_keys}")
     if msg.unexpected_keys:
-        print(f"ℹ️ Unexpected keys in checkpoint: {len(msg.unexpected_keys)}")
+        print(f"ℹ️ Unexpected keys reported by PyTorch: {msg.unexpected_keys}")
 
     return model
+
 
 
 def load_pretrained_checkpoint(model, config, device):
@@ -1266,7 +1400,6 @@ def load_pretrained_checkpoint(model, config, device):
 
     except Exception as e:
         print(f"❌ Error loading checkpoint: {e}")
-        import traceback
         traceback.print_exc()
         raise
 
@@ -1315,6 +1448,22 @@ def verify_pretrained_loading(model, checkpoint_path, device):
 # ===========================================
 # Learnable Adaptive Resizer 2D
 # ===========================================
+class AdaptiveLearnableResizer2D(nn.Module):
+    def __init__(self, h_in, h_out, channels=1):
+        super().__init__()
+        self.h_out = h_out
+        self.channels = channels
+        # learnable 1x1 conv
+        self.conv1x1 = nn.Conv2d(channels, channels, kernel_size=1)
+        nn.init.kaiming_normal_(self.conv1x1.weight, nonlinearity='relu')
+
+    def forward(self, x):
+        # deterministic resize
+        x = F.interpolate(x, size=(self.h_out, x.shape[-1]), mode='bilinear', align_corners=False)
+        # learnable conv
+        x = self.conv1x1(x)
+        return x
+''' 
 class AdaptiveLearnableResizer2D(nn.Module):
     """
     Learnable resizer that adapts the spatial height (H_in → H_out)
@@ -1369,3 +1518,4 @@ class AdaptiveLearnableResizer2D(nn.Module):
 
     def forward(self, x):
         return self.layer(x)
+'''

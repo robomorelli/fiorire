@@ -74,7 +74,7 @@ class AdaptiveMultiChannelInjector:
         self.delta: float = float(ds.get("delta_mean", 0.5))
         self.min_channels: int = int(ds.get("min_channels", 1)) if ds.get("min_channels", 1) else 1
         self.max_channels: int = int(ds.get("max_channels", 1)) if ds.get("max_channels", 1) else 1
-        self.channel_prob_decay: float = float(ds.get("channel_prob_decay", 1)) if ds.get("channel_prob_decay", 1) else 1
+        self.channel_prob_decay: float = float(ds.get("channel_prob_decay", 1)) if ds.get("channel_prob_decay", 1) else None
         self.channel_prob_decay = 1 if self.max_channels == 1 else self.channel_prob_decay
         self.channel_prob_decay = None if self.max_channels is None else self.channel_prob_decay
         self.random_seed = ds.get("random_seed", None)
@@ -361,7 +361,7 @@ def main(args):
         df_labels=df_with_anom_std["is_anomaly"],
         anomalies_log=anomalies_metadata["anomalies"],
         output_dir=sample_dir,
-        sample_pct=5.0,
+        sample_pct=0.1,
         extend_window_plot_factor=1.5
     )
 

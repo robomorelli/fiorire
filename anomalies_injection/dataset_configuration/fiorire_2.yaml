@@ -14,18 +14,19 @@ dataset:
     "ACT41044(UNIT_GIMB_VEL_3)", "ACT41052(ASSEMBLY_H_BRF_X)", "ACT41053(ASSEMBLY_H_BRF_Y)",
     "ACT41054(ASSEMBLY_H_BRF_Z)", "ACT41056(ASSEMBLY_T_BRF_X)", "ACT41057(ASSEMBLY_T_BRF_Y)",
     "ACT41058(ASSEMBLY_T_BRF_Z)"]
-  #dataset_subset: 1000_000
-  anomalies_type: [ 'GWN', 'Constant', 'Step', 'Impulse', 'PrincipalSubspaceAlteration' ]
-  anomaly_percentage: 5    # N%
-  delta_mean: 0.1
-  delta_std: 0.1
-  window_skewness: -3
+  target_channels:  null
+  dataset_subset: null
+  anomalies_type: [ 'GWN', 'Step', 'Impulse']#[ 'GWN', 'Constant', 'Step', 'Impulse', 'PrincipalSubspaceAlteration' ]
+  anomaly_percentage: 99    # N%
+  delta_mean: 0.3
+  #delta_std: 0.1
+  #window_skewness: -3
   window_mean: 16
-  window_std: 40
-  reset_interval: 100    #100 mean only one decay and length
+  #window_std: 40
+  #reset_interval: 100    #100 mean only one decay and length
   min_channels: 1
-  max_channels: null
-  channel_prob_decay: null    # null means no decay so all channels
+  max_channels: 1
+  channel_prob_decay: 1    # null means no decay so all channels
   random_seed: 123
   target: null    # only to eventually remove a presistent target column
 

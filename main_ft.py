@@ -91,7 +91,7 @@ if __name__ == "__main__":
     parser.add_argument("--config_file", default='conv_ae2D_ft', help="[conv_ae1D_ft, conv_ae2D_ft, lstm_ft]")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
     parser.add_argument("--wandb", default=1, type=int, help="the model you want to hpo")
-    parser.add_argument("--project_name", default='2d_fine_tuning_test', help="the model you want to hpo")
+    parser.add_argument("--project_name", default='hpo_full_2D_3anomalies_delta3_ft', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
     parser.add_argument("--debug_mode", default=0, help="the model you want to hpo")
