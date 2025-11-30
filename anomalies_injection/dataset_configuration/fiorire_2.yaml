@@ -17,6 +17,7 @@ dataset:
   target_channels:  null
   dataset_subset: null
   anomalies_type: [ 'GWN', 'Step', 'Impulse']#[ 'GWN', 'Constant', 'Step', 'Impulse', 'PrincipalSubspaceAlteration' ]
+  fake_anomalies: True
   anomaly_percentage: 99    # N%
   delta_mean: 0.3
   #delta_std: 0.1

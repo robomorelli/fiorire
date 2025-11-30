@@ -74,13 +74,18 @@ def get_scaler(cfg, df_fit=None, df_transform=None):
             "DataFrames for fitting and transforming must have the same columns."
 
     # --- Extract scaler name and parameters ---
-    scaler_name = scaler_cfg.split('-')[0]
+    parts = scaler_cfg.split('-')
+    scaler_name = parts[0]
 
     if scaler_name == 'StandardScaler':
         scaler = StandardScaler()
     elif scaler_name == 'RobustScaler':
-        q1 = float(scaler_cfg.split('-')[1])
-        q2 = float(scaler_cfg.split('-')[2])
+        # Check if quantiles are provided
+        if len(parts) >= 3:
+            q1 = float(parts[1])
+            q2 = float(parts[2])
+        else:
+            q1, q2 = 0.25, 0.75  # default
         scaler = RobustScaler(quantile_range=(q1 * 100, q2 * 100))
     else:
         raise ValueError(f"Scaler '{scaler_name}' not supported.")
@@ -108,6 +113,7 @@ def get_scaler(cfg, df_fit=None, df_transform=None):
         return scaler, df_scaled, scaler_params
     else:
         return scaler, None, None
+
 
 
 def serialize_scaler(scaler):
