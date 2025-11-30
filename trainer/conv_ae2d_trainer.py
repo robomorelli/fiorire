@@ -100,6 +100,7 @@ class trainCONVAE2D(tune.Trainable):
             desc=f"Epoch {self.current_epoch} [Val]",
             evaluate_metrics=evaluate_metrics,
             normal_anomalous_ratio=self.cfg.opt.normal_anomalous_ratio,
+            num_thresholds=self.cfg.opt.get("num_thresholds", 100),
             use_error=self.cfg.opt.get("use_error", "abs")
         )
 
@@ -113,6 +114,8 @@ class trainCONVAE2D(tune.Trainable):
         }
         # Combine loggable metrics
         current_val_loss = self.val_results["val_loss"]
+        print(f"Epoch {self.current_epoch} - Avg Val Loss: {current_val_loss:.6f}")
+
         # optional metrics
         current_f1, current_roc_auc = self.val_results.get("val_f1_score", -float(np.inf)), self.val_results.get(
             "val_roc_auc", -float(np.inf))
@@ -130,10 +133,7 @@ class trainCONVAE2D(tune.Trainable):
             if current_roc_auc > self.best_val_roc_auc:
                 self.best_val_roc_auc = current_roc_auc
                 print(f"INFO: New best ROC AUC: {self.best_val_roc_auc:.4f} at epoch {self.current_epoch}")
-            if current_roc_auc > self.best_val_roc_auc:
-                self.best_val_roc_auc = current_roc_auc
-                print(f"INFO: New best ROC AUC: {self.best_val_roc_auc:.4f} at epoch {self.current_epoch}")
-            if current_val_loss > self.best_val_loss:
+            if current_val_loss < self.best_val_loss:
                 self.best_val_loss = current_val_loss
                 print(f"INFO: New best Val Loss: {self.best_val_loss:.6f} at epoch {self.current_epoch}")
             if current_fpr > self.best_fpr:
@@ -156,7 +156,7 @@ class trainCONVAE2D(tune.Trainable):
         # example of self.cfg.opt_metric: {'val_loss': 'min'}
         # Step 2: Save model only if current metric is better
         # 🔑 Unified improvement + early stopping
-        print(f"Epoch {self.current_epoch} - Avg Val Loss: {current_val_loss:.6f}")
+
         current_metric = result[self.metric_key]  # which one ios used as a metric?
         improved, self.best_metric = self.early_stopping(current_metric)
         self.scheduler.step(current_val_loss)

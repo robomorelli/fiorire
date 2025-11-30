@@ -37,7 +37,7 @@ dataset:
   align_data: 1
   detect_flag: 1
   data_path: './data/fiorire_2/nominal_merged.csv'
-  seq_in_length_into_chunk: 2000    # number of sequences for each split chunk
+  seq_in_length_into_chunk: 200    # number of sequences for each split chunk
   seq_out_length: null
   train_val_split: 0.8
   shuffle_train: True #shuffle the idx of the train
@@ -68,7 +68,7 @@ resources:
 opt:
   seed: 42
   opt_metric: {'val_roc_auc':'max'}   #val_loss; val_f1_score; val_roc_auc This is the metric key used to rank the models (the optimization is still on the loss)
-  metrics_to_report: ['train_loss', 'val_f1_score', 'best_val_f1_score',
+  metrics_to_report: ['train_loss', 'val_loss', 'val_f1_score', 'best_val_f1_score',
                       'val_roc_auc', 'best_val_roc_auc', "val_fpr", "best_val_fpr", "val_tpr", "best_val_tpr",
                       "best_val_thresh_f1"]  # list of metrics to report in the summary of the results
   other_reports: ['parameters_number']
@@ -79,6 +79,7 @@ opt:
   anomalies_dataset_subset: null  # subset used to compute the metrics during training
   keep_anoms_only_from_val: True
   n_std: [1, 3]
+  num_thresholds: 100
   metrics_dataset_path: './data/fiorire_2/nominal_merged_delta_3_window_mean_16_perc_99_GWN_Step_Impulse_num_target_channels_19_with_anomalies.csv'  # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
   take_only_anomalies_from_metric_loader: True
   detect_anomaly_epoch_freq: 1

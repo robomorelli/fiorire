@@ -409,6 +409,7 @@ def validate_one_epoch(
     desc: str = "Validation",
     evaluate_metrics: bool = True,
     normal_anomalous_ratio: int = 1,
+    num_thresholds=50,
     use_error:str = "abs" ):
 
     model.eval()
@@ -438,19 +439,18 @@ def validate_one_epoch(
 
     # Optionally evaluate anomaly detection metrics
     if evaluate_metrics:
-        print("\n[INFO] Evaluating anomaly detection metrics...usige_error =", use_error)
+        print("\n[INFO] Evaluating anomaly detection metrics...with error =", use_error)
         test_results, indices = test_anomaly_step(
             model=model,
             metric_dataloader=metric_loader,
             device=device,
             external_normal_errors=all_errors,
             compare_external_with_loader=False,
-            num_thresh=10,
+            num_thresh=num_thresholds,
             epsilon=1e-5,
             desc=f"Testing anomalies ({use_error})",
             normal_anomalies_ratio=normal_anomalous_ratio,
             seed=123,
-            shuffle=True,
             use_error=use_error
         )
 
@@ -483,12 +483,11 @@ def test_anomaly_step(
     device="cuda",
     external_normal_errors=None,
     compare_external_with_loader=False,
-    num_thresh=10,
+    num_thresh=100,
     epsilon=1e-5,
     desc="Testing anomalies",
     normal_anomalies_ratio=1,
     seed=123,
-    shuffle=True,
     use_error="abs"  # "abs" = |x - y|, "se" = (x - y)^2
 ):
     model.eval()
@@ -687,6 +686,39 @@ def test_anomaly_step(
         "sampled_normal_indices": idx_main,
         "normal_error_source": normal_error_source
     }
+
+    '''
+    # Flatten per timestep
+    scores = val_anomaly_scores.flatten().numpy()
+    labels = val_labels.flatten().numpy()
+    
+    # Separiamo normali e anomalie
+    scores_norm = scores[labels == 0]
+    scores_anom = scores[labels == 1]
+    
+    # Statistiche rapide
+    print("Normali:")
+    print(f"  mean={scores_norm.mean():.4f}, std={scores_norm.std():.4f}, min={scores_norm.min():.4f}, max={scores_norm.max():.4f}")
+    print("Anomalie:")
+    print(f"  mean={scores_anom.mean():.4f}, std={scores_anom.std():.4f}, min={scores_anom.min():.4f}, max={scores_anom.max():.4f}")
+    
+    # Istogramma
+    plt.figure(figsize=(8,5))
+    plt.hist(scores_norm, bins=50, alpha=0.6, label="Normali")
+    plt.hist(scores_anom, bins=50, alpha=0.6, label="Anomalie")
+    plt.xlabel("Score di ricostruzione (L2 o SE)")
+    plt.ylabel("Conteggio")
+    plt.title("Distribuzione dei punteggi di ricostruzione per timestep")
+    plt.legend()
+    plt.show()
+    
+    # Boxplot
+    plt.figure(figsize=(6,4))
+    plt.boxplot([scores_norm, scores_anom], labels=["Normali", "Anomalie"])
+    plt.ylabel("Score di ricostruzione")
+    plt.title("Boxplot score normali vs anomalie")
+    plt.show()
+    '''
 
     return metrics_dict, idx_main
 
@@ -982,7 +1014,7 @@ def adjust_model_for_finetuning(
                 continue
 
             # Modalità 'encoder-bottleneck' → congela encoder + bottleneck solo se non protetto
-            if "encoder-bottelneck" in freeze_layers or "encoder-bottleneck" in freeze_layers:
+            if "encoder-bottleneck" in freeze_layers or "encoder-bottleneck" in freeze_layers:
                 if "encoder" in lname:
                     freeze_module(name, module)
                 elif "bottleneck" in lname:
