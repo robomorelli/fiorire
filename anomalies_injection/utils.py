@@ -146,19 +146,6 @@ def load_data(cfg):
 
     df = load_dataframe(cfg)
 
-    cfg.dataset.target = (
-        cfg.dataset.target
-        if isinstance(cfg.dataset.target, (list, ListConfig))
-        else [cfg.dataset.target] if cfg.dataset.target
-        else None
-    )
-
-    columns = [x for x in cfg.dataset.feats if x not in cfg.dataset.target] if cfg.dataset.target else cfg.dataset.feats
-
-    df = df[columns].dropna()
-    #if cfg.dataset.dataset_subset:
-    #    df = df.iloc[:cfg.dataset.dataset_subset, :]
-
     flag_col = getattr(cfg.dataset, "flag_col", None)
     align_data = getattr(cfg.dataset, "align_data", False)
     detect_flag = getattr(cfg.dataset, "detect_flag", False)
@@ -192,6 +179,18 @@ def load_data(cfg):
                     print("⚠️ No flag change detected — dataset not trimmed.")
             else:
                 print("⚠️ No valid flag column found in cfg.dataset.flag_column.")
+
+    cfg.dataset.target = (
+        cfg.dataset.target
+        if isinstance(cfg.dataset.target, (list, ListConfig))
+        else [cfg.dataset.target] if cfg.dataset.target
+        else None
+    )
+
+    columns = [x for x in cfg.dataset.feats if x not in cfg.dataset.target] if cfg.dataset.target else cfg.dataset.feats
+
+    df = df[columns].dropna()
+
 
     return df
 

@@ -12,7 +12,7 @@ dataset:
   target_channels:  null
   dataset_subset: null
   anomalies_type: ['GWN', 'Impulse', 'Step', 'Constant'] #'Constant', 'Step',
-  anomaly_percentage: 99   # N%
+  anomaly_percentage: 1   # N%
   delta_mean: 0.1
   #delta_std: 0.05
   #window_skewness: -3

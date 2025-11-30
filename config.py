@@ -31,11 +31,11 @@ opt_metric_dict_keys = ["metric_key", "mode", "best_metric"]
 
 DEFAULT_METRIC_MODES = {
     "loss": "min",
-    "f1": "max",
+    "f1_score": "max",
     "precision": "max",
     "recall": "max",
     "accuracy": "max",
-    "auc": "max",
+    "roc_auc": "max",
     "fpr": "min",
     "tpr": "max",
     "error": "min",

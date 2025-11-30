@@ -237,7 +237,7 @@ def get_opt_metric(cfg, metrics_loader=None, available_metrics=None):
     # -------------------------------
     if cfg.opt.opt_metric:
         opt_metric_dict = cfg.opt.opt_metric
-        if not isinstance(opt_metric_dict, dict):
+        if not isinstance(vars(opt_metric_dict), dict):
             raise ValueError(f"opt_metric must be a dict, got {type(opt_metric_dict)}")
 
         # Take first key:mode pair
@@ -476,6 +476,196 @@ def test_anomaly_step(
         seed=123,
         shuffle=True,
 ):
+    model.eval()
+    anomaly_errors_list = []
+    anomaly_masks_list = []
+    normal_errors_list = [] if external_normal_errors is None or compare_external_with_loader else None
+
+    normal_running_sum = 0.0
+    normal_running_count = 0
+    anom_running_sum = 0.0
+    anom_running_count = 0
+
+    normal_bar = tqdm(total=0, position=0, leave=True, desc="Normals")
+    anom_bar   = tqdm(total=0, position=1, leave=True, desc="Anomalies")
+
+    model_type, last_layer = infer_model_type(model)
+
+    # ==============================
+    # 1) PASS THROUGH DATALOADER
+    # ==============================
+    for batch in tqdm(metric_dataloader, desc=desc, position=2):
+        x, target, mask, *_ = batch
+        x, target = x.to(device), target.to(device)
+
+        is_anom = mask.view(mask.size(0), -1).sum(dim=1) > 0
+        is_norm = ~is_anom
+
+        # Anomalies
+        if is_anom.any():
+            x_anom, target_anom, mask_anom = x[is_anom], target[is_anom], mask[is_anom]
+            recon = model(x_anom)
+            err_anom = torch.abs(recon - target_anom).cpu()
+            if last_layer == "Conv2d":
+                err_anom = torch.squeeze(err_anom)
+            anomaly_errors_list.append(err_anom)
+            anomaly_masks_list.append(mask_anom.cpu())
+
+            # update progress
+            batch_mean = err_anom.mean().item()
+            anom_running_sum += err_anom.sum().item()
+            anom_running_count += err_anom.numel()
+            global_mean = anom_running_sum / anom_running_count
+            anom_bar.set_postfix({"batch_mean": f"{batch_mean:.6f}", "global_mean": f"{global_mean:.6f}"})
+            anom_bar.update(1)
+
+        # Normals
+        if is_norm.any() and normal_errors_list is not None:
+            x_norm, target_norm = x[is_norm], target[is_norm]
+            recon = model(x_norm)
+            err_norm = torch.abs(recon - target_norm).cpu()
+            if last_layer == "Conv2d":
+                err_norm = torch.squeeze(err_norm)
+            normal_errors_list.append(err_norm)
+
+            batch_mean = err_norm.mean().item()
+            normal_running_sum += err_norm.sum().item()
+            normal_running_count += err_norm.numel()
+            global_mean = normal_running_sum / normal_running_count
+            normal_bar.set_postfix({"batch_mean": f"{batch_mean:.6f}", "global_mean": f"{global_mean:.6f}"})
+            normal_bar.update(1)
+
+    normal_bar.close()
+    anom_bar.close()
+
+    anomaly_errors = torch.cat(anomaly_errors_list, dim=0)  # [N_anom, C, L]
+    anomaly_masks  = torch.cat(anomaly_masks_list, dim=0)   # [N_anom, 1, L]
+
+    # ==============================
+    # 2) NORMAL ERROR SOURCE
+    # ==============================
+    if external_normal_errors is not None:
+        if last_layer == "Conv2d":
+            external_normal_errors = torch.squeeze(external_normal_errors)
+        normal_errors_all = external_normal_errors.cpu()
+        normal_error_source = "external"
+        normal_loader_all = torch.cat(normal_errors_list, dim=0) if compare_external_with_loader else None
+    else:
+        normal_errors_all = torch.cat(normal_errors_list, dim=0)
+        normal_loader_all = None
+        normal_error_source = "loader"
+
+    # ==============================
+    # 3) SAMPLE NORMAL SEQUENCES
+    # ==============================
+    N_anom = anomaly_errors.shape[0]
+    N_norm_needed = int(N_anom * normal_anomalies_ratio)
+    N_norm_needed = min(N_norm_needed, normal_errors_all.shape[0])
+    np.random.seed(seed)
+    idx_main = np.random.permutation(normal_errors_all.shape[0])[:N_norm_needed]
+    normal_errors = normal_errors_all[idx_main]
+
+    print(f"\n[INFO] Selected anomalous sequences: {N_anom}")
+    print(f"[INFO] Selected normal sequences:    {normal_errors.shape[0]}")
+    print(f"[INFO] Normal error source:          {normal_error_source}")
+
+    # ==============================
+    # 4) NORMALIZE
+    # ==============================
+    normal_perm  = normal_errors.permute(0, 2, 1)
+    anomaly_perm = anomaly_errors.permute(0, 2, 1)
+    C = normal_perm.shape[2]
+
+    flat_norm = normal_perm.reshape(-1, C).float()
+    normalization_factor = torch.quantile(flat_norm, 0.5, dim=0)
+    norm = normalization_factor.view(1, 1, C) + epsilon
+
+    normal_norm  = normal_perm  / norm
+    anomaly_norm = anomaly_perm / norm
+
+    masks_norm = torch.zeros((normal_norm.shape[0], anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int)
+
+    all_errors = torch.cat([normal_norm, anomaly_norm], dim=0)  # [N, L, C]
+    all_masks  = torch.cat([masks_norm, anomaly_masks], dim=0)   # [N, L, 1]
+
+    N, T, C = all_errors.shape
+
+    # ==============================
+    # 5) STEP-WISE ERROR (L2)
+    # ==============================
+    val_anomaly_scores = torch.norm(all_errors, p=2, dim=2)  # [N, T]
+    val_labels = (all_masks.view(N, T, -1).sum(dim=2) > 0).int()  # [N, T]
+
+    # Flatten for global ROC/F1 like before
+    flat_scores = val_anomaly_scores.flatten().numpy()
+    flat_labels = val_labels.flatten().numpy()
+
+    fpr, tpr, thresholds = roc_curve(flat_labels, flat_scores)
+    roc_auc = auc(fpr, tpr)
+
+    candidate_thresholds = np.quantile(flat_scores, np.linspace(0, 1, num_thresh))
+    f1s = [f1_score(flat_labels, (flat_scores >= t).astype(int)) for t in candidate_thresholds]
+
+    ix_f1 = np.argmax(f1s)
+    ix_youden = np.argmax(tpr - fpr)
+
+    # ==============================
+    # 6) DISTRIBUTION ERROR STATS (optional)
+    # ==============================
+    def print_error_stats(name, tensor):
+        flat = tensor.flatten().numpy()
+        print(f"\n[ERROR DISTRIBUTION] {name}")
+        print(f"  mean:      {flat.mean():.6f}")
+        print(f"  std:       {flat.std():.6f}")
+        print(f"  min/max:   {flat.min():.6f} / {flat.max():.6f}")
+        print(f"  q1,q5,q25: {np.quantile(flat, [0.01, 0.05, 0.25])}")
+        print(f"  median:    {np.quantile(flat, 0.50):.6f}")
+        print(f"  q75,q95:   {np.quantile(flat, [0.75, 0.95])}")
+
+    print_error_stats("NORMAL sequences", normal_errors)
+    print_error_stats("ANOMALOUS sequences", anomaly_errors)
+
+    # ==============================
+    # 7) BUILD RETURN DICT (original metric names)
+    # ==============================
+    metrics_dict = {
+        "metrics_results": {
+            "val_anomaly_scores": val_anomaly_scores,  # [N, T]
+            "val_labels": val_labels,                  # [N, T]
+
+            "val_roc_auc": roc_auc,
+            "val_fpr": fpr[ix_youden],
+            "val_tpr": tpr[ix_youden],
+            "val_best_thresh_youden": thresholds[ix_youden],
+            "val_best_thresh_f1": candidate_thresholds[ix_f1],
+            "val_f1_score": f1s[ix_f1],
+
+            "val_normalization_factor": normalization_factor
+        },
+        "sampled_normal_indices": idx_main,
+        "normal_error_source": normal_error_source,
+        "raw_normal_errors": normal_errors,
+        "raw_anomaly_errors": anomaly_errors
+    }
+
+    return metrics_dict, idx_main
+
+
+
+@torch.no_grad()
+def test_anomaly_step_kp(
+        model,
+        metric_dataloader,
+        device="cuda",
+        external_normal_errors=None,
+        compare_external_with_loader=False,
+        num_thresh=10,
+        epsilon=1e-5,
+        desc="Testing anomalies",
+        normal_anomalies_ratio=1,
+        seed=123,
+        shuffle=True,
+):
 
     model.eval()
     anomaly_errors_list = []
@@ -663,369 +853,6 @@ def test_anomaly_step(
 
     return metrics_dict, idx_main
 
-
-
-@torch.no_grad()
-def test_anomaly_step_kp(
-        model,
-        metric_dataloader,
-        device="cuda",
-        external_normal_errors=None,  # only for alternative metrics
-        num_thresh=10,
-        epsilon=1e-5,
-        desc="Testing anomalies",
-        normal_anomalies_ratio=1,
-        seed=123,
-        shuffle=True,
-):
-    """
-    Anomaly testing (Method B only: L1 feature-wise errors)
-
-    Extra features:
-    - Two tqdm bars:
-        * Normal sequences: batch mean error + global mean error
-        * Anomalous sequences: batch mean error + global mean error
-    - Everything printed through tqdm bars (no raw prints)
-    """
-
-    model.eval()
-
-    anomaly_errors_list = []
-    anomaly_masks_list = []
-    normal_errors_list = []
-
-    # Running accumulators for tqdm bars
-    normal_running_sum = 0.0
-    normal_running_count = 0
-    anom_running_sum = 0.0
-    anom_running_count = 0
-
-    # Two progress bars
-    normal_bar = tqdm(total=0, position=0, leave=True, desc="Normals")
-    anom_bar = tqdm(total=0, position=1, leave=True, desc="Anomalies")
-
-    # ----------------------------------------
-    # 1) Single pass over dataloader
-    # ----------------------------------------
-    for batch in tqdm(metric_dataloader, desc=desc, position=2):
-        x, target, mask, *_ = batch
-        x, target = x.to(device), target.to(device)
-
-        is_anom = mask.view(mask.size(0), -1).sum(dim=1) > 0
-        is_norm = ~is_anom
-
-        # ---------- ANOMALOUS ----------
-        if is_anom.any():
-            x_anom, target_anom, mask_anom = x[is_anom], target[is_anom], mask[is_anom]
-            recon = model(x_anom)
-            err_anom = torch.abs(recon - target_anom).cpu()  # Method B: L1 error
-            anomaly_errors_list.append(err_anom)
-            anomaly_masks_list.append(mask_anom.cpu())
-
-            # Batch mean
-            batch_mean = err_anom.mean().item()
-
-            # Update running global mean
-            anom_running_sum += err_anom.sum().item()
-            anom_running_count += err_anom.numel()
-            global_mean = anom_running_sum / anom_running_count
-
-            # Update tqdm bar
-            anom_bar.set_postfix({
-                "batch_mean": f"{batch_mean:.6f}",
-                "global_mean": f"{global_mean:.6f}"
-            })
-            anom_bar.update(1)
-
-        # ---------- NORMAL ----------
-        if is_norm.any():
-            x_norm, target_norm = x[is_norm], target[is_norm]
-            recon = model(x_norm)
-            err_norm = torch.abs(recon - target_norm).cpu()  # Method B
-            normal_errors_list.append(err_norm)
-
-            # Batch mean
-            batch_mean = err_norm.mean().item()
-
-            # Update running global mean
-            normal_running_sum += err_norm.sum().item()
-            normal_running_count += err_norm.numel()
-            global_mean = normal_running_sum / normal_running_count
-
-            # Update tqdm bar
-            normal_bar.set_postfix({
-                "batch_mean": f"{batch_mean:.6f}",
-                "global_mean": f"{global_mean:.6f}"
-            })
-            normal_bar.update(1)
-
-    # Close bars
-    normal_bar.close()
-    anom_bar.close()
-
-    # ----------------------------------------
-    # 2) Concatenate tensors
-    # ----------------------------------------
-    anomaly_errors = torch.cat(anomaly_errors_list, dim=0)
-    anomaly_masks = torch.cat(anomaly_masks_list, dim=0)
-    normal_errors_all = torch.cat(normal_errors_list, dim=0)
-
-    # ----------------------------------------
-    # 3) Sample normals according to ratio
-    # ----------------------------------------
-    N_anom = anomaly_errors.shape[0]
-    N_norm_needed = int(N_anom * normal_anomalies_ratio)
-
-    if N_norm_needed > normal_errors_all.shape[0]:
-        print(f"WARNING: Not enough normal sequences. Using all available ({normal_errors_all.shape[0]})")
-        N_norm_needed = normal_errors_all.shape[0]
-
-    np.random.seed(seed)
-    perm = np.random.permutation(normal_errors_all.shape[0])
-    sampled_idx = perm[:N_norm_needed]
-    normal_errors = normal_errors_all[sampled_idx]
-    normal_indices = sampled_idx
-
-    # ----------------------------------------
-    # 4) Infer number of features
-    # ----------------------------------------
-    model_type, last_layer = infer_model_type(model)
-    if last_layer == 'Conv2d':
-        anomaly_errors = torch.squeeze(anomaly_errors)
-        normal_errors = torch.squeeze(normal_errors)
-
-    C = normal_errors.shape[1]
-
-    # ----------------------------------------
-    # 5) Feature-wise normalization (main metrics)
-    # ----------------------------------------
-    normal_perm = normal_errors.permute(0, 2, 1)
-    anomaly_perm = anomaly_errors.permute(0, 2, 1)
-
-    flat_norm = normal_perm.reshape(-1, C).float()
-    normalization_factor = torch.quantile(flat_norm, 0.5, dim=0)
-    norm = normalization_factor.view(1, 1, C) + epsilon
-
-    normal_norm = normal_perm / norm
-    anomaly_norm = anomaly_perm / norm
-
-    all_errors = torch.cat([normal_norm, anomaly_norm], dim=0)
-    masks_norm = torch.zeros((normal_norm.shape[0], anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int)
-    all_masks = torch.cat([masks_norm, anomaly_masks], dim=0)
-
-    # ----------------------------------------
-    # 6) Compute per-sequence scores (main metrics)
-    # ----------------------------------------
-    anomaly_scores = all_errors.mean(dim=1)
-    seq_true = (all_masks.view(all_masks.size(0), -1).sum(dim=1) > 0).numpy().astype(int)
-    seq_scores = anomaly_scores.mean(dim=1).numpy()
-
-    fpr, tpr, thresholds = roc_curve(seq_true, seq_scores)
-    roc_auc = auc(fpr, tpr)
-    candidate_thresholds = np.quantile(seq_scores, np.linspace(0, 1, num_thresh))
-    f1s = [f1_score(seq_true, (seq_scores >= t).astype(int)) for t in candidate_thresholds]
-
-    ix_f1 = np.argmax(f1s)
-    ix_youden = np.argmax(tpr - fpr)
-
-    # ----------------------------------------
-    # 7) Alternative metrics (optional)
-    # ----------------------------------------
-    metrics_alt = None
-    if external_normal_errors is not None:
-        model_type, last_layer = infer_model_type(model)
-        if last_layer == 'Conv2d':
-            external_normal_errors = torch.squeeze(external_normal_errors)
-
-        N_ext = external_normal_errors.shape[0]
-        flat_ext = external_normal_errors.permute(0, 2, 1).reshape(-1, C).float()
-        norm_ext_factor = torch.quantile(flat_ext, 0.5, dim=0)
-        norm_ext = norm_ext_factor.view(1, 1, C) + epsilon
-        ext_norm = external_normal_errors.permute(0, 2, 1) / norm_ext
-
-        all_errors_ext = torch.cat([ext_norm, anomaly_norm], dim=0)
-        masks_ext = torch.cat([
-            torch.zeros((N_ext, anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int),
-            anomaly_masks
-        ], dim=0)
-
-        scores_ext = all_errors_ext.mean(dim=1)
-        seq_scores_ext = scores_ext.mean(dim=1).numpy()
-        seq_true_ext = (masks_ext.view(masks_ext.size(0), -1).sum(dim=1) > 0).numpy().astype(int)
-
-        fpr_ext, tpr_ext, thresholds_ext = roc_curve(seq_true_ext, seq_scores_ext)
-        roc_auc_ext = auc(fpr_ext, tpr_ext)
-        candidate_thresholds_ext = np.quantile(seq_scores_ext, np.linspace(0, 1, num_thresh))
-        f1s_ext = [f1_score(seq_true_ext, (seq_scores_ext >= t).astype(int)) for t in candidate_thresholds_ext]
-        ix_f1_ext = np.argmax(f1s_ext)
-        ix_youden_ext = np.argmax(tpr_ext - fpr_ext)
-
-        print("\n--- Comparison Metrics ---")
-        print(f"ROC AUC main: {roc_auc:.6f}")
-        print(f"ROC AUC external: {roc_auc_ext:.6f}")
-        print(f"F1 main: {f1s[ix_f1]:.6f}")
-        print(f"F1 external: {f1s_ext[ix_f1_ext]:.6f}")
-
-        metrics_alt = {
-            "val_roc_auc_alt": roc_auc_ext,
-            "val_fpr_alt": fpr_ext[ix_youden_ext],
-            "val_tpr_alt": tpr_ext[ix_youden_ext],
-            "val_best_thresh_youden_alt": thresholds_ext[ix_youden_ext],
-            "val_best_thresh_f1_alt": candidate_thresholds_ext[ix_f1_ext],
-            "val_f1_score_alt": f1s_ext[ix_f1_ext],
-            "val_normalization_factor_alt": norm_ext_factor
-        }
-
-    metrics_dict = {
-        "metrics_results": {
-            "val_anomaly_scores": anomaly_scores,
-            "val_roc_auc": roc_auc,
-            "val_fpr": fpr[ix_youden],
-            "val_tpr": tpr[ix_youden],
-            "val_best_thresh_youden": thresholds[ix_youden],
-            "val_best_thresh_f1": candidate_thresholds[ix_f1],
-            "val_f1_score": f1s[ix_f1],
-            "val_normalization_factor": normalization_factor,
-        }
-    }
-
-    if metrics_alt is not None:
-        metrics_dict["metrics_results"].update(metrics_alt)
-
-    return metrics_dict, normal_indices
-
-
-'''
-    def freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=None):
-        """
-        Congela layer con logging dettagliato.
-
-        Args:
-            model: PyTorch model
-            freeze_layers: lista o singolo valore (es. 'encoder', '0', 'all', numeri)
-            fine_tuning_mode: 'latent_space' o altro
-        """
-
-        print("\n" + "=" * 80)
-        print("🧊 FREEZE-LAYERS: INIZIO PROCEDURA")
-        print("=" * 80)
-
-        # -----------------------
-        # Normalizza freeze_layers
-        # -----------------------
-        if freeze_layers is None:
-            freeze_layers = []
-        elif isinstance(freeze_layers, int):
-            freeze_layers = [str(freeze_layers)]
-        elif isinstance(freeze_layers, str):
-            freeze_layers = [freeze_layers]
-
-        # "0" → nessun freeze
-        if "0" in freeze_layers:
-            print("\nℹ️ Freeze layers = '0' → nessun freeze applicato (solo protetti KEEP)")
-            freeze_layers = []
-
-        # -----------------------
-        # Identifica componenti
-        # -----------------------
-        has_encoder = hasattr(model, "encoder")
-        has_decoder = hasattr(model, "decoder")
-        has_bottleneck = hasattr(model, "bottleneck")
-        is_latent_strategy = fine_tuning_mode == "latent_space"
-
-        print(f"🔍 Rilevamento componenti:")
-        print(f"   - encoder:    {has_encoder}")
-        print(f"   - decoder:    {has_decoder}")
-        print(f"   - bottleneck: {has_bottleneck}")
-        print(f"   - strategia latent_space: {is_latent_strategy}")
-
-        # -----------------------
-        # Definisci layer protetti (non congelabili)
-        # -----------------------
-        protected_keywords = ["adapter", "adaptive"]  # sempre protetti
-        if is_latent_strategy:
-            protected_keywords += ["latent", "bottleneck"]
-
-        def is_protected(name):
-            name = name.lower()
-            return any(k in name for k in protected_keywords)
-
-        # -----------------------
-        # Funzioni di freeze / keep
-        # -----------------------
-        def freeze_module(name, module):
-            print(f"❄️ FREEZE → {name}")
-            for p in module.parameters(recurse=True):
-                p.requires_grad = False
-
-        def keep_module(name, module, reason="", protected=False):
-            # Tutti i layer addestrabili → 🔥 KEEP
-            icon = "🔥"
-            suffix = " (protetto dal freeze)" if protected else ""
-            print(f"   {icon} KEEP  → {name} {reason}{suffix}")
-            for p in module.parameters(recurse=True):
-                p.requires_grad = True
-
-        # -----------------------
-        # Caso 'all' → congela tutto tranne protetti
-        # -----------------------
-        if "all" in freeze_layers:
-            print("\n🚨 Modalità FREEZE = 'all'")
-            print("→ Congelo TUTTO tranne i layer protetti")
-            for name, module in model.named_modules():
-                if is_protected(name):
-                    keep_module(name, module, "(protetto)", protected=True)
-                else:
-                    freeze_module(name, module)
-            print("\n✅ FREEZE COMPLETATO (modalità 'all')")
-            return
-
-        # -----------------------
-        # Modalità standard
-        # -----------------------
-        print("\n📌 Modalità FREEZE: standard")
-        print(f"   Freeze layers richiesti: {freeze_layers if freeze_layers else 'nessuno'}\n")
-
-        for name, module in model.named_modules():
-            lname = name.lower()
-
-            # Protetti → KEEP sempre
-            if is_protected(name):
-                keep_module(name, module, "(protetto)", protected=True)
-                continue
-
-            # Encoder
-            if "encoder" in freeze_layers and "encoder" in lname:
-                freeze_module(name, module)
-                continue
-
-            # Decoder
-            if "decoder" in freeze_layers and "decoder" in lname:
-                freeze_module(name, module)
-                continue
-
-            # Bottleneck / latent-space → freeze SOLO se non protetto
-            if ("bottleneck" in lname or "latent" in lname):
-                if not is_latent_strategy and "bottleneck" in freeze_layers:
-                    freeze_module(name, module)
-                else:
-                    keep_module(name, module, "(protetto)" if is_latent_strategy else "")
-                continue
-
-            # Freeze numerico
-            frozen = False
-            for item in freeze_layers:
-                if item.isdigit():
-                    if f"_{item}" in lname or f"lay_{item}" in lname or f"layer{item}" in lname:
-                        freeze_module(name, module)
-                        frozen = True
-                        break
-            if not frozen:
-                keep_module(name, module)
-
-        print("\n✅ FREEZE COMPLETATO")
-        print("=" * 80 + "\n")
-'''
 
 
 

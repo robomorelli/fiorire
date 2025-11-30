@@ -368,7 +368,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Adaptive multi-channel anomaly injection (WOMBAT-style)")
-    parser.add_argument("--conf_file", "-c", type=str, default="./dataset_configuration/fiorire_1.yaml",
+    parser.add_argument("--conf_file", "-c", type=str, default="./dataset_configuration/fiorire_2.yaml",
                         help="Path to config YAML")
     args = parser.parse_args()
     main(args)
