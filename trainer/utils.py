@@ -516,14 +516,6 @@ def test_anomaly_step(
             recon = model(x_anom)
 
             err_anom = compute_errors(target_anom, recon, error_type=use_error).cpu()
-            ''' 
-            if use_error == "abs":
-                err_anom = torch.abs(recon - target_anom).cpu()
-            elif use_error == "se":
-                err_anom = (recon - target_anom).cpu() ** 2
-            else:
-                raise ValueError(f"Unknown use_error: {use_error}")
-            '''
 
             if last_layer == "Conv2d":
                 err_anom = torch.squeeze(err_anom, (1))
@@ -546,12 +538,6 @@ def test_anomaly_step(
             recon = model(x_norm)
 
             err_norm = compute_errors(target_norm, recon, error_type=use_error).cpu()
-            '''
-            if use_error == "abs":
-                err_norm = torch.abs(recon - target_norm).cpu()
-            elif use_error == "se":
-                err_norm = (recon - target_norm).cpu() ** 2
-            '''
 
             if last_layer == "Conv2d":
                 err_norm = torch.squeeze(err_norm , (1))
@@ -649,10 +635,9 @@ def test_anomaly_step(
     # 6) STEP-WISE SCORE
     # ==============================
     if use_error == "abs":
-        #val_anomaly_scores = torch.norm(all_errors, p=2, dim=2)  # L2 norm per timestep
         val_anomaly_scores = all_errors.mean(dim=2)  # mean over features
     else:  # "se"
-        val_anomaly_scores = all_errors.mean(dim=2)  # mean over features
+        val_anomaly_scores = all_errors.mean(dim=2)
 
     val_labels = (all_masks.view(N, T, -1).sum(dim=2) > 0).int()  # [N, T]
 
@@ -662,11 +647,24 @@ def test_anomaly_step(
     fpr, tpr, thresholds = roc_curve(flat_labels, flat_scores)
     roc_auc = auc(fpr, tpr)
 
-    candidate_thresholds = np.quantile(flat_scores, np.linspace(0, 1, num_thresh))
-    f1s = [f1_score(flat_labels, (flat_scores >= t).astype(int)) for t in candidate_thresholds]
+    # ==============================
+    # STIMA F1 DA TPR/FPR
+    # ==============================
+    n_pos = int(flat_labels.sum())
+    n_neg = len(flat_labels) - n_pos
 
-    ix_f1 = np.argmax(f1s)
+    # Prendiamo TPR e FPR di Youden
     ix_youden = np.argmax(tpr - fpr)
+    rec_est = tpr[ix_youden]
+    fpr_val = fpr[ix_youden]
+
+    prec_est = (rec_est * n_pos) / (rec_est * n_pos + fpr_val * n_neg + 1e-12)
+    f1_est = 2 * (prec_est * rec_est) / (prec_est + rec_est + 1e-12)
+
+    # Vecchia stima F1 empirica basata sulle soglie (commentata)
+    # candidate_thresholds = np.quantile(flat_scores, np.linspace(0, 1, num_thresh))
+    # f1s = [f1_score(flat_labels, (flat_scores >= t).astype(int)) for t in candidate_thresholds]
+    # ix_f1 = np.argmax(f1s)
 
     # ==============================
     # 7) BUILD RETURN OBJECT
@@ -677,11 +675,13 @@ def test_anomaly_step(
             "val_labels": val_labels,                      # [N, T]
 
             "val_roc_auc": roc_auc,
-            "val_fpr": fpr[ix_youden],
-            "val_tpr": tpr[ix_youden],
+            "val_fpr": fpr_val,
+            "val_tpr": rec_est,
             "val_best_thresh_youden": thresholds[ix_youden],
-            "val_best_thresh_f1": candidate_thresholds[ix_f1],
-            "val_f1_score": f1s[ix_f1],
+            "val_best_thresh_f1": None,  # non usiamo più soglie empiriche
+            "val_f1_score": f1_est,
+            "val_precision": prec_est,
+            "val_recall": rec_est,
 
             "val_normal_stats": normal_stats,
             "val_anomaly_stats": anomaly_stats,
