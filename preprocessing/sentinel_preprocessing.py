@@ -446,6 +446,7 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
         cfg.dataset.feats = [x for x in cfg.dataset.feats if x not in cfg.dataset.get("remove_columns", [])]
     else:
         cfg.dataset.feats = df.columns.tolist() if cfg.dataset.feats is None or cfg.dataset.feats == [None] else cfg.dataset.feats
+        # The following remove should be optional because the feats are already aligned with main normal dataset
         cfg.dataset.feats = [x for x in cfg.dataset.feats if x not in cfg.opt.get("remove_columns", [])]
         cfg.dataset.feats = [x for x in cfg.dataset.feats if x not in cfg.dataset.is_anomaly_column]
 
