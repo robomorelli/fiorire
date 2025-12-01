@@ -136,7 +136,7 @@ class trainCONVAE2D(tune.Trainable):
             if current_val_loss < self.best_val_loss:
                 self.best_val_loss = current_val_loss
                 print(f"INFO: New best Val Loss: {self.best_val_loss:.6f} at epoch {self.current_epoch}")
-            if current_fpr > self.best_fpr:
+            if current_fpr < self.best_fpr:
                 self.best_fpr = current_fpr
             if current_tpr > self.best_tpr:
                 self.best_tpr = current_tpr

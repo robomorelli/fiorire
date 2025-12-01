@@ -526,7 +526,7 @@ def test_anomaly_step(
             '''
 
             if last_layer == "Conv2d":
-                err_anom = torch.squeeze(err_anom)
+                err_anom = torch.squeeze(err_anom, (1))
 
             anomaly_errors_list.append(err_anom)
             anomaly_masks_list.append(mask_anom.cpu())
@@ -554,7 +554,7 @@ def test_anomaly_step(
             '''
 
             if last_layer == "Conv2d":
-                err_norm = torch.squeeze(err_norm)
+                err_norm = torch.squeeze(err_norm , (1))
 
             normal_errors_list.append(err_norm)
 
@@ -577,7 +577,7 @@ def test_anomaly_step(
     # ==============================
     if external_normal_errors is not None:
         if last_layer == "Conv2d":
-            external_normal_errors = torch.squeeze(external_normal_errors)
+            external_normal_errors = torch.squeeze(external_normal_errors, (1))
 
         normal_errors_all = external_normal_errors.cpu()
         normal_error_source = "external"
