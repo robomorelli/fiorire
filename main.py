@@ -42,7 +42,8 @@ def main(args):
     resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial} if (
             cfg.resources.gpu_trial != 0) else {"cpu": cfg.resources.cpu_trial}
     metric_loader_path = cfg.opt.metrics_dataset_path
-    metric, mode = get_opt_metric(cfg=cfg, metrics_loader=metric_loader_path)
+    metrics_dict = get_opt_metric(cfg=cfg, metrics_loader=metric_loader_path)
+    metric, mode = metrics_dict['metric_key'], metrics_dict['mode']
     progress_reporter = CLIReporter(
         metric_columns=[metric, f'best_{metric}'] + list(cfg.opt.metrics_to_report) + list(cfg.opt.other_reports))
     sched = ASHAScheduler(metric=metric, mode=mode, max_t = 10 ** 18, grace_period=50)
