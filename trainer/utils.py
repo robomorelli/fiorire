@@ -514,12 +514,16 @@ def test_anomaly_step(
         if is_anom.any():
             x_anom, target_anom, mask_anom = x[is_anom], target[is_anom], mask[is_anom]
             recon = model(x_anom)
+
+            err_anom = compute_errors(target_anom, recon, error_type=use_error)
+            ''' 
             if use_error == "abs":
                 err_anom = torch.abs(recon - target_anom).cpu()
             elif use_error == "se":
                 err_anom = (recon - target_anom).cpu() ** 2
             else:
                 raise ValueError(f"Unknown use_error: {use_error}")
+            '''
 
             if last_layer == "Conv2d":
                 err_anom = torch.squeeze(err_anom)
@@ -540,10 +544,14 @@ def test_anomaly_step(
         if is_norm.any() and normal_errors_list is not None:
             x_norm, target_norm = x[is_norm], target[is_norm]
             recon = model(x_norm)
+
+            err_norm = compute_errors(target_norm, recon, error_type=use_error)
+            '''
             if use_error == "abs":
                 err_norm = torch.abs(recon - target_norm).cpu()
             elif use_error == "se":
                 err_norm = (recon - target_norm).cpu() ** 2
+            '''
 
             if last_layer == "Conv2d":
                 err_norm = torch.squeeze(err_norm)
@@ -641,7 +649,8 @@ def test_anomaly_step(
     # 6) STEP-WISE SCORE
     # ==============================
     if use_error == "abs":
-        val_anomaly_scores = torch.norm(all_errors, p=2, dim=2)  # L2 norm per timestep
+        #val_anomaly_scores = torch.norm(all_errors, p=2, dim=2)  # L2 norm per timestep
+        val_anomaly_scores = all_errors.mean(dim=2)  # mean over features
     else:  # "se"
         val_anomaly_scores = all_errors.mean(dim=2)  # mean over features
 
