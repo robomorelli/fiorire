@@ -5,6 +5,7 @@ Adaptive WOMBAT-style multi-channel anomaly injector
 - Optimized selection of start indices (shuffle & subset)
 - No overlapping anomalies
 - Saves .pkl or .csv and generates metadata + plots
+- Supports 'fake_anomalies' mode
 """
 
 import os
@@ -64,7 +65,7 @@ class StandardizationHandler:
 # Multi-channel injector (fixed windows)
 # -------------------------
 class AdaptiveMultiChannelInjector:
-    def __init__(self, cfg: DictConfig, anomaly_registry: dict = None):
+    def __init__(self, cfg: DictConfig, anomaly_registry: dict = None, fake_anomalies: bool = False):
         ds = cfg.dataset
 
         # Core parameters (fixed)
@@ -78,6 +79,7 @@ class AdaptiveMultiChannelInjector:
         self.channel_prob_decay = 1 if self.max_channels == 1 else self.channel_prob_decay
         self.channel_prob_decay = None if self.max_channels is None else self.channel_prob_decay
         self.random_seed = ds.get("random_seed", None)
+        self.fake_anomalies = fake_anomalies
 
         if self.random_seed is not None:
             np.random.seed(self.random_seed)
@@ -94,6 +96,7 @@ class AdaptiveMultiChannelInjector:
         print(f"  - window_length: {self.window_length}")
         print(f"  - delta: {self.delta}")
         print(f"  - channels per window: {self.min_channels}-{self.max_channels}")
+        print(f"  - fake_anomalies: {self.fake_anomalies}")
 
     # -------------------------
     # Channel selection
@@ -118,7 +121,6 @@ class AdaptiveMultiChannelInjector:
         try:
             obj.fit(data.reshape(-1, self.window_length))
         except Exception:
-            # fallback single window
             obj.fit(data[:self.window_length].reshape(1, -1))
 
         self.fitted_anomalies[channel][anomaly_type] = obj
@@ -133,7 +135,6 @@ class AdaptiveMultiChannelInjector:
         if n_windows == 0:
             raise ValueError("Dataset too short for the given window length.")
 
-        # valid start indices for windows
         start_indices = np.arange(n_windows) * self.window_length
         np.random.shuffle(start_indices)
 
@@ -158,18 +159,22 @@ class AdaptiveMultiChannelInjector:
             distorted_channels = []
             changed_mask = np.zeros(end_idx - start_idx, dtype=bool)
 
-            for ch in selected_channels:
-                before = df_out[ch].values[start_idx:end_idx].copy()
-                try:
-                    anomaly_obj = self._get_or_fit(ch, anomaly_type, df_standardized)
-                    distorted = anomaly_obj.distort(before.reshape(1, -1))[0]
-                except Exception:
-                    distorted = before.copy()  # fallback, no change
-                # compute changed mask
-                changed_mask |= (before != distorted)
-                # apply changes
-                df_out.iloc[start_idx:end_idx, df_out.columns.get_loc(ch)].values[changed_mask] = distorted[changed_mask]
-                distorted_channels.append(ch)
+            if not self.fake_anomalies:
+                # normale iniezione
+                for ch in selected_channels:
+                    before = df_out[ch].values[start_idx:end_idx].copy()
+                    try:
+                        anomaly_obj = self._get_or_fit(ch, anomaly_type, df_standardized)
+                        distorted = anomaly_obj.distort(before.reshape(1, -1))[0]
+                    except Exception:
+                        distorted = before.copy()
+                    changed_mask |= (before != distorted)
+                    df_out.iloc[start_idx:end_idx, df_out.columns.get_loc(ch)].values[changed_mask] = distorted[changed_mask]
+                    distorted_channels.append(ch)
+            else:
+                # fake anomalies: non alterare i valori, ma segnaliamo anomalie
+                distorted_channels = selected_channels
+                changed_mask[:] = True
 
             if changed_mask.any():
                 changed_idx_abs = (start_idx + np.where(changed_mask)[0]).tolist()
@@ -186,7 +191,8 @@ class AdaptiveMultiChannelInjector:
                     "affected_channels": distorted_channels,
                     "n_changed_points": int(changed_mask.sum()),
                     "window_length": int(self.window_length),
-                    "delta": float(self.delta)
+                    "delta": float(self.delta),
+                    "fake": self.fake_anomalies
                 })
 
             pbar.update(1)
@@ -197,21 +203,14 @@ class AdaptiveMultiChannelInjector:
 
         print(f"\nInjection finished: total anomalous points={actual_points}")
 
-        # ---------------------------------------
-        # WARNING PER DISCREPANZE NEI PUNTI
-        # ---------------------------------------
         if abs(actual_points - target_points) > target_points * 0.01:
             print("\n" + "!" * 80)
             print("⚠️  WARNING: Mismatch between target and actual anomalous points")
             print(f"    Target:    {target_points}")
             print(f"    Actual:    {actual_points}")
-            print("\nPossible causes:")
-            print("  • Some anomalies do NOT alter all 16 points of the window")
-            print("  • Some anomalies (e.g., Impulse, Step, PSA) modify only certain feature dimensions")
-            print("  • The window may be valid, but the applied anomaly does not affect every value")
-            print("\nThis discrepancy is expected and depends on the intrinsic nature of each anomaly type.")
             print("!" * 80 + "\n")
-        return df_out, anomalies_log, pd.DataFrame([])  # no schedule resets
+
+        return df_out, anomalies_log, pd.DataFrame([])
 
 
 # -------------------------
@@ -263,6 +262,15 @@ def main(args):
     target_channels = cfg.dataset.get("target_channels", features)
     anomalies_types = cfg.dataset.anomalies_type
     data_path = cfg.dataset.data_path
+    fake_anomalies = getattr(cfg.dataset, "fake_anomalies", False)
+
+    if fake_anomalies:
+        print("\n" + "!"*80)
+        print("⚠️  WARNING: FAKE ANOMALIES MODE ENABLED ⚠️")
+        print("All processing (standardization, injection, destandardization) will occur,")
+        print("but values in the dataset will NOT be changed. Only 'is_anomaly' labels will be set to 1.")
+        print("!"*80 + "\n")
+
     if target_channels is None or len(target_channels) == 0:
         target_channels = features
 
@@ -271,7 +279,8 @@ def main(args):
     print(f"Loaded {len(df_original)} rows × {df_original.shape[1]} cols")
     df_backup = df_original.copy(deep=True)
 
-    exp_name = '_'.join(('delta_' + str(cfg.dataset.delta_mean).split('.')[1], 'window_mean_' + str(cfg.dataset.window_mean),
+    prefix = "fake_anomalies_" if fake_anomalies else ""
+    exp_name = prefix + '_'.join(('delta_' + str(cfg.dataset.delta_mean).split('.')[1], 'window_mean_' + str(cfg.dataset.window_mean),
                          "perc_" + str(cfg.dataset.anomaly_percentage), '_'.join([x for x in anomalies_types])
                          , 'num_target_channels_' + str(len(target_channels))))
 
@@ -280,7 +289,7 @@ def main(args):
     df_std = handler.fit_transform(df_original, feature_columns=features)
 
     # Injector
-    injector = AdaptiveMultiChannelInjector(cfg, anomaly_registry=ANOMALIES_REGISTRY)
+    injector = AdaptiveMultiChannelInjector(cfg, anomaly_registry=ANOMALIES_REGISTRY, fake_anomalies=fake_anomalies)
     df_with_anom_std, anomalies_log, _ = injector.inject(df_std, target_channels)
 
     # De-standardize
@@ -289,11 +298,10 @@ def main(args):
     for col in features:
         df_with_anom.loc[~anomaly_mask, col] = df_backup.loc[~anomaly_mask, col]
 
-
     dir_path = os.path.dirname(data_path)
     base_name, ext = os.path.splitext(os.path.basename(data_path))
     if ext == '':
-        ext = '.pkl'  # fallback
+        ext = '.pkl'
     output_path = os.path.join(dir_path, f"{base_name}_{exp_name}_with_anomalies{ext}")
     if ext == '.pkl':
         df_with_anom.to_pickle(output_path)
@@ -312,7 +320,8 @@ def main(args):
             "n_features": len(features),
             "target_channels": target_channels,
             "n_target_channels": len(target_channels),
-            "random_seed": int(cfg.dataset.random_seed) if cfg.dataset.random_seed is not None else None
+            "random_seed": int(cfg.dataset.random_seed) if cfg.dataset.random_seed is not None else None,
+            "fake_anomalies": fake_anomalies
         },
         "injection_config": {
             "anomaly_types": list(cfg.dataset.anomalies_type),
@@ -347,10 +356,7 @@ def main(args):
     print_final_statistics(df_backup, df_with_anom, features)
 
     # Plot sample anomalies
-    # Campiona e salva un sottoinsieme di sequenze anomale per ispezione visiva
     sample_dir = os.path.join(dir_path, f"anomaly_samples_{exp_name}")
-
-    # --- clean existing output dir ---
     if os.path.exists(sample_dir):
         shutil.rmtree(sample_dir)
     os.makedirs(sample_dir, exist_ok=True)
@@ -372,4 +378,3 @@ if __name__ == "__main__":
                         help="Path to config YAML")
     args = parser.parse_args()
     main(args)
-

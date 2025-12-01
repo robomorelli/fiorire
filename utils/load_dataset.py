@@ -75,7 +75,7 @@ def load_dataframe(cfg, data_path=None):
         ValueError: If the file format is unsupported or cannot be parsed.
     """
     file_path = cfg.dataset.data_path if data_path is None else data_path
-    expected_cols = cfg.dataset.feats
+    expected_cols = cfg.dataset.feats if hasattr(cfg.dataset, 'feats') else None
 
     if not os.path.isfile(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")

@@ -187,6 +187,8 @@ def load_data(cfg):
         else None
     )
 
+    cfg.dataset.feats = cfg.dataset.feats if cfg.dataset.feats is not None else df.columns.tolist()
+
     columns = [x for x in cfg.dataset.feats if x not in cfg.dataset.target] if cfg.dataset.target else cfg.dataset.feats
 
     df = df[columns].dropna()

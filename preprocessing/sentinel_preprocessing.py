@@ -441,8 +441,10 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
         else None
     )
 
+    cfg.dataset.feats = cfg.dataset.feats if cfg.dataset.feats is not None else df.columns.tolist()
+
     columns = cfg.dataset.feats + [
-        x for x in cfg.dataset.target if x not in cfg.dataset.feats
+        x for x in cfg.dataset.target if x not in cfg.dataset.feats   #iclude the targets columns not in feats
     ] if cfg.dataset.target else cfg.dataset.feats
 
     cfg.dataset.target = columns if cfg.dataset.target is None else cfg.dataset.target
