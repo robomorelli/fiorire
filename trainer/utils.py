@@ -81,8 +81,6 @@ def update_input_output(cfg):
     """
     if isinstance(cfg.dataset.feats, (list, ListConfig)):
         feats = cfg.dataset.feats
-    elif cfg.dataset.feats == 'all':
-        feats = all_feats_dict[cfg.dataset.name]
     else:
         feats = [cfg.dataset.feats]
 
@@ -90,10 +88,7 @@ def update_input_output(cfg):
     if isinstance(cfg.dataset.target, (list, ListConfig)):
         target = cfg.dataset.target
     elif isinstance(cfg.dataset.target, str):
-        if cfg.dataset.target == 'all':
-            target = all_feats_dict[cfg.dataset.name]
-        else:
-            target = [cfg.dataset.target]
+        target = [cfg.dataset.target]
     else:
         target = None
 

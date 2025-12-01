@@ -430,7 +430,7 @@ def upsample_and_augment(
 
 def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, transform=None, ano_col=None
                                     ,scale=True, scaler=None, seed=42, only_metric_loader=False, dataset_subset=None
-                                    ,take_only_anomalies=False):
+                                    ,take_only_anomalies=False, metrics_loader=False):
 
 
     # target can be a list of columns or a single column
@@ -441,7 +441,13 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
         else None
     )
 
-    cfg.dataset.feats = cfg.dataset.feats if cfg.dataset.feats is not None else df.columns.tolist()
+    if not metrics_loader:
+        cfg.dataset.feats = df.columns.tolist() if cfg.dataset.feats is None or cfg.dataset.feats == [None] else cfg.dataset.feats
+        cfg.dataset.feats = [x for x in cfg.dataset.feats if x not in cfg.dataset.get("remove_columns", [])]
+    else:
+        cfg.dataset.feats = df.columns.tolist() if cfg.dataset.feats is None or cfg.dataset.feats == [None] else cfg.dataset.feats
+        cfg.dataset.feats = [x for x in cfg.dataset.feats if x not in cfg.opt.get("remove_columns", [])]
+        cfg.dataset.feats = [x for x in cfg.dataset.feats if x not in cfg.dataset.is_anomaly_column]
 
     columns = cfg.dataset.feats + [
         x for x in cfg.dataset.target if x not in cfg.dataset.feats   #iclude the targets columns not in feats
@@ -449,9 +455,11 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
 
     cfg.dataset.target = columns if cfg.dataset.target is None else cfg.dataset.target
     # Add anomaly column if specified to searcher anomalous sequences
-    columns = columns + [ano_col] if ano_col and ano_col in df.columns else columns
+    columns = columns + [ano_col] if ano_col and ano_col in df.columns and ano_col not in columns else columns
 
+    print("shape before dropna:", df.shape)
     df = df[columns].dropna()
+    print("shape after dropna:", df.shape)
     if dataset_subset is not None:
         print(f"🔧 Using only a subset of the dataset: first {dataset_subset} samples")
         df = df.iloc[:dataset_subset, :]

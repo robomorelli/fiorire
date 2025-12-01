@@ -258,8 +258,6 @@ def print_final_statistics(df_original: pd.DataFrame, df_final: pd.DataFrame, fe
 # -------------------------
 def main(args):
     cfg = OmegaConf.load(args.conf_file)
-    features = list(cfg.dataset.feats)
-    target_channels = cfg.dataset.get("target_channels", features)
     anomalies_types = cfg.dataset.anomalies_type
     data_path = cfg.dataset.data_path
     fake_anomalies = getattr(cfg.dataset, "fake_anomalies", False)
@@ -271,13 +269,18 @@ def main(args):
         print("but values in the dataset will NOT be changed. Only 'is_anomaly' labels will be set to 1.")
         print("!"*80 + "\n")
 
-    if target_channels is None or len(target_channels) == 0:
-        target_channels = features
 
-    print(f"Channels selected for anomaly injection: {target_channels}")
     df_original = load_data(cfg)
     print(f"Loaded {len(df_original)} rows × {df_original.shape[1]} cols")
     df_backup = df_original.copy(deep=True)
+
+    features = list(cfg.dataset.feats) if cfg.dataset.get("feats", None) is not None else df_original.columns.tolist()
+    target_channels = cfg.dataset.get("target_channels", features)
+
+    if target_channels is None or len(target_channels) == 0:
+        target_channels = features
+
+    print(f" {len(target_channels)} Channels selected for anomaly injection: {target_channels}")
 
     prefix = "fake_anomalies_" if fake_anomalies else ""
     exp_name = prefix + '_'.join(('delta_' + str(cfg.dataset.delta_mean).split('.')[1], 'window_mean_' + str(cfg.dataset.window_mean),
@@ -297,6 +300,11 @@ def main(args):
     anomaly_mask = df_with_anom_std['is_anomaly'].astype(bool)
     for col in features:
         df_with_anom.loc[~anomaly_mask, col] = df_backup.loc[~anomaly_mask, col]
+
+    df_with_anom[['anomaly_type', 'affected_channels']] = (
+        df_with_anom[['anomaly_type', 'affected_channels']]
+        .replace({None: "0", "": "0", " ": "0", "nan": "0", "NaN": "0"})
+    )
 
     dir_path = os.path.dirname(data_path)
     base_name, ext = os.path.splitext(os.path.basename(data_path))

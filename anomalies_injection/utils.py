@@ -191,8 +191,9 @@ def load_data(cfg):
 
     columns = [x for x in cfg.dataset.feats if x not in cfg.dataset.target] if cfg.dataset.target else cfg.dataset.feats
 
+    print("shape df before dropna:", df.shape)
     df = df[columns].dropna()
-
+    print("shape df after dropna:", df.shape)
 
     return df
 
