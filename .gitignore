@@ -5,6 +5,7 @@ __pycache__/
 
 file_from_consortium
 
+train_configurations/*
 info/
 data/
 dataloader/
