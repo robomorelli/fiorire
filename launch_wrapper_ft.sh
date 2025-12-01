@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#sh /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/launch_wrapper.sh num_nodes 2 num_gpus 1 num_cpus 16 config_file conv_ae1D
+#sh /davinci-1/home/morellir/artificial_intelligence/repos/fiorire_1/launch_wrapper.sh num_nodes 2 num_gpus 1 num_cpus 16 config_file conv_ae1D
 
 # Default values
 # Set defaults if empty for PBS resource specification

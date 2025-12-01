@@ -6,6 +6,7 @@ from utils.general import extract_config, extract_fixed_config, get_sync_config,
 from datetime import datetime
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import CLIReporter
+from trainer.utils import infer_metric_mode, get_opt_metric
 
 from config import *
 
@@ -40,7 +41,8 @@ def main(args):
     # Set the resources for each trial
     resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial} if (
             cfg.resources.gpu_trial != 0) else {"cpu": cfg.resources.cpu_trial}
-    metric, mode = list(cfg.opt.opt_metric.items())[0]
+    metric_loader_path = cfg.opt.metrics_dataset_path
+    metric, mode = get_opt_metric(cfg=cfg, metrics_loader=metric_loader_path)
     progress_reporter = CLIReporter(
         metric_columns=[metric, f'best_{metric}'] + list(cfg.opt.metrics_to_report) + list(cfg.opt.other_reports))
     sched = ASHAScheduler(metric=metric, mode=mode, max_t = 10 ** 18, grace_period=50)
