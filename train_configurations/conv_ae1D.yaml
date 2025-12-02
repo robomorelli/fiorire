@@ -1,6 +1,6 @@
 # Optimization
 tune_config:
-  model.num_layers: tune.choice([2,3])
+  model.num_layers: tune.choice([1,2,3])
   model.base_filters: tune.choice([16,32,64])    # "inputs feats" option to set equal to number of features
   model.activation: tune.choice(['Elu', 'Relu'])
   #model.bottleneck_activation: tune.choice(['Tanh'])
@@ -62,7 +62,7 @@ opt:
                       "best_val_thresh_f1"]  # list of metrics to report in the summary of the results
   other_reports: ['parameters_number']
   #order_by: 'val_loss'    # summary of the results is ordered by this value
-  use_error: 'abs'   # 'abs' or 'se'
+  use_error: 'se'   # 'abs' or 'se'
   num_workers: 12
   evaluate_metrics: True
   anomalies_dataset_subset: null  # subset used to compute the metrics during training

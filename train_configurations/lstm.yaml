@@ -58,7 +58,7 @@ opt:
                       "best_val_thresh_f1"]  # list of metrics to report in the summary of the results
   other_reports: ['parameters_number']
   #order_by: 'val_loss'    # summary of the results is ordered by this value
-  use_error: 'abs'   # 'abs' or 'se'
+  use_error: 'se'   # 'abs' or 'se'
   num_workers: 12
   evaluate_metrics: True
   anomalies_dataset_subset: 4000_000  # subset used to compute the metrics during training

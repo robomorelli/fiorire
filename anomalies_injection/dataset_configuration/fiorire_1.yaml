@@ -11,9 +11,9 @@ dataset:
           'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
   target_channels:  null
   dataset_subset: null
-  anomalies_type: ['GWN', 'Impulse', 'Step', 'Constant'] #'Constant', 'Step',
-  anomaly_percentage: 1   # N%
-  delta_mean: 0.1
+  anomalies_type: ['GWN', 'Impulse', 'Step'] #'Constant', 'Step',
+  anomaly_percentage: 99   # N%
+  delta_mean: 0.3
   #delta_std: 0.05
   #window_skewness: -3
   window_mean: 16

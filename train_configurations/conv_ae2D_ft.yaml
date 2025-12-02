@@ -1,10 +1,10 @@
 # Optimization
 tune_config:
   opt.fine_tuning: tune.choice([1])
-  opt.checkpoint_path: tune.choice(["./ray_results/hpo_full_2D_3anomalies_delta3/conv_ae2D_fiorire_2025-11-29_20-05-06/conv_ae2D_fiorire/517fa_00000_overlap=0.7000_scaler=StandardSc_seqlen=16_act=Elu_filters=32/checkpoint_000023/model.pt"])
+  opt.checkpoint_path: tune.choice(["./ray_results/fiorire1_hpc_multinode_conv2D_conv_ae2D_fiorire_2025-12-01_20-57-35/conv_ae2D_fiorire/fb049_00047_overlap=0.7000_scaler=StandardSc_seqlen=16_act=Relu_filters=128/checkpoint_000056/model.pt"])
   opt.fine_tuning_mode: tune.choice(['adaptive_layer', 'latent_space'])    #   'latent_space'
 
-  opt.freeze_layers: tune.choice(['0'])  # 'all', 'encoder', 'decoder', 'none', 'bottelneck' , 'numeric value
+  opt.freeze_layers: tune.choice(['0', 'encoder'])  # 'all', 'encoder', 'decoder', 'none', 'bottelneck' , 'numeric value
   opt.lr: tune.choice([0.0009, 0.0001, 0.00005]]])
   opt.bottleneck_lr: tune.choice([0.0001, 0.00005, 0]]])
   opt.batch_size: tune.choice([500])
@@ -19,27 +19,19 @@ tune_config:
 # Dataset
 dataset:
   seed: 42
-  name: 'fiorire_1'
+  name: 'fiorire_2'
   upsample_factor: 1
   upsample_method: 'linear'
   upsample_augmentation: 0
-  flag_col: "ACT40082(PREPRO_CMG_ENABLE)"
-  align_data: 1
-  detect_flag: 1
-  data_path: './data/fiorire_2/nominal_merged.csv'
-  seq_in_length_into_chunk: 2000    # number of sequences for each split chunk
+  flag_col: null    #"ACT40082(PREPRO_CMG_ENABLE)"
+  align_data: 0
+  detect_flag: 0
+  data_path: './data/fiorire_2/AllScenarios_CMG.csv'
+  seq_in_length_into_chunk: 200    # number of sequences for each split chunk
   seq_out_length: null
   train_val_split: 0.8
   shuffle_train: True #shuffle the idx of the train
-  feats: [
-    "ACT40001(PREPRO_CMG_LEVEL)", "ACT40101(MODEMNG_CMG_TORQUE_REQ_X)", "ACT40102(MODEMNG_CMG_TORQUE_REQ_Y)",
-    "ACT40103(MODEMNG_CMG_TORQUE_REQ_Z)", "ACT41027(UNIT_FW_VEL_1)", "ACT41028(UNIT_FW_VEL_2)",
-    "ACT41029(UNIT_FW_VEL_3)", "ACT41037(UNIT_GIMB_POS_1)", "ACT41038(UNIT_GIMB_POS_2)",
-    "ACT41039(UNIT_GIMB_POS_3)", "ACT41042(UNIT_GIMB_VEL_1)", "ACT41043(UNIT_GIMB_VEL_2)",
-    "ACT41044(UNIT_GIMB_VEL_3)", "ACT41052(ASSEMBLY_H_BRF_X)", "ACT41053(ASSEMBLY_H_BRF_Y)",
-    "ACT41054(ASSEMBLY_H_BRF_Z)", "ACT41056(ASSEMBLY_T_BRF_X)", "ACT41057(ASSEMBLY_T_BRF_Y)",
-    "ACT41058(ASSEMBLY_T_BRF_Z)"]
-
+  feats: null
   target: null    # null: the same input features are the target; all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
   dataset_subset: null
@@ -64,15 +56,14 @@ opt:
                       "val_tpr", "best_val_tpr",
                       "best_val_thresh_f1"]  # list of metrics to report in the summary of the results
   other_reports: ['parameters_number']
-  #order_by: 'val_loss'    # summary of the results is ordered by this value
-  use_error: 'abs'   # 'abs' or 'se'
+  use_error: 'se'   # 'abs' or 'se'
   num_workers: 12
   evaluate_metrics: True
   anomalies_dataset_subset: null  # subset used to compute the metrics during training
   keep_anoms_only_from_val: True
   n_std: [1, 3]
-  num_thresholds: 100
-  metrics_dataset_path: './data/fiorire_2/nominal_merged_delta_3_window_mean_16_perc_99_GWN_Step_Impulse_num_target_channels_19_with_anomalies.csv'  # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
+  num_thresholds: 500
+  metrics_dataset_path: './data/fiorire_2/AllScenarios_CMG_delta_8_window_mean_16_perc_99_GWN_Step_Impulse_num_target_channels_19_with_anomalies.csv'  # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
   take_only_anomalies_from_metric_loader: True
   detect_anomaly_epoch_freq: 1
   normal_anomalous_ratio: 1

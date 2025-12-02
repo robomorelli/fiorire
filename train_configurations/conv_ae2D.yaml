@@ -1,12 +1,12 @@
 # Optimization
 tune_config:
-  model.num_layers: tune.choice([1,2,3])
-  model.base_filters: tune.choice([16,32,64])
+  model.num_layers: tune.choice([2, 3, 4])
+  model.base_filters: tune.choice([16,32,64, 128])
   model.activation: tune.choice(['Relu', 'Elu'])
   #model.bottleneck_activation: tune.choice(['Relu', 'Elu']) # 'Tanh'
   model.kernel_size: tune.choice([3,5,7])
   model.double_deconv: tune.choice([1])
-  model.compression_factor: tune.choice([0.5, 1, 2, 4])
+  model.compression_factor: tune.choice([0.1, 0.5, 1, 2, 4])
   model.halve_both: tune.choice([1])
   model.halve_time: tune.choice([0])
   model.halve_features: tune.choice([0])
@@ -22,25 +22,28 @@ tune_config:
   opt.lr_patience: tune.choice([5, 10, 15])
   opt.es_patience: tune.choice([10])
 
-  dataset.scaler: tune.choice(['StandardScaler', 'RobustScaler-0.05-0.95', 'RobustScaler-0.10-0.90'])
+  dataset.scaler: tune.choice(['StandardScaler'])
   dataset.seq_in_length: tune.choice([16])
-  dataset.perc_overlap: tune.choice([0.5, 0.7, 0.9])
+  dataset.perc_overlap: tune.choice([0.3, 0.5, 0.7])
 
 dataset:
   seed: 42
-  name: 'fiorire_2'
+  name: 'fiorire_1'
   upsample_factor: 1
   upsample_method: 'linear'
   upsample_augmentation: 0
   flag_col: null #"ACT40082(PREPRO_CMG_ENABLE)"
-  align_data: 1
-  detect_flag: 1
-  data_path: './data/fiorire_2/AllScenarios_CMG.csv'
+  align_data: 0
+  detect_flag: 0
+  data_path: './data/fiorire_1/all_2016-2018_clean_4s.pkl'
   seq_in_length_into_chunk: 200    # number of sequences for each split chunk
   seq_out_length: null
   train_val_split: 0.8
   shuffle_train: True #shuffle the idx of the train
-  feats: null
+  feats: ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW4_motcurr',
+          'RW1_therm', 'RW2_therm', 'RW3_therm', 'RW4_therm',
+          'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
+          'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']
   target: null    # null: the same input features are the target (reconstruction task); all: all the variables of the dataframe are the target; list/str: specific value/s
   remove_target: False
   dataset_subset: null
@@ -64,7 +67,6 @@ opt:
                       'val_roc_auc', 'best_val_roc_auc', "val_fpr", "best_val_fpr", "val_tpr", "best_val_tpr",
                       "best_val_thresh_f1"]  # list of metrics to report in the summary of the results
   other_reports: ['parameters_number']
-  #order_by: 'val_loss'    # summary of the results is ordered by this value
   use_error: 'se'   # 'abs' or 'se'
   num_workers: 12
   evaluate_metrics: True
@@ -72,7 +74,7 @@ opt:
   keep_anoms_only_from_val: True
   n_std: [1, 3]
   num_thresholds: 100
-  metrics_dataset_path: './data/fiorire_2/AllScenarios_CMG_delta_3_window_mean_16_perc_99_GWN_Step_Impulse_num_target_channels_19_with_anomalies.csv'  # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
+  metrics_dataset_path: './data/fiorire_1/all_2016-2018_clean_4s_delta_3_window_mean_16_perc_99_GWN_Impulse_Step_num_target_channels_16_with_anomalies.pkl'  # if None, the test dataset is taken from the validation adding the anomalous sequences if availablr
   remove_columns: ["affected_channels", "anomaly_type"]
   take_only_anomalies_from_metric_loader: True
   detect_anomaly_epoch_freq: 1
