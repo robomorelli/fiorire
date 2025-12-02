@@ -1208,7 +1208,6 @@ def load_compatible_weights(model, checkpoint_state_dict):
     return model
 
 
-
 def load_pretrained_checkpoint(model, config, device):
     """
     Load pretrained weights into model for fine-tuning
