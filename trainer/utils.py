@@ -929,8 +929,6 @@ def test_anomaly_step_kp(
     return metrics_dict, idx_main
 
 
-
-
 def adjust_model_for_finetuning(
     fine_tuning_cfg,
     model,
@@ -955,6 +953,71 @@ def adjust_model_for_finetuning(
 
     print(f"🔍 Pre-training: feats={pre_feats}, seq={pre_seq_len}")
     print(f"🔍 Fine-tuning: feats={fine_feats}, seq={fine_seq_len}")
+
+    def update_latent(model, old_flattened, new_flattened, device='cuda:0'):
+        """
+        Aggiorna la dimensione del latent space ricreando i layer Linear
+        con inizializzazione Kaiming Normal, come la tua funzione Conv2D.
+        """
+
+        def init_kaiming_linear(layer, mode='fan_in'):
+            nn.init.kaiming_normal_(layer.weight, mode=mode, nonlinearity='relu')
+            if layer.bias is not None:
+                nn.init.zeros_(layer.bias)
+
+        encoder = model.encoder
+        decoder = model.decoder
+
+        compression_factor = encoder.compression_factor
+        new_latent_dim = int(new_flattened // compression_factor)
+
+        print(f"Updating latent: old_flattened={old_flattened} → new_flattened={new_flattened}")
+        print(f"New latent dim = {new_latent_dim}")
+
+        # ---------------------------
+        # ENCODER: to_latent
+        # ---------------------------
+        for name, module in encoder.bottleneck.named_modules():
+            if isinstance(module, nn.Linear) and "to_latent" in name:
+
+                new_layer = nn.Linear(new_flattened, new_latent_dim).to(device)
+                init_kaiming_linear(new_layer)
+
+                parent = encoder.bottleneck
+                parts = name.split('.')
+                for p in parts[:-1]:
+                    parent = getattr(parent, p)
+
+                setattr(parent, parts[-1], new_layer)
+
+                print(f"Replaced encoder.{name} with Linear({new_flattened} → {new_latent_dim})")
+
+        encoder.flattened_size = new_flattened
+        encoder.latent_dim = new_latent_dim
+
+        # ---------------------------
+        # DECODER: latent_to_flatten
+        # ---------------------------
+        for name, module in decoder.named_modules():
+            if isinstance(module, nn.Linear) and "latent_to_flatten" in name:
+
+                new_layer = nn.Linear(new_latent_dim, new_flattened).to(device)
+                init_kaiming_linear(new_layer)
+
+                parent = decoder
+                parts = name.split('.')
+                for p in parts[:-1]:
+                    parent = getattr(parent, p)
+
+                setattr(parent, parts[-1], new_layer)
+
+                print(f"Replaced decoder.{name} with Linear({new_latent_dim} → {new_flattened})")
+
+        decoder.flattened_size = new_flattened
+        decoder.latent_dim = new_latent_dim
+
+        print("✔ Latent space update complete\n")
+        return model
 
     # -------------------------------
     # 0️⃣ Freeze Layers Function
@@ -1096,6 +1159,7 @@ def adjust_model_for_finetuning(
             print("🔧 Adjusting Conv2D (features or sequence changed)")
 
             mode = fine_tuning_cfg.opt.get('fine_tuning_mode', None)
+
             if mode == "adaptive_layer":
                 print("⚙️ Fine-tuning mode: 'adaptive_layer' (learnable resizer)")
 
@@ -1117,19 +1181,43 @@ def adjust_model_for_finetuning(
                 ).to(device)
                 print(f"🔧 Added Conv2D OUTPUT adapter: {pre_feats},{pre_seq_len} → {fine_feats},{fine_seq_len}")
 
-            else:
-                # Diagnostic mode
-                print(f"ℹ️ Fine-tuning mode '{mode}' — structural diagnostics only")
+            elif mode == "latent_space":
+                # Recupera dimensione flatten vecchia e nuova
                 old_flattened = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size", None)
                 new_flattened = getattr(getattr(model, "encoder", None), "flattened_size", None)
-                new_latent_dim = getattr(getattr(model, "encoder", None), "latent_dim", None)
-                new_h = getattr(getattr(model, "encoder", None), "h_enc", None)
-                new_w = getattr(getattr(model, "encoder", None), "w_enc", None)
+                compression_factor = getattr(getattr(model, "encoder", None), "compression_factor", 1)
+                new_latent_dim = int(new_flattened // compression_factor) if new_flattened is not None else None
+
                 print(f"  - old_flattened: {old_flattened}")
                 print(f"  - new_flattened: {new_flattened}")
-                print(f"  - new_latent_dim: {new_latent_dim}")
-                print(f"  - new_h: {new_h}, new_w: {new_w}")
-                print(f"🧱 New model architecture: {model}")
+                print(f"  - new_latent_dim (computed): {new_latent_dim}")
+
+                if old_flattened != new_flattened:
+                    print(f"🔧 Flattened size changed: {old_flattened} → {new_flattened}. Updating latent space...")
+                    model = update_latent(model, old_flattened, new_flattened, device=device)
+                else:
+                    print("✅ Flattened size unchanged — latent space update not needed")
+
+            elif mode == "hard_latent_space":
+                # Recupera dimensione flatten vecchia e nuova
+                old_flattened = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size", None)
+                new_flattened = getattr(getattr(model, "encoder", None), "flattened_size", None)
+                compression_factor = getattr(getattr(model, "encoder", None), "compression_factor", 1)
+                new_latent_dim = int(new_flattened // compression_factor) if new_flattened is not None else None
+
+                print(f"  - old_flattened: {old_flattened}")
+                print(f"  - new_flattened: {new_flattened}")
+                print(f"  - new_latent_dim (computed): {new_latent_dim}")
+
+                if old_flattened != new_flattened:
+                    print(f"🔧 Flattened size changed: {old_flattened} → {new_flattened}. Updating latent space...")
+                    model = update_latent(model, old_flattened, new_flattened, device=device)
+                else:
+                    print(f"🔧 Flattened size DOES'NT changed: {old_flattened} → {new_flattened}. BUT STILL Updating latent space...")
+                    model = update_latent(model, old_flattened, new_flattened, device=device)
+
+            else:
+                raise ValueError(f"Unsupported fine_tuning_mode for Conv2D adjustment")
 
             if freeze_layers:
                 freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=fine_tuning_cfg.opt.fine_tuning_mode)
@@ -1283,8 +1371,8 @@ def load_pretrained_checkpoint(model, config, device):
 
             print(f"Checkpoint info:")
             print(f"  - Epoch: {pretrained_epoch}")
-            print(f"  - Loss metric: {pretrained_loss}")
-            print(f"  - Loss value: {pretrained_value_loss}")
+            print(f"  - Loss/Metric: {pretrained_loss}")
+            print(f"  - Loss/Metric value: {pretrained_value_loss}")
             if pretrained_params:
                 print(f"  - Parameters: {pretrained_params:,}")
         else:

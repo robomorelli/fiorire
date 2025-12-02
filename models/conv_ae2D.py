@@ -32,6 +32,7 @@ class Encoder(nn.Module):
         self.act = activation
         self.flattened = flattened
         self.bottleneck_act = bottleneck_act
+        self.act_str = {'relu':'relu', 'lrelu':'leaky_relu'}[{v: k for k, v in activation_dict.items()}.get(activation, 'relu').lower()]
 
 
         out_f = None
@@ -75,7 +76,7 @@ class Encoder(nn.Module):
         print('Initializing conv2d weights with Kaiming He normal')
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode=mode)
+                nn.init.kaiming_normal_(m.weight, mode=mode, nonlinearity=self.act_str)
             elif isinstance(m, (nn.BatchNorm3d, nn.BatchNorm2d)):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
@@ -143,6 +144,7 @@ class Decoder(nn.Module):
         self.flattened = flattened
         self.flattened_size = flattened_size
         self.batch_norm = batch_norm
+        self.act_str = {'relu':'relu', 'lrelu':'leaky_relu'}[{v: k for k, v in activation_dict.items()}.get(activation, 'relu').lower()]
 
         # Compute output paddings for deconv
         output_paddings = self._compute_output_padding(
@@ -217,7 +219,7 @@ class Decoder(nn.Module):
         print('Initializing conv2d weights with Kaiming He normal')
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode=mode)
+                nn.init.kaiming_normal_(m.weight, mode=mode, nonlinearity=self.act_str)
             elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm3d)):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
@@ -247,12 +249,15 @@ class CONV_AE2D(nn.Module):
         self.compression_factor = model_cfg.compression_factor
         self.increasing = model_cfg.increasing
         self.dilation = model_cfg.dilation
-        if self.cfg.opt.get("fine_tuning",0):
+        if self.cfg.opt.get("fine_tuning",0) and self.cfg.opt.get("opt.fine_tuning_mode") == "adaptive_layer":
+            # Chage the output size according to the pre-trained model to enable putput adaptation layer
             self.h = len(torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.feats)
             self.w = torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.seq_in_length
         else:
             self.h = cfg.dataset.n_features  # or model_cfg.heigth if set there
             self.w = cfg.dataset.seq_in_length
+        self.h = cfg.dataset.n_features  # or model_cfg.heigth if set there
+        self.w = cfg.dataset.seq_in_length
         self.halve_time = model_cfg.halve_time  # if True, halve only the time dimension when pooling
         self.halve_features = model_cfg.halve_features  # if True, halve only the feature dimension when pooling
         self.stride = model_cfg.stride if not model_cfg.pool else 1
