@@ -8,6 +8,7 @@ from utils.general import (extract_config, extract_fixed_config, get_sync_config
 from datetime import datetime
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import CLIReporter
+from trainer.utils import get_opt_metric
 
 from config import *
 
@@ -56,7 +57,9 @@ def main(args):
     # Set the resources for each trial
     resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial} if (
             cfg.resources.gpu_trial != 0) else {"cpu": cfg.resources.cpu_trial}
-    metric, mode = list(cfg.opt.opt_metric.items())[0]
+    metric_loader_path = cfg.opt.metrics_dataset_path
+    metrics_dict = get_opt_metric(cfg=cfg, metrics_loader=metric_loader_path)
+    metric, mode = metrics_dict['metric_key'], metrics_dict['mode']
     progress_reporter = CLIReporter(
         metric_columns=[metric, f'best_{metric}'] + list(cfg.opt.metrics_to_report) + list(cfg.opt.other_reports))
     sched = ASHAScheduler(metric=metric, mode=mode, max_t = 10 ** 18, grace_period=50)
@@ -90,7 +93,7 @@ if __name__ == "__main__":
     parser.add_argument("--password", help="password to connect to master")
     parser.add_argument("--config_file", default='conv_ae2D_ft', help="[conv_ae1D_ft, conv_ae2D_ft, lstm_ft]")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
-    parser.add_argument("--wandb", default=1, type=int, help="the model you want to hpo")
+    parser.add_argument("--wandb", default=0, type=int, help="the model you want to hpo")
     parser.add_argument("--project_name", default='hpo_full_2D_3anomalies_delta8_ft', help="the model you want to hpo")
     parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")

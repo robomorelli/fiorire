@@ -101,9 +101,9 @@ PBS_JOB="/davinci-1/home/morellir/artificial_intelligence/repos/fiorire/launch_h
 
 cat > "$PBS_JOB" <<EOF
 #!/bin/bash
-#PBS -N fiorire
-#PBS -o fiorire.log
-#PBS -e fiorire.err
+#PBS -N fiorire_transfer_learning_multinode
+#PBS -o fiorire_transfer_learning_multinode.log
+#PBS -e fiorire_transfer_learning_multinode.err
 #PBS -q gpu
 #PBS -k oe
 #PBS -m e
