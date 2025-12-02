@@ -1045,7 +1045,7 @@ def adjust_model_for_finetuning(
 
         # Identifica layer protetti
         protected_keywords = ["adapter", "adaptive"]
-        is_latent_strategy = fine_tuning_mode == "latent_space"
+        is_latent_strategy = fine_tuning_mode == "latent_space" or "hard_latent_space"
         if is_latent_strategy:
             protected_keywords += ["latent", "bottleneck"]
 
