@@ -4,14 +4,14 @@ __pycache__/
 *$py.class
 
 file_from_consortium
-
+anomalies_injection/dataset_configuration/*
 train_configurations/*
 info/
 data/
 dataloader/
 # C extensions
 *.so
-train_configurations/*
+
 # Distribution / packaging
 .Python
 build/
