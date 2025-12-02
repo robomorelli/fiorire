@@ -331,7 +331,10 @@ def merge_pretraining_finetuning_configs(pretraining_cfg, finetuning_cfg, output
         print(f"\nDATASET:")
         print(f"  🔒 name: {finetuning_cfg['dataset']['name']}")
         print(f"  🔒 data_path: {finetuning_cfg['dataset']['data_path']}")
-        print(f"  🔒 num_features: {len(finetuning_cfg['dataset'].get('feats', []))}")
+        try:
+            print(f"  🔒 num_features: {len(finetuning_cfg['dataset'].get('feats', []))}")
+        except:
+            print("  🔒 num_features: (unable to determine) - gettig features automatically from data")
 
     # Save to file if requested
     if output_path:

@@ -38,8 +38,7 @@ class trainCONVAE2D(tune.Trainable):
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (
-            self.opt_metric_dict[k] for k in opt_metric_dict_keys
-        )
+            self.opt_metric_dict[k] for k in opt_metric_dict_keys)
 
 
         # Set up device
