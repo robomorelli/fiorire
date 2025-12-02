@@ -1,20 +1,20 @@
 # Optimization
 tune_config:
   opt.fine_tuning: tune.choice([1])
-  opt.checkpoint_path: tune.choice(["./ray_results/fiorire1_hpc_multinode_conv2D_conv_ae2D_fiorire_2025-12-01_20-57-35/conv_ae2D_fiorire/fb049_00047_overlap=0.7000_scaler=StandardSc_seqlen=16_act=Relu_filters=128/checkpoint_000056/model.pt"])
-  opt.fine_tuning_mode: tune.choice(['adaptive_layer', 'latent_space'])    #   'latent_space'
+  opt.checkpoint_path: tune.choice(["./ray_results/fiorire1_hpc_multinode_conv2D_conv_ae2D_fiorire_2025-12-02_11-21-32/conv_ae2D_fiorire/aca04_00000_overlap=0.3000_scaler=StandardSc_seqlen=16_act=Elu_filters=64/checkpoint_000001/model.pt"])
+  opt.fine_tuning_mode: tune.choice(['adaptive_layer', 'latent_space', 'hard_latent_space'])    #   'latent_space'
 
   opt.freeze_layers: tune.choice(['0', 'encoder'])  # 'all', 'encoder', 'decoder', 'none', 'bottelneck' , 'numeric value
-  opt.lr: tune.choice([0.0009, 0.0001, 0.00005]]])
-  opt.bottleneck_lr: tune.choice([0.0001, 0.00005, 0]]])
-  opt.batch_size: tune.choice([500])
+  opt.lr: tune.choice([0.0009, 0.0003, 0.00005]]])
+  opt.bottleneck_lr: tune.choice([0.0001, 0.00005, 0.00001, 0]]])
+  opt.batch_size: tune.choice([100, 200, 800])
   opt.epochs: tune.choice([200])
-  opt.lr_patience: tune.choice([5, 10])
+  opt.lr_patience: tune.choice([7, 10, 15])
   opt.es_patience: tune.choice([15])
 
   dataset.scaler: tune.choice(['StandardScaler'])
   dataset.seq_in_length: tune.choice([16])
-  dataset.perc_overlap: tune.choice([0.7])
+  dataset.perc_overlap: tune.choice([0.5, 0.7, 0.9])
 
 # Dataset
 dataset:

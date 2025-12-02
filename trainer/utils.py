@@ -1213,7 +1213,7 @@ def adjust_model_for_finetuning(
                     print(f"🔧 Flattened size changed: {old_flattened} → {new_flattened}. Updating latent space...")
                     model = update_latent(model, old_flattened, new_flattened, device=device)
                 else:
-                    print(f"🔧 Flattened size DOES'NT changed: {old_flattened} → {new_flattened}. BUT STILL Updating latent space...")
+                    print(f"🔧 Flattened size DOES'NT changed but HARD LATENT SPACE MODE: {old_flattened} → {new_flattened}. BUT STILL Updating latent space...")
                     model = update_latent(model, old_flattened, new_flattened, device=device)
 
             else:

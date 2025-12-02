@@ -32,7 +32,7 @@ class Encoder(nn.Module):
         self.act = activation
         self.flattened = flattened
         self.bottleneck_act = bottleneck_act
-        self.act_str = {'relu':'relu', 'lrelu':'leaky_relu'}[{v: k for k, v in activation_dict.items()}.get(activation, 'relu').lower()]
+        self.act_str = {'relu':'relu', 'lrelu':'leaky_relu', 'elu':'relu'}[{v: k for k, v in activation_dict.items()}.get(activation, 'relu').lower()]
 
 
         out_f = None
@@ -144,7 +144,7 @@ class Decoder(nn.Module):
         self.flattened = flattened
         self.flattened_size = flattened_size
         self.batch_norm = batch_norm
-        self.act_str = {'relu':'relu', 'lrelu':'leaky_relu'}[{v: k for k, v in activation_dict.items()}.get(activation, 'relu').lower()]
+        self.act_str = {'relu':'relu', 'lrelu':'leaky_relu', 'elu':'relu'}[{v: k for k, v in activation_dict.items()}.get(activation, 'relu').lower()]
 
         # Compute output paddings for deconv
         output_paddings = self._compute_output_padding(
