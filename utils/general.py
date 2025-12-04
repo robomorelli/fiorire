@@ -1,5 +1,7 @@
 # utils/general.py
 from pathlib import Path
+import ast
+import re
 from omegaconf import OmegaConf, DictConfig, ListConfig
 from typing import Tuple
 import numpy as np
@@ -92,7 +94,68 @@ def resolve_paths(cfg: DictConfig, root_dir: str=root) -> DictConfig:
     _resolve(cfg)
     return cfg
 
+''' 
+def extract_config(cfg_path=None, cfg=None, fine_tuning=False):
+    """
+    Estrae configurazione da YAML e mappa a Ray Tune functions.
+    Gestisce correttamente path multipli e stringhe quotate.
+    """
+    assert cfg_path is not None or cfg is not None
 
+    if cfg is None:
+        cfg = OmegaConf.load(cfg_path)
+
+    config = {}
+
+    for k, v in cfg.tune_config.items():
+        # Extract function name (es. 'tune.choice')
+        match = re.match(r'(\w+\.\w+)\((.*)\)', v, re.DOTALL)
+
+        if not match:
+            raise ValueError(f"Cannot parse tune config: {k} = {v}")
+
+        func_name = match.group(1)
+        args_str = match.group(2).strip()
+
+        # Parse arguments using ast.literal_eval (gestisce stringhe quotate!)
+        try:
+            # ast.literal_eval converte stringa Python → oggetto Python
+            # "[1, 2, 3]" → [1, 2, 3]
+            # "['a', 'b']" → ['a', 'b']
+            parsed_args = ast.literal_eval(args_str)
+
+            # Se è già una lista, usala direttamente
+            if isinstance(parsed_args, list):
+                config[k] = ray_mapper[func_name](parsed_args)
+            else:
+                # Se è singolo valore, wrappalo in lista
+                config[k] = ray_mapper[func_name]([parsed_args])
+
+        except (ValueError, SyntaxError) as e:
+            print(f"⚠️ Error parsing {k} = {v}")
+            print(f"   Args string: {args_str}")
+            raise e
+
+    if fine_tuning:
+        # Extract checkpoint_path and fine_tuning from tune_config
+        checkpoint_path = config.get('opt.checkpoint_path')
+        fine_tuning_flag = config.get('opt.fine_tuning')
+
+        if checkpoint_path:
+            # Se è un tune.choice con lista di path
+            if hasattr(checkpoint_path, 'categories'):
+                cfg['opt']['checkpoint_path'] = checkpoint_path.categories
+            else:
+                cfg['opt']['checkpoint_path'] = checkpoint_path
+
+        if fine_tuning_flag:
+            if hasattr(fine_tuning_flag, 'categories'):
+                cfg['opt']['fine_tuning'] = fine_tuning_flag.categories[0]
+            else:
+                cfg['opt']['fine_tuning'] = fine_tuning_flag
+
+    return config, cfg
+''' 
 def extract_config(cfg_path=None, cfg=None, fine_tuning=False):
 
     assert cfg_path is not None or cfg is not None

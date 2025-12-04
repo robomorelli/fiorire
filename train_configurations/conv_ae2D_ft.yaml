@@ -5,8 +5,8 @@ tune_config:
   opt.fine_tuning_mode: tune.choice(['adaptive_layer', 'latent_space', 'hard_latent_space'])    #   'latent_space'
 
   opt.freeze_layers: tune.choice(['0', 'encoder'])  # 'all', 'encoder', 'decoder', 'none', 'bottelneck' , 'numeric value
-  opt.lr: tune.choice([0.0009, 0.0003, 0.00005]]])
-  opt.bottleneck_lr: tune.choice([0.0001, 0.00005, 0.00001, 0]]])
+  opt.lr: tune.choice([0.0009, 0.0003, 0.00005])
+  opt.bottleneck_lr: tune.choice([0.0001, 0.00005, 0.00001, 0])
   opt.batch_size: tune.choice([100, 200, 800])
   opt.epochs: tune.choice([200])
   opt.lr_patience: tune.choice([7, 10, 15])
