@@ -61,11 +61,11 @@ class Encoder(nn.Module):
         #self.bottleneck = bottleneck2D(in_f, self.bottleneck_out_channels, activation=self.act, batch_norm=True)
         # compute flattened size *after* bottleneck
         self.last_layers_channels = out_f * 2
-        self.bottleneck_conv = nn.Conv2d(in_f, self.last_layers_channels, kernel_size=kernel_size, padding=padding, dilation=dilation)
-        self.flattened_size, self.h_enc, self.w_enc = self._get_final_flattened_size()
+        bottleneck_conv = nn.Conv2d(in_f, self.last_layers_channels, kernel_size=kernel_size, padding=padding, dilation=dilation)
+        self.flattened_size, self.h_enc, self.w_enc = self._get_final_flattened_size(bottleneck_conv)
         self.latent_dim = int(self.flattened_size // self.compression_factor)
 
-        self.bottleneck = bottleneck2D(self.bottleneck_conv,
+        self.bottleneck = bottleneck2D(bottleneck_conv=bottleneck_conv,
                                        flattened=self.flattened, flattened_size= self.flattened_size,
                                        latent_dim=self.latent_dim, activation=self.act,
                                        bottleneck_activation=self.bottleneck_act, batch_norm=True)
@@ -81,7 +81,7 @@ class Encoder(nn.Module):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
-    def _get_final_flattened_size(self):
+    def _get_final_flattened_size(self, bottleneck_conv):
         """
         Calcola la dimensione flatten finale dell'encoder + bottleneck_conv
         usando un input dummy coerente con dtype e device del modello.
@@ -101,7 +101,7 @@ class Encoder(nn.Module):
 
             # Passa attraverso encoder e bottleneck
             x = self.encoder(x)
-            x = self.bottleneck_conv(x)
+            x = bottleneck_conv(x)
 
             # Ottieni le dimensioni finali
             _, c, h, w = x.size()

@@ -92,9 +92,20 @@ def update_input_output(cfg):
     else:
         target = None
 
-    # Merge model and opt into cfg
+    if cfg.opt.get("remove_columns", False):
+        if isinstance(cfg.opt.get.remove_columns, (list, ListConfig)):
+            remove_columns = cfg.opt.get.remove_columns
+        elif isinstance(cfg.dataset.target, str):
+            remove_columns = [cfg.opt.get.remove_columns]
+    elif cfg.opt.get("remove_columns", False) is None:
+        remove_columns = []
+    else:
+        remove_columns = []
+
+        # Merge model and opt into cfg
     cfg.dataset.feats = feats
     cfg.dataset.target = target
+    cfg.opt.remove_columns = remove_columns
 
     return cfg, feats, target
 
@@ -1075,13 +1086,13 @@ def adjust_model_for_finetuning(
                 keep_module(name, module, "(protected)", protected=True)
                 continue
 
-            # Modalità 'all' → congela tutto tranne protetti
+            # Modalità 'all' → freeze all except protected
             if "all" in freeze_layers:
                 freeze_module(name, module)
                 continue
 
-            # Modalità 'encoder-bottleneck' → congela encoder + bottleneck solo se non protetto
-            if "encoder-bottleneck" in freeze_layers or "encoder-bottleneck" in freeze_layers:
+            # Modalità 'encoder-bottleneck' → freeze encoder + bottleneck (if not protected)
+            if "encoder-bottleneck" in freeze_layers or "encoder_bottleneck" in freeze_layers:
                 if "encoder" in lname:
                     freeze_module(name, module)
                 elif "bottleneck" in lname:
@@ -1090,7 +1101,7 @@ def adjust_model_for_finetuning(
                     keep_module(name, module)
                 continue
 
-            # Modalità 'encoder-decoder' → congela encoder + decoder, lascia libero bottleneck
+            # Modalità 'encoder-decoder' → freeze encoder + decoder, keep free bottleneck
             if "encoder-decoder" in freeze_layers:
                 if "encoder" in lname or "decoder" in lname:
                     freeze_module(name, module)
@@ -1109,11 +1120,11 @@ def adjust_model_for_finetuning(
                 freeze_module(name, module)
                 continue
 
-            # Freeze numerico: primi N moduli (opzionale, già gestito prima)
+            # Freeze numeric: firts N modules
             if any(item.isdigit() for item in freeze_layers):
                 numeric_layers = [int(item) for item in freeze_layers if item.isdigit()]
                 max_n = max(numeric_layers)
-                # Contatore dei moduli già congelati
+                # already freezed count
                 freeze_count = getattr(model, "_freeze_count", 0)
                 if freeze_count < max_n:
                     freeze_module(name, module)
@@ -1122,7 +1133,7 @@ def adjust_model_for_finetuning(
                     keep_module(name, module)
                 continue
 
-            # Tutto il resto → non congelato
+            # the rest, not freezed
             keep_module(name, module, "(default)")
 
         print("\n✅ FREEZE COMPLETE\n" + "=" * 80 + "\n")

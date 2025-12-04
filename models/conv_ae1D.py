@@ -57,24 +57,25 @@ class Encoder1D(nn.Module):
 
         # Bottleneck: 1x1 conv doubling channels
         self.bottleneck_out_channels = in_f * 2
-        self.bottleneck = bottleneck1D(in_f, self.bottleneck_out_channels, activation=self.act,
+        # Compute flattened size after bottleneck
+        bottleneck_conv = nn.Conv1d(in_f, self.bottleneck_out_channels, kernel_size=1)
+        self.flattened_size, self.seq_enc = self._get_final_flattened_size(bottleneck_conv=bottleneck_conv)
+        self.latent_dim = int(self.flattened_size // self.compression_factor)
+        self.bottleneck = bottleneck1D(bottleneck_conv=bottleneck_conv, activation=self.act,
+                                       flattened=self.flattened, flattened_size=self.flattened_size, latent_dim=self.latent_dim,
                                        bottleneck_activation=self.bottleneck_act, batch_norm=True)
 
-        # Compute flattened size after bottleneck
-        self.flattened_size, self.seq_enc = self._get_final_flattened_size()
-        self.latent_dim = int(self.flattened_size // self.compression_factor)
-
-        if self.flattened:
-            self.flatten = nn.Flatten()
-            self.encoder_layer = nn.Linear(self.flattened_size, self.latent_dim)
+        #if self.flattened:
+        #    self.flatten = nn.Flatten()
+        #    self.encoder_layer = nn.Linear(self.flattened_size, self.latent_dim)
 
         self._init_weights()
 
-    def _get_final_flattened_size(self):
+    def _get_final_flattened_size(self, bottleneck_conv):
         with torch.no_grad():
             x = torch.zeros(1, self.in_channels, self.seq_length)
             x = self.encoder(x)
-            x = self.bottleneck(x)
+            x = bottleneck_conv(x)
             _, c, l = x.size()
         return c * l, l
 
@@ -89,9 +90,9 @@ class Encoder1D(nn.Module):
     def forward(self, x):
         x = self.encoder(x)
         x = self.bottleneck(x)
-        if self.flattened:
-            x = self.flatten(x)
-            x = self.encoder_layer(x)
+        #if self.flattened:
+        #    x = self.flatten(x)
+        #    x = self.encoder_layer(x)
         return x
 
 
@@ -236,10 +237,11 @@ class CONV_AE1D(nn.Module):
         self.cfg = cfg
         model_cfg = cfg.model
 
-        #if self.cfg.opt.get("fine_tuning",0):
-        #    self.in_channels  = len(torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.n_features)
-        #else:
-        #    self.in_channels = cfg.dataset.n_features
+        if self.cfg.opt.get("fine_tuning",0) and self.cfg.opt.get("opt.fine_tuning_mode") == "adaptive_layer":
+            # in case of adaptive layer fine-tuning, set in_channels according to the checkpoint pre-trained model
+            self.in_channels  = len(torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.n_features)
+        else:
+            self.in_channels = cfg.dataset.n_features
         self.in_channels = cfg.dataset.n_features
         self.kernel_size = model_cfg.kernel_size
         self.base_filters = model_cfg.base_filters
@@ -295,24 +297,7 @@ class CONV_AE1D(nn.Module):
             bottleneck_out_channels=self.encoder.bottleneck_out_channels,
         )
 
-    def forward_with_adapters(self, x):
-        # 🔹 Input adapter (solo se presente)
-        if hasattr(self, "input_adapter") and self.input_adapter is not None:
-            x = self.input_adapter(x)
 
-        # 🔹 Encoder + bottleneck
-        z = self.encoder(x)
-
-        # 🔹 Decoder
-        out = self.decoder(z)
-
-        # 🔹 Output adapter (solo se presente)
-        if hasattr(self, "output_adapter") and self.output_adapter is not None:
-            out = self.output_adapter(out)
-
-        return out
-
-    '''
     def forward(self, x):
         # input adapter (solo se presente)
         if hasattr(self, "input_adapter") and self.input_adapter is not None:
@@ -329,4 +314,3 @@ class CONV_AE1D(nn.Module):
             out = self.output_adapter(out)
 
         return out
-    '''

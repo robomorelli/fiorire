@@ -19,10 +19,10 @@ class trainCONVAE2D(tune.Trainable):
         self.best_val_loss = float(np.inf)
         self.best_f1_score = -float(np.inf)
         self.best_val_roc_auc = -float(np.inf)
-        self.best_fpr = 0
+        self.best_fpr = float(np.inf)
         self.best_tpr = 0
         self.best_thresh_f1 = -float(np.inf)
-        self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
+        #self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
         if  config.get('opt.fine_tuning') and 'scaler_params_pre_training' in torch.load(self.cfg.opt.get('checkpoint_path')).keys():
             self.scaler_pre_training_params = None if not(self.cfg.opt.get('fine_tuning', False)) else torch.load(self.cfg.opt.get('checkpoint_path'))['scaler_params_pre_training']
         else:

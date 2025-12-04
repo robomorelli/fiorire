@@ -193,21 +193,6 @@ def deconv_block1D(
 
 
 
-def bottleneck1D(in_channels, out_channels, activation=nn.ReLU(), bottleneck_activation=nn.ReLU(), batch_norm=True):
-    """
-    Crea un bottleneck 1D con conv 1x1, optional BatchNorm e attivazione.
-    """
-    layers = OrderedDict()
-    layers["bottleneck_conv"] = nn.Conv1d(in_channels, out_channels, kernel_size=1)
-    if batch_norm:
-        layers["bottleneck_bn"] = nn.BatchNorm1d(out_channels)
-    if bottleneck_activation is not None:
-        layers["act1"] = bottleneck_activation
-    else:
-        layers["act1"] = activation
-    return nn.Sequential(layers)
-
-
 def bottleneck2DOldVersion(in_channels, out_channels, activation=nn.ReLU(), batch_norm=True):
     """
     Crea un bottleneck 2D con conv 1x1, optional BatchNorm e attivazione.
@@ -270,7 +255,42 @@ def conv_block(
     return nn.Sequential(*layers)
 
 
-def bottleneck2D(bottleneck_conv_layer, flattened=True, flattened_size=None, latent_dim=None,
+
+def bottleneck1D(bottleneck_conv, activation=nn.ReLU(),
+                 flattened=True, flattened_size=None, latent_dim=None,
+                 bottleneck_activation=nn.ReLU(), batch_norm=True):
+    """
+    Crea un bottleneck 1D con conv 1x1, optional BatchNorm e attivazione.
+    """
+    layers = OrderedDict()
+    layers["bottleneck_conv"] = bottleneck_conv
+    if batch_norm:
+        layers["bottleneck_bn"] = nn.BatchNorm1d(bottleneck_conv.out_channels)
+    if bottleneck_activation is not None:
+        layers["act1"] = bottleneck_activation
+    else:
+        layers["act1"] = activation
+
+    if flattened:
+        layers["flatten"] = nn.Flatten()
+        layers["to_latent"] = nn.Linear(flattened_size, latent_dim)
+        if bottleneck_activation is not None:
+            layers["act"] = bottleneck_activation
+        else:
+            layers["act"] = activation
+        if batch_norm is not None:
+            layers["batch_norm_latent"] = nn.BatchNorm1d(latent_dim)
+    else:
+        raise NotImplementedError("Non-flattened bottleneck not implemented yet.")
+
+
+
+    return nn.Sequential(layers)
+
+
+
+def bottleneck2D(bottleneck_conv,
+                 flattened=True, flattened_size=None, latent_dim=None,
                  activation=nn.ReLU(), bottleneck_activation=nn.ReLU(), batch_norm=True):
     """
     Crea un bottleneck 2D: Flatten → Dense → Dense → Unflatten.
@@ -278,10 +298,10 @@ def bottleneck2D(bottleneck_conv_layer, flattened=True, flattened_size=None, lat
 
     layers = OrderedDict()
 
-    layers['bottleneck_conv'] = bottleneck_conv_layer
+    layers['bottleneck_conv'] = bottleneck_conv
 
     if batch_norm:
-        layers['batch_norm_conv'] = nn.BatchNorm2d(bottleneck_conv_layer.out_channels)
+        layers['batch_norm_conv'] = nn.BatchNorm2d(bottleneck_conv.out_channels)
     if activation is not None:
         layers['activation'] = activation
 
