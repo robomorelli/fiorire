@@ -940,16 +940,95 @@ def test_anomaly_step_kp(
     return metrics_dict, idx_main
 
 
+
+def get_module_type(name):
+    """
+    Classifica moduli in modo robusto per supportare:
+    - Bottleneck nested (encoder.bottleneck.*) o non nested (bottleneck.*)
+    - Conv1D e Conv2D
+    - Latent layers nested o separati
+
+    Priority order:
+      1. latent (Linear to/from latent space)
+      2. bottleneck_conv (Conv part of bottleneck)
+      3. bottleneck (Generic bottleneck)
+      4. encoder (Pure encoder conv layers)
+      5. decoder (Pure decoder conv/deconv layers)
+      6. other
+
+    Returns:
+        str: Module type classification
+    """
+    lname = name.lower()
+
+    # =====================================================
+    # Priority 1: LINEAR LATENT LAYERS
+    # =====================================================
+    latent_keywords = [
+        "to_latent",  # encoder.bottleneck.to_latent (nested)
+        "encoder_layer",  # encoder.encoder_layer (separate)
+        "latent_to_flatten",  # decoder.*.latent_to_flatten
+        "from_latent",
+        "reshape"  # decoder.reshape (Linear from latent)
+    ]
+
+    if any(keyword in lname for keyword in latent_keywords):
+        return "latent"
+
+    # =====================================================
+    # Priority 2: BOTTLENECK (Conv/BN/Activation part)
+    # =====================================================
+    if "bottleneck" in lname:
+        conv_indicators = [
+            "conv", "batch_norm", "bn", "activation", "act",
+            "flatten", "unflatten"
+        ]
+        if any(indicator in lname for indicator in conv_indicators):
+            return "bottleneck_conv"
+        return "bottleneck"
+
+    # =====================================================
+    # Priority 2.5: FLATTEN separato (non in bottleneck)
+    # =====================================================
+    # encoder.flatten (Modello 2) → "other" per non freezarlo con "encoder"
+    if "flatten" in lname and "encoder" in lname and "bottleneck" not in lname:
+        return "other"
+
+    # =====================================================
+    # Priority 3: ENCODER (Pure convolutional encoder)
+    # =====================================================
+    if "encoder" in lname:
+        encoder_indicators = [
+            "enc_lay", "conv", "pool", "maxpool", "avgpool"
+        ]
+        if any(indicator in lname for indicator in encoder_indicators):
+            return "encoder"
+        return "encoder"
+
+    # =====================================================
+    # Priority 4: DECODER (Convolutional decoder)
+    # =====================================================
+    if "decoder" in lname:
+        decoder_indicators = [
+            "dec_lay", "deconv", "convtranspose", "upsample", "decoder_out"
+        ]
+        if any(indicator in lname for indicator in decoder_indicators):
+            return "decoder"
+        return "decoder"
+
+    return "other"
+
+
 def adjust_model_for_finetuning(
-    fine_tuning_cfg,
-    model,
-    checkpoint,
-    pre_feats,
-    fine_feats,
-    pre_seq_len,
-    fine_seq_len,
-    conv_type="conv_ae2d",
-    device='cuda:0'
+        fine_tuning_cfg,
+        model,
+        checkpoint,
+        pre_feats,
+        fine_feats,
+        pre_seq_len,
+        fine_seq_len,
+        conv_type="conv_ae2d",
+        device='cuda:0'
 ):
     """
     Adjust the model for fine-tuning when input dimensions change,
@@ -968,7 +1047,7 @@ def adjust_model_for_finetuning(
     def update_latent(model, old_flattened, new_flattened, device='cuda:0'):
         """
         Aggiorna la dimensione del latent space ricreando i layer Linear
-        con inizializzazione Kaiming Normal, come la tua funzione Conv2D.
+        con inizializzazione Kaiming Normal.
         """
 
         def init_kaiming_linear(layer, mode='fan_in'):
@@ -988,20 +1067,21 @@ def adjust_model_for_finetuning(
         # ---------------------------
         # ENCODER: to_latent
         # ---------------------------
-        for name, module in encoder.bottleneck.named_modules():
-            if isinstance(module, nn.Linear) and "to_latent" in name:
+        for name, module in encoder.named_modules():
+            if isinstance(module, nn.Linear) and "to_latent" in name.lower():
 
                 new_layer = nn.Linear(new_flattened, new_latent_dim).to(device)
                 init_kaiming_linear(new_layer)
 
-                parent = encoder.bottleneck
+                # Navigate to parent and replace
                 parts = name.split('.')
+                parent = encoder
                 for p in parts[:-1]:
                     parent = getattr(parent, p)
 
                 setattr(parent, parts[-1], new_layer)
 
-                print(f"Replaced encoder.{name} with Linear({new_flattened} → {new_latent_dim})")
+                print(f"✅ Replaced encoder.{name} with Linear({new_flattened} → {new_latent_dim})")
 
         encoder.flattened_size = new_flattened
         encoder.latent_dim = new_latent_dim
@@ -1010,19 +1090,19 @@ def adjust_model_for_finetuning(
         # DECODER: latent_to_flatten
         # ---------------------------
         for name, module in decoder.named_modules():
-            if isinstance(module, nn.Linear) and "latent_to_flatten" in name:
+            if isinstance(module, nn.Linear) and "latent_to_flatten" in name.lower():
 
                 new_layer = nn.Linear(new_latent_dim, new_flattened).to(device)
                 init_kaiming_linear(new_layer)
 
-                parent = decoder
                 parts = name.split('.')
+                parent = decoder
                 for p in parts[:-1]:
                     parent = getattr(parent, p)
 
                 setattr(parent, parts[-1], new_layer)
 
-                print(f"Replaced decoder.{name} with Linear({new_latent_dim} → {new_flattened})")
+                print(f"✅ Replaced decoder.{name} with Linear({new_latent_dim} → {new_flattened})")
 
         decoder.flattened_size = new_flattened
         decoder.latent_dim = new_latent_dim
@@ -1036,7 +1116,7 @@ def adjust_model_for_finetuning(
     def freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=None):
         """
         Congela selettivamente i layer del modello secondo freeze_layers.
-        Tiene conto dei layer “protetti” (es. bottleneck, adapter, latent).
+        Usa get_module_type() per classificazione robusta.
         """
         print("\n" + "=" * 80)
         print("🧊 FREEZE-LAYERS: STARTING PROCEDURE")
@@ -1051,90 +1131,121 @@ def adjust_model_for_finetuning(
 
         # Caso speciale: '0' → nessun freeze
         if "0" in freeze_layers:
-            print("\nℹ️ Freeze layers = '0' → no freezing applied (only protected layers)")
+            print("\nℹ️ Freeze layers = '0' → no freezing applied")
             freeze_layers = []
 
+        # =====================================================
         # Identifica layer protetti
-        protected_keywords = ["adapter", "adaptive"]
-        is_latent_strategy = fine_tuning_mode == "latent_space" or "hard_latent_space"
-        if is_latent_strategy:
-            protected_keywords += ["latent", "bottleneck"]
+        # =====================================================
+        always_protected = ["adapter", "adaptive"]
+        mode_protected = []
 
-        def is_protected(name):
-            return any(k in name.lower() for k in protected_keywords)
+        is_latent_strategy = fine_tuning_mode in ["latent_space", "hard_latent_space"]
+
+        if is_latent_strategy:
+            mode_protected = [
+                "to_latent",
+                "latent_to_flatten",
+                "from_latent",
+                "encoder_layer",
+                "reshape"
+            ]
+            print(f"\n⚙️ Fine-tuning mode = '{fine_tuning_mode}' → Latent LINEAR layers MUST be trainable")
+            print(f"   Protected keywords: {mode_protected}")
+
+        def is_always_protected(name):
+            return any(k in name.lower() for k in always_protected)
+
+        def is_mode_protected(name):
+            return any(k in name.lower() for k in mode_protected)
+
+        # =====================================================
+        # Validazione configurazione conflittuale
+        # =====================================================
+        if is_latent_strategy and ("encoder-bottleneck" in freeze_layers or "encoder_bottleneck" in freeze_layers):
+            print("\n⚠️ WARNING: Conflicting configuration detected!")
+            print(f"  - fine_tuning_mode='{fine_tuning_mode}' requires latent layers TRAINABLE")
+            print(f"  - freeze_layers contains 'encoder-bottleneck' which tries to freeze them")
+            print(f"  → Resolution: Latent layers will remain TRAINABLE (mode takes precedence)")
+            print()
 
         def freeze_module(name, module):
             for p in module.parameters(recurse=True):
                 p.requires_grad = False
-            print(f"❄️ FREEZE → {name}")
+            print(f"❄️  FREEZE → {name}")
 
-        def keep_module(name, module, reason="", protected=False):
-            icon = "🔥"
-            suffix = " (protected)" if protected else ""
-            print(f"{icon} KEEP  → {name} {reason}{suffix}")
+        def keep_module(name, module, reason=""):
+            print(f"🔥 KEEP   → {name} {reason}")
             for p in module.parameters(recurse=True):
                 p.requires_grad = True
 
-        # -----------------------------
-        # Gestione dei casi principali
-        # -----------------------------
+        # =====================================================
+        # Apply Freeze Logic
+        # =====================================================
         for name, module in model.named_modules():
-            lname = name.lower()
-            protected = is_protected(name)
-
-            if protected:
-                keep_module(name, module, "(protected)", protected=True)
+            if not name:  # Skip root
                 continue
 
-            # Modalità 'all' → freeze all except protected
+            module_type = get_module_type(name)
+
+            # Check 1: SEMPRE protetti (adapter, adaptive)
+            if is_always_protected(name):
+                keep_module(name, module, "(always protected)")
+                continue
+
+            # Check 2: Protetti da MODALITÀ (latent se latent_strategy)
+            if is_mode_protected(name):
+                keep_module(name, module, f"(protected by mode={fine_tuning_mode})")
+                continue
+
+            # Check 3: Freeze 'all'
             if "all" in freeze_layers:
                 freeze_module(name, module)
                 continue
 
-            # Modalità 'encoder-bottleneck' → freeze encoder + bottleneck (if not protected)
+            # Check 4: Freeze 'encoder-bottleneck'
             if "encoder-bottleneck" in freeze_layers or "encoder_bottleneck" in freeze_layers:
-                if "encoder" in lname:
+                if module_type in ["encoder", "bottleneck_conv", "bottleneck"]:
                     freeze_module(name, module)
-                elif "bottleneck" in lname:
-                    freeze_module(name, module)
+                    continue
                 else:
-                    keep_module(name, module)
-                continue
+                    keep_module(name, module, "(not in encoder-bottleneck)")
+                    continue
 
-            # Modalità 'encoder-decoder' → freeze encoder + decoder, keep free bottleneck
-            if "encoder-decoder" in freeze_layers:
-                if "encoder" in lname or "decoder" in lname:
+            # Check 5: Freeze 'encoder-decoder'
+            if "encoder-decoder" in freeze_layers or "encoder_decoder" in freeze_layers:
+                if module_type in ["encoder", "decoder"]:
                     freeze_module(name, module)
+                    continue
                 else:
-                    keep_module(name, module)
-                continue
+                    keep_module(name, module, "(not in encoder-decoder)")
+                    continue
 
-            # Modalità singoli layer
-            if "encoder" in freeze_layers and "encoder" in lname:
-                freeze_module(name, module)
-                continue
-            if "decoder" in freeze_layers and "decoder" in lname:
-                freeze_module(name, module)
-                continue
-            if "bottleneck" in freeze_layers and "bottleneck" in lname:
+            # Check 6: Freeze singoli componenti
+            if "encoder" in freeze_layers and module_type == "encoder":
                 freeze_module(name, module)
                 continue
 
-            # Freeze numeric: firts N modules
+            if "decoder" in freeze_layers and module_type == "decoder":
+                freeze_module(name, module)
+                continue
+
+            if "bottleneck" in freeze_layers and module_type in ["bottleneck_conv", "bottleneck"]:
+                freeze_module(name, module)
+                continue
+
+            # Check 7: Freeze numeric (primi N layer)
             if any(item.isdigit() for item in freeze_layers):
                 numeric_layers = [int(item) for item in freeze_layers if item.isdigit()]
                 max_n = max(numeric_layers)
-                # already freezed count
                 freeze_count = getattr(model, "_freeze_count", 0)
                 if freeze_count < max_n:
                     freeze_module(name, module)
                     model._freeze_count = freeze_count + 1
-                else:
-                    keep_module(name, module)
-                continue
+                    continue
 
-            # the rest, not freezed
-            keep_module(name, module, "(default)")
+            # Default: TRAINABLE
+            keep_module(name, module, "(default: trainable)")
 
         print("\n✅ FREEZE COMPLETE\n" + "=" * 80 + "\n")
 
@@ -1158,7 +1269,8 @@ def adjust_model_for_finetuning(
             model.output_adapter = adapter_out.to(device)
 
         if freeze_layers:
-            freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=fine_tuning_cfg.opt.fine_tuning_mode)
+            freeze_layers_with_logging(model, freeze_layers,
+                                       fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode'))
 
         return model
 
@@ -1224,19 +1336,21 @@ def adjust_model_for_finetuning(
                     print(f"🔧 Flattened size changed: {old_flattened} → {new_flattened}. Updating latent space...")
                     model = update_latent(model, old_flattened, new_flattened, device=device)
                 else:
-                    print(f"🔧 Flattened size DOES'NT changed but HARD LATENT SPACE MODE: {old_flattened} → {new_flattened}. BUT STILL Updating latent space...")
+                    print(f"🔧 HARD LATENT SPACE MODE: Forcing latent space update even though size unchanged")
                     model = update_latent(model, old_flattened, new_flattened, device=device)
 
             else:
-                raise ValueError(f"Unsupported fine_tuning_mode for Conv2D adjustment")
+                raise ValueError(f"Unsupported fine_tuning_mode for Conv2D adjustment: {mode}")
 
             if freeze_layers:
-                freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=fine_tuning_cfg.opt.fine_tuning_mode)
+                freeze_layers_with_logging(model, freeze_layers,
+                                           fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode'))
 
         else:
             print("✅ Feature and sequence dimensions identical — no adapter needed")
             if freeze_layers:
-                freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=fine_tuning_cfg.opt.fine_tuning_mode)
+                freeze_layers_with_logging(model, freeze_layers,
+                                           fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode'))
 
         return model
 

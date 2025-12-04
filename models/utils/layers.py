@@ -254,7 +254,21 @@ def conv_block(
 
     return nn.Sequential(*layers)
 
-
+''' 
+def bottleneck1D(in_channels, out_channels, activation=nn.ReLU(), bottleneck_activation=nn.ReLU(), batch_norm=True):
+    """
+    Crea un bottleneck 1D con conv 1x1, optional BatchNorm e attivazione.
+    """
+    layers = OrderedDict()
+    layers["bottleneck_conv"] = nn.Conv1d(in_channels, out_channels, kernel_size=1)
+    if batch_norm:
+        layers["bottleneck_bn"] = nn.BatchNorm1d(out_channels)
+    if bottleneck_activation is not None:
+        layers["act1"] = bottleneck_activation
+    else:
+        layers["act1"] = activation
+    return nn.Sequential(layers)
+'''
 
 def bottleneck1D(bottleneck_conv, activation=nn.ReLU(),
                  flattened=True, flattened_size=None, latent_dim=None,
