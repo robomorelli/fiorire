@@ -1259,14 +1259,28 @@ def adjust_model_for_finetuning(
     if conv_type.lower() == "conv_ae1d":
         if features_changed:
             print(f"🔧 Adding Conv1D INPUT adapter: feats {fine_feats} → {pre_feats}")
-            adapter_in = nn.Conv1d(fine_feats, pre_feats, kernel_size=1)
-            nn.init.kaiming_normal_(adapter_in.weight)
-            model.input_adapter = adapter_in.to(device)
+            #adapter_in = nn.Conv1d(fine_feats, pre_feats, kernel_size=1)
+            #nn.init.kaiming_normal_(adapter_in.weight)
+            #model.input_adapter = adapter_in.to(device)
+
+            # Input adapter
+            model.input_adapter = nn.Sequential(
+                nn.Conv1d(fine_feats, pre_feats, kernel_size=1),
+                nn.BatchNorm1d(pre_feats),  # ✅ BatchNorm1d (non 2d!)
+                activation_dict[fine_tuning_cfg.model.activation]
+            ).to(device)
+            # Inizializza solo il Conv1d (primo layer del Sequential)
+            nn.init.kaiming_normal_(model.input_adapter[0].weight)  # ✅ [0] = Conv1d layer
 
             print(f"🔧 Adding Conv1D OUTPUT adapter: feats {pre_feats} → {fine_feats}")
-            adapter_out = nn.Conv1d(pre_feats, fine_feats, kernel_size=1)
-            nn.init.kaiming_normal_(adapter_out.weight)
-            model.output_adapter = adapter_out.to(device)
+
+            # Output adapter
+            model.output_adapter = nn.Sequential(
+                nn.Conv1d(pre_feats, fine_feats, kernel_size=1),
+                nn.BatchNorm1d(fine_feats),  # ✅ BatchNorm1d
+                activation_dict[fine_tuning_cfg.model.activation]
+            ).to(device)
+            nn.init.kaiming_normal_(model.output_adapter[0].weight)  # ✅ [0]
 
         if freeze_layers:
             freeze_layers_with_logging(model, freeze_layers,
@@ -1291,7 +1305,7 @@ def adjust_model_for_finetuning(
                 model.input_adapter = nn.Sequential(
                     adapter_in,
                     nn.BatchNorm2d(1),
-                    nn.ReLU(inplace=True)
+                    activation_dict[fine_tuning_cfg.model.activation](inplace=True)
                 ).to(device)
                 print(f"🔧 Added Conv2D INPUT adapter: {fine_feats},{fine_seq_len} → {pre_feats},{pre_seq_len}")
 
@@ -1300,7 +1314,7 @@ def adjust_model_for_finetuning(
                 model.output_adapter = nn.Sequential(
                     adapter_out,
                     nn.BatchNorm2d(1),
-                    nn.ReLU(inplace=True)
+                    activation_dict[fine_tuning_cfg.model.activation](inplace=True)
                 ).to(device)
                 print(f"🔧 Added Conv2D OUTPUT adapter: {pre_feats},{pre_seq_len} → {fine_feats},{fine_seq_len}")
 

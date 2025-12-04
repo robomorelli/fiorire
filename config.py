@@ -50,7 +50,7 @@ all_feats_dict = {'fiorire_1': ['RW1_motcurr', 'RW2_motcurr', 'RW3_motcurr', 'RW
                   'RW1_speed', 'RW2_speed', 'RW3_speed', 'RW4_speed',
                   'RW1_cmd_volt', 'RW2_cmd_volt', 'RW3_cmd_volt', 'RW4_cmd_volt']}
 
-activation_dict = {'Relu': nn.ReLU(), 'Elu': nn.ELU(), 'Selu': nn.SELU(), 'LRelu': nn.LeakyReLU(), 'Tanh': nn.Tanh(), 'Sigmoid': nn.Sigmoid()}
+activation_dict = {'Relu': nn.ReLU(inplace=True), 'Elu': nn.ELU(inplace=True), 'Selu': nn.SELU(), 'LRelu': nn.LeakyReLU(), 'Tanh': nn.Tanh(), 'Sigmoid': nn.Sigmoid()}
 
 fiorire_family = ['fiorire_1', 'fiorire_2', 'fiorire_1']
 fiorire_1_data_path = root + '/data/fiorire_1/fiorire_1/all_2016-2018_clean_4s.pkl'

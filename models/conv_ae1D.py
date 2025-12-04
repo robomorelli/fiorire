@@ -237,12 +237,12 @@ class CONV_AE1D(nn.Module):
         self.cfg = cfg
         model_cfg = cfg.model
 
-        if self.cfg.opt.get("fine_tuning",0) and self.cfg.opt.get("opt.fine_tuning_mode") == "adaptive_layer":
+        if self.cfg.opt.get("fine_tuning",0) and self.cfg.opt.get("fine_tuning_mode") == "adaptive_layer":
             # in case of adaptive layer fine-tuning, set in_channels according to the checkpoint pre-trained model
-            self.in_channels  = len(torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.n_features)
+            self.in_channels  = len(torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.feats)
         else:
             self.in_channels = cfg.dataset.n_features
-        self.in_channels = cfg.dataset.n_features
+
         self.kernel_size = model_cfg.kernel_size
         self.base_filters = model_cfg.base_filters
         self.double_deconv = model_cfg.double_deconv
