@@ -59,16 +59,62 @@ class EarlyStopping:
 
         return improved, self.best_metric
 
-def model_setup(config_file_name, config, root):
 
-    cfg = OmegaConf.load(config_path + config_file_name)  # here use only vae conf file
+# Global cache for base configs (loaded once per file)
+_BASE_CONFIG_CACHE = {}
+
+
+def model_setup(config_file_name, config, root):
+    """
+    Setup model configuration with caching to prevent reloading from disk.
+
+    Strategy:
+    1. Load base config ONCE and cache it
+    2. Clone cached config for each worker
+    3. Merge Ray Tune parameters (frozen)
+    4. Result: Truly frozen config
+    """
+    import os
+    from omegaconf import OmegaConf
+    global _BASE_CONFIG_CACHE
+
+    cache_key = config_file_name
+
+    # =====================================================
+    # Load base config ONCE (or use cached)
+    # =====================================================
+    if cache_key not in _BASE_CONFIG_CACHE:
+        print(f"📂 [PID {os.getpid()}] Loading and caching base config: {config_file_name}")
+        base_cfg = OmegaConf.load(config_path + config_file_name)
+
+        # Store frozen snapshot in cache
+        _BASE_CONFIG_CACHE[cache_key] = OmegaConf.to_container(base_cfg, resolve=True)
+    else:
+        print(f"📌 [PID {os.getpid()}] Using cached base config: {config_file_name}")
+
+    # Clone from cache (deep copy)
+    cfg = OmegaConf.create(_BASE_CONFIG_CACHE[cache_key])
+
     # Allow dynamic field insertion
     OmegaConf.set_struct(cfg, False)
 
-    # Merge trial parameters from Ray Tune into OmegaConf config
-    for k, v in config.items():
-        OmegaConf.update(cfg, k, v, merge=True)
-    # Construct dataset config and merge
+    # =====================================================
+    # Merge Ray Tune parameters (OVERRIDE cached values)
+    # =====================================================
+    if config and len(config) > 0:
+        print(f"🔀 [PID {os.getpid()}] Merging frozen Ray Tune parameters")
+
+        # Merge trial parameters from Ray Tune
+        for k, v in config.items():
+            OmegaConf.update(cfg, k, v, merge=True)
+
+        # Debug
+        try:
+            print(f"   ✓ Final opt.lr = {cfg.opt.get('lr', 'N/A')}")
+        except:
+            pass
+
+    # Resolve paths
     cfg = resolve_paths(cfg, root)
 
     return cfg
