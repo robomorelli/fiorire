@@ -1351,7 +1351,7 @@ def adjust_model_for_finetuning(
                 model.input_adapter = nn.Sequential(
                     adapter_in,
                     nn.BatchNorm2d(1),
-                    activation_dict[fine_tuning_cfg.model.activation](inplace=True)
+                    activation_dict[fine_tuning_cfg.model.activation]
                 ).to(device)
                 print(f"🔧 Added Conv2D INPUT adapter: {fine_feats},{fine_seq_len} → {pre_feats},{pre_seq_len}")
 
@@ -1360,7 +1360,7 @@ def adjust_model_for_finetuning(
                 model.output_adapter = nn.Sequential(
                     adapter_out,
                     nn.BatchNorm2d(1),
-                    activation_dict[fine_tuning_cfg.model.activation](inplace=True)
+                    activation_dict[fine_tuning_cfg.model.activation]
                 ).to(device)
                 print(f"🔧 Added Conv2D OUTPUT adapter: {pre_feats},{pre_seq_len} → {fine_feats},{fine_seq_len}")
 

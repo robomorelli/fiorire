@@ -46,12 +46,6 @@ def main(args):
         print("⚠️ WARNING: ray_config is not a pure dict! Converting...")
         ray_config = dict(ray_config)
 
-    # Debug: show sample parameters
-    print(f"Sample params from frozen config:")
-    print(f"  - opt.lr: {cfg.opt.get('lr', 'N/A')}")
-    print(f"  - opt.epochs: {cfg.opt.get('epochs', 'N/A')}")
-    print(f"  - model.name: {cfg.model.get('name', 'N/A')}")
-    print("=" * 80 + "\n")
 
     # =====================================================
     # DEBUG MODE

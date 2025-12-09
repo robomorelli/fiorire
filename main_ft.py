@@ -1,5 +1,4 @@
 import argparse
-import os
 import ray
 import torch
 from ray.tune.schedulers import ASHAScheduler
@@ -16,48 +15,21 @@ from config import *
 
 
 def main(args):
+
     # Get date to name the results folder
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
-    # =====================================================
-    # LOAD FINE-TUNING CONFIG
-    # =====================================================
+    # Set the path to the configuration file
     cfg_path_ft = os.path.join(config_path, args.config_file + '.yaml')
-    ray_config_ft, cfg_ft = extract_config(cfg_path_ft, fine_tuning=True)
+    ray_config_ft, cfg_ft = extract_config(cfg_path_ft, fine_tuning=True)   #load ray_config_ft to take fine_tuning the model_checkpoint path
 
-    assert cfg_ft.opt.get('fine_tuning') and cfg_ft.opt.get('checkpoint_path'), \
-        "Fine-tuning mode requires 'fine_tuning=True' and 'checkpoint_path' in config"
+    assert cfg_ft.opt.get('fine_tuning') and cfg_ft.model.get('checkpoint_path')
 
-    # =====================================================
-    # HANDLE MULTIPLE CHECKPOINT PATHS
-    # =====================================================
-    checkpoint_paths = cfg_ft.opt.checkpoint_path
-
-    if isinstance(checkpoint_paths, list):
-        # Multiple checkpoints available
-        first_checkpoint = checkpoint_paths[0]
-        print(f"\n📦 Found {len(checkpoint_paths)} checkpoint(s)")
-        print(f"📌 Using first checkpoint for config loading: {first_checkpoint}")
-        for i, path in enumerate(checkpoint_paths):
-            print(f"   [{i}] {path}")
-    else:
-        # Single checkpoint
-        first_checkpoint = checkpoint_paths
-        print(f"\n📦 Single checkpoint: {first_checkpoint}")
-
-    # =====================================================
-    # LOAD PRE-TRAINING CONFIG FROM CHECKPOINT
-    # =====================================================
-    print(f"\n📂 Loading pre-training config from checkpoint...")
-    loaded_cfg = torch.load(first_checkpoint)['cfg']
-    _, cfg_pre = extract_config(cfg_path=None, cfg=loaded_cfg)
-
-    # =====================================================
-    # MERGE PRE-TRAINING AND FINE-TUNING CONFIGS
-    # =====================================================
-    print(f"🔀 Merging pre-training and fine-tuning configs...")
-    cfg = merge_pretraining_finetuning_configs(pretraining_cfg=cfg_pre, finetuning_cfg=cfg_ft)
+    loaded_cfg = torch.load(cfg_ft.model.checkpoint_path)['cfg']    # This includes both the original multiple-choices tune_confing and the single value across the opt,model,dataset section
+    _, cfg_pre = extract_config(cfg_path=None, cfg=loaded_cfg)    #seprate the multiple ray_config from cfg itself, we need cfg of pre-trained to merge with cfg_ft
+    # merge cfg with fine_tuning parameters
+    cfg = merge_pretraining_finetuning_configs(pretraining_cfg=cfg_pre,  finetuning_cfg=cfg_ft)
 
     # =====================================================
     # FREEZE CONFIG TO PREVENT CHANGES DURING EXECUTION
@@ -75,108 +47,58 @@ def main(args):
     OmegaConf.save(cfg, frozen_config_path)
     print(f"✅ Config frozen and saved to: {frozen_config_path}")
 
-    # Debug: show sample parameters
-    print(f"Sample params from frozen config:")
-    print(f"  - opt.lr: {cfg.opt.get('lr', 'N/A')}")
-    print(f"  - opt.fine_tuning: {cfg.opt.get('fine_tuning', 'N/A')}")
-    print(f"  - opt.fine_tuning_mode: {cfg.opt.get('fine_tuning_mode', 'N/A')}")
-    print(f"  - opt.freeze_layers: {cfg.opt.get('freeze_layers', 'N/A')}")
-    print(f"  - model.name: {cfg.model.get('name', 'N/A')}")
-    print("=" * 80 + "\n")
-
-    # =====================================================
-    # DEBUG MODE
-    # =====================================================
-    if args.debug_mode:
-        print("🐛 DEBUG MODE: Running single trial")
-        ray_config, cfg = extract_fixed_config(cfg_path=None, cfg=cfg)
+    # Debug mode: simulate one training iteration to check if the config is correct
+    if args.debug_mode: # seprate the multiple ray_config from cfg itself, we need cfg of pre-trained to merge with cfg_ft
+        # merge cfg with fine_tuning parameters
+        ray_config, cfg = extract_fixed_config(cfg_path=None, cfg=cfg)    # extract one specific conf (the first element of each possible selection)
         trainer_test = get_trainer(cfg.model.name)(config=ray_config)
-        result = trainer_test.step()
+        result = trainer_test.step()  # this simulates one training iteration
         print("Debug mode training result:", result)
         return
 
-    # =====================================================
-    # SETUP OUTPUT DIRECTORY
-    # =====================================================
-    local_dir, pretrained_trial_id = get_finetuning_local_dir(first_checkpoint, date_str)
-    print(f"\n📁 Fine-tuning from trial: {pretrained_trial_id}")
-    print(f"📁 Results will be saved to: {local_dir}\n")
+    local_dir, pretrained_trial_id = get_finetuning_local_dir(cfg_ft.model.checkpoint_path, date_str)
+    print(f"\nFine-tuning from trial: {pretrained_trial_id}")
+    print(f"Saving to: {local_dir}\n")
 
-    # =====================================================
-    # EXTRACT RAY CONFIG FROM FROZEN CONFIG
-    # =====================================================
+    # Test loading the checkpoint, after inizialing ray model load the checkpoint witht he traineg method or the model one? (i think the first one)
     ray_config, cfg = extract_config(cfg_path=None, cfg=cfg)
-
-    # Verify ray_config is pure dict
-    if not isinstance(ray_config, dict):
-        print("⚠️ WARNING: ray_config is not a pure dict! Converting...")
-        ray_config = dict(ray_config)
-
-    print(f"Ray config type: {type(ray_config)}")
-
-    # =====================================================
-    # SETUP RAY TUNE
-    # =====================================================
+    # Set the trainer
     trainer = get_trainer(cfg.model.name)
 
-    # Callbacks
     if args.wandb:
-        callbacks = [WandbLoggerCallback(
-            project=args.project_name,
-            entity=args.entity,
-            log_config=True,
-            api_key=args.wandb_key,
-            upload_checkpoints=True
-        )]
+        callbacks = [WandbLoggerCallback(project=args.project_name, entity=args.entity,  # optional
+                                log_config=True,  # logs the config used in each trial
+                                api_key=args.wandb_key,upload_checkpoints = True )]
     else:
         callbacks = []
 
-    # Resources per trial
-    resources_per_trial = {
-        "cpu": cfg.resources.cpu_trial,
-        "gpu": cfg.resources.gpu_trial
-    } if cfg.resources.gpu_trial != 0 else {"cpu": cfg.resources.cpu_trial}
-
-    # Metrics
+    # Set the resources for each trial
+    resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial} if (
+            cfg.resources.gpu_trial != 0) else {"cpu": cfg.resources.cpu_trial}
     metric_loader_path = cfg.opt.metrics_dataset_path
     metrics_dict = get_opt_metric(cfg=cfg, metrics_loader=metric_loader_path)
     metric, mode = metrics_dict['metric_key'], metrics_dict['mode']
-
-    # Progress reporter
     progress_reporter = CLIReporter(
-        metric_columns=[metric, f'best_{metric}'] +
-                       list(cfg.opt.metrics_to_report) +
-                       list(cfg.opt.other_reports)
-    )
-
-    # Scheduler
-    sched = ASHAScheduler(metric=metric, mode=mode, max_t=10 ** 18, grace_period=50)
+        metric_columns=[metric, f'best_{metric}'] + list(cfg.opt.metrics_to_report) + list(cfg.opt.other_reports))
+    sched = ASHAScheduler(metric=metric, mode=mode, max_t = 10 ** 18, grace_period=50)
     sync_config = get_sync_config()
 
-    # =====================================================
-    # RUN RAY TUNE (with FROZEN config)
-    # =====================================================
-    print("\n🚀 Starting Ray Tune with FROZEN config...")
+    analysis = tune.run(trainer,
+                        scheduler=sched, resources_per_trial=resources_per_trial,
+                        num_samples=int(args.num_samples),
+                        #local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
+                        local_dir=local_dir,
+                        #sync_config=tune.SyncConfig(syncer=None),
+                        name="{}".format(cfg.opt.exp_name),
+                        progress_reporter=progress_reporter,   # <-- add this here
+                        sync_config=sync_config,
+                        config=ray_config, callbacks=callbacks,
+                        checkpoint_at_end=False,
+                        checkpoint_freq=0,
+                        keep_checkpoints_num=1,
+                        trial_dirname_creator=lambda trial: trial_dirname_creator(trial, max_params=5),
+                        stop = {"training_iteration": cfg.opt.max_epochs},)
 
-    analysis = tune.run(
-        trainer,
-        scheduler=sched,
-        resources_per_trial=resources_per_trial,
-        num_samples=int(args.num_samples),
-        local_dir=local_dir,
-        name="{}".format(cfg.opt.exp_name),
-        progress_reporter=progress_reporter,
-        sync_config=sync_config,
-        config=ray_config,  # ← FROZEN config (pure dict)
-        callbacks=callbacks,
-        checkpoint_at_end=False,
-        checkpoint_freq=0,
-        keep_checkpoints_num=1,
-        trial_dirname_creator=lambda trial: trial_dirname_creator(trial, max_params=5),
-        stop={"training_iteration": cfg.opt.max_epochs},
-    )
-
-    print("\n✅ Ray Tune completed!")
     print("Best config is:", analysis.get_best_config(metric="val_loss", mode="min"))
 
 
@@ -200,3 +122,6 @@ if __name__ == "__main__":
 
     # Run main
     main(args)
+
+
+
