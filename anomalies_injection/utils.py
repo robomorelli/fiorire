@@ -303,7 +303,7 @@ def sample_and_plot_anomalies_with_labels(
 
             # Highlight anomalous window
             rel_start = start - plot_start
-            rel_end   = end - plot_start
+            rel_end = end - plot_start
             ax1.axvspan(rel_start, rel_end, color="red", alpha=0.12)
 
             # ========= BOTTOM (Only Original) ==========
@@ -321,9 +321,14 @@ def sample_and_plot_anomalies_with_labels(
             plt.tight_layout()
 
             # SAVE
-            fname = f"sample_{i:03d}_{ch}_{anomaly_type}_Δ{delta:.2f}.png"
-            plt.savefig(os.path.join(output_dir, fname), dpi=140)
-            plt.close()
+            try:
+                fname = f"sample_{i:03d}_{ch}_{anomaly_type}_Δ{delta:.2f}.png"
+                plt.savefig(os.path.join(output_dir, fname), dpi=140)
+                plt.close()
+            except:
+                fname = f"sample_{i:03d}_{anomaly_type}_Δ{delta:.2f}.png"
+                plt.savefig(os.path.join(output_dir, fname), dpi=140)
+                plt.close()
 
     print(f"✓ Saved {n_sample} anomaly examples\n")
 
