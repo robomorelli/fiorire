@@ -106,13 +106,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default='10.141.1.28:6379', help="address of master")
     parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='conv_ae2D_ft', help="[conv_ae1D_ft, conv_ae2D_ft, lstm_ft]")
+    parser.add_argument("--config_file", default='conv_ae2D_ft_MGM', help="[conv_ae1D_ft, conv_ae2D_ft, lstm_ft]")
     parser.add_argument("--num_samples", default=100, help="number of trials")
     parser.add_argument("--wandb", default=0, type=int, help="use wandb logging")
     parser.add_argument("--project_name", default='hpo_full_2D_3anomalies_delta8_ft_fast_shot', help="project name")
     parser.add_argument("--entity", default='robmorelli', help="wandb entity")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="wandb API key")
-    parser.add_argument("--debug_mode", default=1, type=int, help="debug mode (0 or 1)")
+    parser.add_argument("--debug_mode", default=0, type=int, help="debug mode (0 or 1)")
     args = parser.parse_args()
 
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"

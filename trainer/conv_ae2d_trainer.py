@@ -11,8 +11,11 @@ from models.utils.losses import *
 class trainCONVAE2D(tune.Trainable):
 
     def setup(self, config):
-        # Load and set up the configuration
-        self.cfg = model_setup(conv_ae_2D_ft_config_file, config, root) if config.get('opt.fine_tuning') else model_setup(conv_ae_2D_config_file, config, root)
+        # Load and set up the configuration (make the ray tune config collapsing in specific value into self.cfg
+        try:
+            self.cfg = model_setup(config.get('opt.config_file_path'), config, root)
+        except:
+            self.cfg = model_setup(conv_ae_2D_ft_config_file, config, root) if config.get('opt.fine_tuning') else model_setup(conv_ae_2D_config_file, config, root)
         self.cfg, _, _ = update_input_output(self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.max_epochs = self.cfg.opt.epochs
         self.current_epoch = 0
@@ -48,6 +51,7 @@ class trainCONVAE2D(tune.Trainable):
         self.model = get_model(self.cfg).to(self.device)
         self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         self.parameters_number = self.cfg.model.parameter_count
+        self.data_path = self.cfg.dataset.data_path
 
         # ==========================================
         # LOAD PRETRAINED WEIGHTS IF FINE-TUNING
@@ -110,6 +114,7 @@ class trainCONVAE2D(tune.Trainable):
             "epoch": self.current_epoch,
             "train_loss": train_loss,
             "parameters_number": self.parameters_number,
+            "data_path": self.data_path
         }
         # Combine loggable metrics
         current_val_loss = self.val_results["val_loss"]
