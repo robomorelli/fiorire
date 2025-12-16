@@ -376,22 +376,27 @@ def get_opt_metric_kp(cfg, metrics_loader=None):
 
 def compute_errors(outputs: torch.Tensor, targets: torch.Tensor, error_type: str = "abs"):
     """
-    Calcola l'errore di ricostruzione richiesto.
+    Computes the requested reconstruction error.
 
     Args:
-        outputs: modello output [N, C, L]
-        targets: target [N, C, L]
-        error_type: "abs" per MAE, "se" per squared error
+        outputs: model outputs with shape [N, C, L]
+        targets: ground-truth targets with shape [N, C, L]
+        error_type: "abs" for mean absolute error (MAE),
+                    "se" for squared error
 
     Returns:
-        errors: tensore degli errori [N, C, L]
+        errors: tensor of element-wise errors with shape [N, C, L]
     """
     if error_type == "abs":
+        # Absolute error (L1)
         return torch.abs(outputs.detach() - targets)
     elif error_type == "se":
+        # Squared error (L2)
         return (outputs.detach() - targets) ** 2
     else:
-        raise ValueError(f"Unknown error_type='{error_type}', must be 'abs' or 'se'")
+        raise ValueError(
+            f"Unknown error_type='{error_type}', must be 'abs' or 'se'"
+        )
 
 
 def mean_std_per_channel(errors: torch.Tensor, model_type: str, last_layer:str = None):
