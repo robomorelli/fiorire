@@ -7,7 +7,7 @@
 #PBS -m e
 #PBS -M roberto.morelli.ext@leonardocompany.com
 #PBS -l select=1:ngpus=4:ncpus=16,walltime=72:00:00
-#PBS -v num_nodes=1,num_gpus=4,num_cpus=16,config_file=conv_ae2D,num_samples=100,entity=robmorelli,wandb_key=56b6f7f0b13c4d89207e51c28ceb90c24201eab5,wandb=1,project_name=conv2D_AOC_ft
+#PBS -v num_nodes=1,num_gpus=4,num_cpus=16,config_file=conv_ae2D_ft_MGT,num_samples=100,entity=robmorelli,wandb_key=56b6f7f0b13c4d89207e51c28ceb90c24201eab5,wandb=1,project_name=conv2D_MGT_ft
 
 ##PBS -v num_nodes=1,num_gpus=4,num_cpus=16,config_file=,num_samples=100,wandb_key=56b6f7f0b13c4d89207e51c28ceb90c24201eab5,entity=robmorelli
 
