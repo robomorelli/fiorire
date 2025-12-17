@@ -139,10 +139,10 @@ def update_input_output(cfg):
         target = None
 
     if cfg.opt.get("remove_columns", False):
-        if isinstance(cfg.opt.get.remove_columns, (list, ListConfig)):
-            remove_columns = cfg.opt.get.remove_columns
+        if isinstance(cfg.opt.get("remove_columns"), (list, ListConfig)):
+            remove_columns = cfg.opt.get("remove_columns")
         elif isinstance(cfg.dataset.target, str):
-            remove_columns = [cfg.opt.get.remove_columns]
+            remove_columns = [cfg.opt.get("remove_columns")]
     elif cfg.opt.get("remove_columns", False) is None:
         remove_columns = []
     else:

@@ -1,4 +1,6 @@
 import argparse
+import os
+import shutil
 import ray
 import torch
 from ray.tune.schedulers import ASHAScheduler
@@ -22,14 +24,13 @@ def main(args):
 
     # Set the path to the configuration file
     cfg_path_ft = os.path.join(config_path, args.config_file + '.yaml')
-    ray_config_ft, cfg_ft = extract_config(cfg_path_ft, fine_tuning=True)   #load ray_config_ft to take fine_tuning the model_checkpoint path
+    ray_config_ft, cfg_ft = extract_config(cfg_path_ft, fine_tuning=True)
 
     assert cfg_ft.opt.get('fine_tuning') and cfg_ft.model.get('checkpoint_path')
 
-    loaded_cfg = torch.load(cfg_ft.model.checkpoint_path)['cfg']    # This includes both the original multiple-choices tune_confing and the single value across the opt,model,dataset section
-    _, cfg_pre = extract_config(cfg_path=None, cfg=loaded_cfg)    #seprate the multiple ray_config from cfg itself, we need cfg of pre-trained to merge with cfg_ft
-    # merge cfg with fine_tuning parameters
-    cfg = merge_pretraining_finetuning_configs(pretraining_cfg=cfg_pre,  finetuning_cfg=cfg_ft)
+    loaded_cfg = torch.load(cfg_ft.model.checkpoint_path)['cfg']
+    _, cfg_pre = extract_config(cfg_path=None, cfg=loaded_cfg)
+    cfg = merge_pretraining_finetuning_configs(pretraining_cfg=cfg_pre, finetuning_cfg=cfg_ft)
 
     # =====================================================
     # FREEZE CONFIG TO PREVENT CHANGES DURING EXECUTION
@@ -38,66 +39,73 @@ def main(args):
     print("📌 FREEZING CONFIG")
     print("=" * 80)
 
-    # Convert OmegaConf → pure dict (no more file references!)
     cfg_frozen = OmegaConf.to_container(cfg, resolve=True)
     cfg = OmegaConf.create(cfg_frozen)
 
-    # Save frozen config snapshot (optional, for debugging)
-    frozen_config_path = os.path.join('/tmp', f'frozen_config_ft_{args.project_name}_{date_str}.yaml')
-    OmegaConf.save(cfg, frozen_config_path)
-    print(f"✅ Config frozen and saved to: {frozen_config_path}")
-
-    # Debug mode: simulate one training iteration to check if the config is correct
-    if args.debug_mode: # seprate the multiple ray_config from cfg itself, we need cfg of pre-trained to merge with cfg_ft
-        # merge cfg with fine_tuning parameters
-        ray_config, cfg = extract_fixed_config(cfg_path=None, cfg=cfg)    # extract one specific conf (the first element of each possible selection)
-        trainer_test = get_trainer(cfg.model.name)(config=ray_config)
-        result = trainer_test.step()  # this simulates one training iteration
-        print("Debug mode training result:", result)
-        return
-
+    # =====================================================
+    # CREATE LOCAL DIR AND COPY YAML (snapshot)
+    # =====================================================
     local_dir, pretrained_trial_id = get_finetuning_local_dir(cfg_ft.model.checkpoint_path, date_str)
+    os.makedirs(local_dir, exist_ok=True)
+    shutil.copy(cfg_path_ft, os.path.join(local_dir, f'cfg_{args.config_file}.yaml'))
+    print(f"\n✅ YAML snapshot copied to experiment folder: {local_dir}")
+
     print(f"\nFine-tuning from trial: {pretrained_trial_id}")
     print(f"Saving to: {local_dir}\n")
 
-    # Test loading the checkpoint, after inizialing ray model load the checkpoint witht he traineg method or the model one? (i think the first one)
+    # Debug mode: simulate one training iteration
+    if args.debug_mode:
+        ray_config, cfg = extract_fixed_config(cfg_path=None, cfg=cfg)
+        trainer_test = get_trainer(cfg.model.name)(config=ray_config)
+        result = trainer_test.step()
+        print("Debug mode training result:", result)
+        return
+
+    # Ray Tune configuration
     ray_config, cfg = extract_config(cfg_path=None, cfg=cfg)
-    # Set the trainer
     trainer = get_trainer(cfg.model.name)
 
+    callbacks = []
     if args.wandb:
-        callbacks = [WandbLoggerCallback(project=args.project_name, entity=args.entity,  # optional
-                                log_config=True,  # logs the config used in each trial
-                                api_key=args.wandb_key,upload_checkpoints = True )]
-    else:
-        callbacks = []
+        callbacks = [WandbLoggerCallback(
+            project=args.project_name,
+            entity=args.entity,
+            log_config=True,
+            api_key=args.wandb_key,
+            upload_checkpoints=True
+        )]
 
-    # Set the resources for each trial
-    resources_per_trial = {"cpu":cfg.resources.cpu_trial, "gpu": cfg.resources.gpu_trial} if (
-            cfg.resources.gpu_trial != 0) else {"cpu": cfg.resources.cpu_trial}
+    resources_per_trial = {"cpu": cfg.resources.cpu_trial}
+    if cfg.resources.gpu_trial != 0:
+        resources_per_trial["gpu"] = cfg.resources.gpu_trial
+
     metric_loader_path = cfg.opt.metrics_dataset_path
     metrics_dict = get_opt_metric(cfg=cfg, metrics_loader=metric_loader_path)
     metric, mode = metrics_dict['metric_key'], metrics_dict['mode']
+
     progress_reporter = CLIReporter(
-        metric_columns=[metric, f'best_{metric}'] + list(cfg.opt.metrics_to_report) + list(cfg.opt.other_reports))
-    sched = ASHAScheduler(metric=metric, mode=mode, max_t = 10 ** 18, grace_period=50)
+        metric_columns=[metric, f'best_{metric}'] + list(cfg.opt.metrics_to_report) + list(cfg.opt.other_reports)
+    )
+    sched = ASHAScheduler(metric=metric, mode=mode, max_t=10**18, grace_period=50)
     sync_config = get_sync_config()
 
-    analysis = tune.run(trainer,
-                        scheduler=sched, resources_per_trial=resources_per_trial,
-                        num_samples=int(args.num_samples),
-                        #local_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ray_results"),
-                        local_dir=local_dir,
-                        #sync_config=tune.SyncConfig(syncer=None),
-                        name="{}".format(cfg.opt.exp_name),
-                        progress_reporter=progress_reporter,   # <-- add this here
-                        sync_config=sync_config,
-                        config=ray_config, callbacks=callbacks,
-                        checkpoint_at_end=False,
-                        checkpoint_freq=0,
-                        keep_checkpoints_num=1,
-                        trial_dirname_creator=lambda trial: trial_dirname_creator(trial, max_params=5),
-                        stop = {"training_iteration": cfg.opt.max_epochs},)
+    analysis = ray.tune.run(
+        trainer,
+        scheduler=sched,
+        resources_per_trial=resources_per_trial,
+        num_samples=int(args.num_samples),
+        local_dir=local_dir,
+        name=cfg.opt.exp_name,
+        progress_reporter=progress_reporter,
+        sync_config=sync_config,
+        config=ray_config,
+        callbacks=callbacks,
+        checkpoint_at_end=False,
+        checkpoint_freq=0,
+        keep_checkpoints_num=1,
+        trial_dirname_creator=lambda trial: trial_dirname_creator(trial, max_params=5),
+        stop={"training_iteration": cfg.opt.max_epochs},
+    )
 
     print("Best config is:", analysis.get_best_config(metric="val_loss", mode="min"))
 
@@ -106,22 +114,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default='10.141.1.28:6379', help="address of master")
     parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='conv_ae2D_ft_MGM', help="[conv_ae1D_ft, conv_ae2D_ft, lstm_ft]")
-    parser.add_argument("--num_samples", default=100, help="number of trials")
-    parser.add_argument("--wandb", default=0, type=int, help="use wandb logging")
-    parser.add_argument("--project_name", default='hpo_full_2D_3anomalies_delta8_ft_fast_shot', help="project name")
-    parser.add_argument("--entity", default='robmorelli', help="wandb entity")
-    parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="wandb API key")
-    parser.add_argument("--debug_mode", default=0, type=int, help="debug mode (0 or 1)")
+    parser.add_argument("--config_file", default='conv_ae2D_ft_MGM')
+    parser.add_argument("--num_samples", default=100)
+    parser.add_argument("--wandb", default=0, type=int)
+    parser.add_argument("--project_name", default='hpo_full_2D_3anomalies_delta8_ft_fast_shot')
+    parser.add_argument("--entity", default='robmorelli')
+    parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5")
+    parser.add_argument("--debug_mode", default=0, type=int)
     args = parser.parse_args()
 
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"
 
-    # Initialize Ray
     ray.init(address='auto')
-
-    # Run main
     main(args)
-
-
-
