@@ -11,9 +11,14 @@ from models.utils.losses import *
 class trainCONVAE1D(tune.Trainable):
 
     def setup(self, config):
-        # Load and set up the configuration
-        self.cfg = model_setup(conv_ae_1D_ft_config_file, config, root) if config.get('opt.fine_tuning') else model_setup(conv_ae_1D_config_file, config, root)
-        self.cfg, _, _ = update_input_output(self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
+        # Load and set up the configuration (make the ray tune config collapsing in specific value into self.cfg
+        try:
+            self.cfg = model_setup(config.get('opt.config_file_path'), config, root)
+        except:
+            self.cfg = model_setup(conv_ae_2D_ft_config_file, config, root) if config.get(
+                'opt.fine_tuning') else model_setup(conv_ae_1D_config_file, config, root)
+        self.cfg, _, _ = update_input_output(
+            self.cfg)  # convert feats and target to lists if they are not already (e.g "all" means all features of dataset)
         self.max_epochs = self.cfg.opt.epochs
         self.current_epoch = 0
         self.best_val_loss = float(np.inf)
@@ -22,24 +27,29 @@ class trainCONVAE1D(tune.Trainable):
         self.best_fpr = float(np.inf)
         self.best_tpr = 0
         self.best_thresh_f1 = -float(np.inf)
-        #self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
-        if  config.get('opt.fine_tuning') and 'scaler_params_pre_training' in torch.load(self.cfg.opt.get('checkpoint_path')).keys():
-            self.scaler_pre_training_params = None if not(self.cfg.opt.get('fine_tuning', False)) else torch.load(self.cfg.opt.get('checkpoint_path'))['scaler_params_pre_training']
+        # self.n_std = self.cfg.opt.n_std if isinstance(self.cfg.opt.n_std, (list, ListConfig)) else [self.cfg.opt.n_std]
+        if config.get('opt.fine_tuning') and 'scaler_params_pre_training' in torch.load(
+                self.cfg.opt.get('checkpoint_path')).keys():
+            self.scaler_pre_training_params = None if not (self.cfg.opt.get('fine_tuning', False)) else \
+            torch.load(self.cfg.opt.get('checkpoint_path'))['scaler_params_pre_training']
         else:
             self.scaler_pre_training_params = None
         # Load data
         # try to separate the anomalous sequences (using "is_anomaly_column") from the main dataset anyway. If they are not present, the dataset (metric loader) will be empty
-        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(self.cfg,
-                                                                                                                          dataset_subset=self.cfg.dataset.dataset_subset)   # filter anomalies means that use only normal for standardization and use anomalies for metric loader
-        self.metrics_loader = get_metric_dataloader(self.cfg, # it takes the ano_column to separate normal from anomalous
-                          data_path=self.cfg.opt.metrics_dataset_path, scale=True,
-                          scaler=self.scaler, dataset_subset=self.cfg.opt.anomalies_dataset_subset,
-                          take_only_anomalies=self.cfg.opt.take_only_anomalies_from_metric_loader) if self.cfg.opt.evaluate_metrics else None
+        self.trainloader, self.valloader, self.metrics_loader, self.scaler, self.scaler_params = get_train_val_dataloader(
+            self.cfg,
+            dataset_subset=self.cfg.dataset.dataset_subset)  # filter anomalies means that use only normal for standardization and use anomalies for metric loader
+        self.metrics_loader = get_metric_dataloader(self.cfg,
+                                                    # it takes the ano_column to separate normal from anomalous
+                                                    data_path=self.cfg.opt.metrics_dataset_path, scale=True,
+                                                    scaler=self.scaler,
+                                                    dataset_subset=self.cfg.opt.anomalies_dataset_subset,
+                                                    take_only_anomalies=self.cfg.opt.take_only_anomalies_from_metric_loader,
+                                                    metric_loader=True) if self.cfg.opt.evaluate_metrics else None
 
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (
-            self.opt_metric_dict[k] for k in opt_metric_dict_keys
-        )
+            self.opt_metric_dict[k] for k in opt_metric_dict_keys)
 
         # Set up device
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
@@ -48,6 +58,7 @@ class trainCONVAE1D(tune.Trainable):
         self.model = get_model(self.cfg).to(self.device)
         self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         self.parameters_number = self.cfg.model.parameter_count
+        self.data_path = self.cfg.dataset.data_path
 
         # ==========================================
         # LOAD PRETRAINED WEIGHTS IF FINE-TUNING
@@ -108,6 +119,7 @@ class trainCONVAE1D(tune.Trainable):
             "epoch": self.current_epoch,
             "train_loss": train_loss,
             "parameters_number": self.parameters_number,
+            "data_path": self.data_path
         }
         # Combine loggable metrics
         current_val_loss = self.val_results["val_loss"]
