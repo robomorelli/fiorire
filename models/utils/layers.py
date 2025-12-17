@@ -268,7 +268,7 @@ def bottleneck1D(in_channels, out_channels, activation=nn.ReLU(), bottleneck_act
 
 def bottleneck1D(bottleneck_conv, activation=nn.ReLU(),
                  flattened=True, flattened_size=None, latent_dim=None,
-                 bottleneck_activation=nn.ReLU(), batch_norm=True):
+                 bottleneck_activation=nn.ReLU(), batch_norm=True, bottleneck_batch_norm=False):
     """
     Crea un bottleneck 1D con conv 1x1, optional BatchNorm e attivazione.
     """
@@ -282,7 +282,7 @@ def bottleneck1D(bottleneck_conv, activation=nn.ReLU(),
     if flattened:
         layers["flatten"] = nn.Flatten()
         layers["to_latent"] = nn.Linear(flattened_size, latent_dim)
-        if batch_norm is not None:
+        if bottleneck_batch_norm:
             layers["batch_norm_latent"] = nn.BatchNorm1d(latent_dim)
         if bottleneck_activation is not None:
             layers["act"] = bottleneck_activation
@@ -298,7 +298,7 @@ def bottleneck1D(bottleneck_conv, activation=nn.ReLU(),
 
 def bottleneck2D(bottleneck_conv,
                  flattened=True, flattened_size=None, latent_dim=None,
-                 activation=nn.ReLU(), bottleneck_activation=nn.ReLU(), batch_norm=True):
+                 activation=nn.ReLU(), bottleneck_activation=nn.ReLU(), batch_norm=True, bottleneck_batch_norm=False):
     """
     Crea un bottleneck 2D: Flatten → Dense → Dense → Unflatten.
     """
@@ -315,7 +315,7 @@ def bottleneck2D(bottleneck_conv,
     if flattened:
         layers["flatten"] = nn.Flatten()
         layers["to_latent"] = nn.Linear(flattened_size, latent_dim)
-        if batch_norm is not None:
+        if bottleneck_batch_norm:
             layers["batch_norm_latent"] = nn.BatchNorm1d(latent_dim)
         if bottleneck_activation is not None:
             layers["act1"] = bottleneck_activation
