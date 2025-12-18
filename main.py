@@ -119,7 +119,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default='10.141.1.28:6379', help="address of master")
     parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='conv_ae2D')
+    parser.add_argument("--config_file", default='conv_ae2D_AOC')
     parser.add_argument("--num_samples", default=100)
     parser.add_argument("--wandb", default=0, type=int)
     parser.add_argument("--project_name", default='fiorire1_2D')

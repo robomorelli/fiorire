@@ -1,15 +1,15 @@
 #!/bin/bash
-#PBS -N fiorire_transfer_learning_multinode
-#PBS -o fiorire_transfer_learning_multinode.log
-#PBS -e fiorire_transfer_learning_multinode.err
+#PBS -N fiorire_hpo_multinode
+#PBS -o fiorire_hpo_multinode.log
+#PBS -e fiorire_hpo_multinode.err
 #PBS -q gpu
 #PBS -k oe
 #PBS -m e
 #PBS -M roberto.morelli.ext@leonardocompany.com
 #PBS -l select=1:ngpus=4:ncpus=16,walltime=72:00:00
-#PBS -v num_nodes=1,num_gpus=4,num_cpus=16,config_file=conv_ae2D_ft_MGT,num_samples=100,entity=robmorelli,wandb_key=56b6f7f0b13c4d89207e51c28ceb90c24201eab5,wandb=1,project_name=conv2D_MGT_ft
+#PBS -v num_nodes=1,num_gpus=4,num_cpus=16,config_file=conv_ae1D_CMG,num_samples=100,entity=robmorelli,wandb_key=56b6f7f0b13c4d89207e51c28ceb90c24201eab5,wandb=1,project_name=conv1D_CMG_scratch
 
 ##PBS -v num_nodes=1,num_gpus=4,num_cpus=16,config_file=,num_samples=100,wandb_key=56b6f7f0b13c4d89207e51c28ceb90c24201eab5,entity=robmorelli
 
 module load proxy/proxy_20
-bash /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/launch_hpo_ft.sh
+bash /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/launch_hpo.sh
