@@ -4,13 +4,14 @@ Main training script with Ray Tune optimization.
 
 import argparse
 import os
+import shutil
 from ray.tune.schedulers import ASHAScheduler
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import CLIReporter
 from datetime import datetime
 from omegaconf import OmegaConf
 from ray import tune
-
+import ray
 from utils.load_trainer import get_trainer
 from utils.general import extract_config, get_sync_config, trial_dirname_creator
 from utils.load_dataset import prepare_shared_configuration
@@ -22,6 +23,7 @@ from config import *
 def main(args):
     """Main training function with shared datasets."""
 
+    '''
     # ✅ Setup Ray environment
     if args.address:
         # PBS cluster mode
@@ -35,14 +37,25 @@ def main(args):
             address=None,
             object_store_memory_gb=30
         )
+    '''
 
     # Setup
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
-    # Load config
-    cfg_path = os.path.join(config_path, args.config_file + '.yaml')
-    ray_config, cfg = extract_config(cfg_path)
+    # ✅ Create experiment directory FIRST
+    results_dir = f'./ray_results/{args.project_name}_{date_str}'
+    os.makedirs(results_dir, exist_ok=True)
+    print(f"\n📁 Experiment directory: {results_dir}")
+
+    # ✅ SNAPSHOT: Copy config YAML to experiment folder
+    original_cfg_path = os.path.join(config_path, args.config_file + '.yaml')
+    snapshot_cfg_path = os.path.join(results_dir, f'cfg_{args.config_file}.yaml')
+    shutil.copy(original_cfg_path, snapshot_cfg_path)
+    print(f"✅ Config snapshot saved to: {snapshot_cfg_path}")
+
+    # ✅ Load config FROM SNAPSHOT (not original)
+    #ray_config, cfg = extract_config(snapshot_cfg_path)
 
     # Freeze config
     print("\n" + "=" * 80)
@@ -51,12 +64,14 @@ def main(args):
 
     cfg_frozen = OmegaConf.to_container(cfg, resolve=True)
     cfg = OmegaConf.create(cfg_frozen)
+    print(f"✅ Config frozen")
 
-    frozen_config_path = os.path.join('/tmp', f'frozen_config_{args.project_name}_{date_str}.yaml')
-    OmegaConf.save(cfg, frozen_config_path)
-    print(f"✅ Config frozen and saved to: {frozen_config_path}")
+    # ✅ Update ray_config to point to SNAPSHOT (not original)
+    # This ensures all trials load from the snapshot
+    ray_config['opt.config_file_path'] = snapshot_cfg_path
+    print(f"✅ Trials will load config from: {snapshot_cfg_path}")
 
-    # Prepare shared configuration
+    # ✅ Prepare shared configuration (sequences in Ray Object Store)
     shared_config = prepare_shared_configuration(cfg)
     ray_config['shared_config'] = shared_config
 
@@ -67,6 +82,7 @@ def main(args):
         from utils.general import extract_fixed_config
         ray_config_debug, cfg_debug = extract_fixed_config(cfg_path=None, cfg=cfg)
         ray_config_debug['shared_config'] = shared_config
+        ray_config_debug['opt.config_file_path'] = snapshot_cfg_path  # ← Use snapshot
 
         trainer_test = get_trainer(cfg.model.name)(config=ray_config_debug)
 
@@ -133,66 +149,66 @@ def main(args):
 
     sync_config = get_sync_config()
 
-    # Run Ray Tune
-    results_dir = f'./ray_results/{args.project_name}_{cfg.opt.exp_name}_{date_str}'
-
     print("\n" + "=" * 80)
     print("🚀 STARTING RAY TUNE")
     print("=" * 80)
     print(f"📁 Results directory: {results_dir}")
+    print(f"📄 Config snapshot: {snapshot_cfg_path}")
     print(f"🎯 Optimization metric: {metric} ({mode})")
     print(f"🔢 Number of trials: {args.num_samples}")
     print(f"💾 W&B logging: {'Enabled' if args.wandb else 'Disabled'}")
     print()
 
-    try:
-        analysis = tune.run(
-            trainer,
-            scheduler=scheduler,
-            resources_per_trial=resources_per_trial,
-            num_samples=int(args.num_samples),
-            local_dir=results_dir,
-            name=cfg.opt.exp_name,
-            progress_reporter=progress_reporter,
-            sync_config=sync_config,
-            config=ray_config,
-            callbacks=callbacks,
-            checkpoint_at_end=False,
-            checkpoint_freq=0,
-            keep_checkpoints_num=1,
-            trial_dirname_creator=lambda trial: trial_dirname_creator(trial, max_params=5),
-            stop={"training_iteration": cfg.opt.max_epochs},
-        )
 
-        # Print results
-        print("\n" + "=" * 80)
-        print("✅ RAY TUNE COMPLETED")
-        print("=" * 80)
-        best_config = analysis.get_best_config(metric=metric, mode=mode)
-        print(f"🏆 Best configuration:\n{best_config}")
+    analysis = tune.run(
+        trainer,
+        scheduler=scheduler,
+        resources_per_trial=resources_per_trial,
+        num_samples=int(args.num_samples),
+        local_dir=results_dir,
+        name=cfg.opt.exp_name,
+        progress_reporter=progress_reporter,
+        sync_config=sync_config,
+        config=ray_config,  # ← Contains shared_config + snapshot path
+        callbacks=callbacks,
+        checkpoint_at_end=False,
+        checkpoint_freq=0,
+        keep_checkpoints_num=1,
+        trial_dirname_creator=lambda trial: trial_dirname_creator(trial, max_params=5),
+        stop={"training_iteration": cfg.opt.max_epochs},
+    )
 
-        best_trial = analysis.get_best_trial(metric=metric, mode=mode)
-        print(f"\n📊 Best trial: {best_trial.trial_id}")
-        print(f"   - {metric}: {best_trial.last_result[metric]:.6f}")
-        if 'val_f1_score' in best_trial.last_result:
-            print(f"   - F1: {best_trial.last_result['val_f1_score']:.4f}")
-        if 'val_roc_auc' in best_trial.last_result:
-            print(f"   - ROC-AUC: {best_trial.last_result['val_roc_auc']:.4f}")
+    # Print results
+    print("\n" + "=" * 80)
+    print("✅ RAY TUNE COMPLETED")
+    print("=" * 80)
+    best_config = analysis.get_best_config(metric=metric, mode=mode)
+    print(f"🏆 Best configuration:\n{best_config}")
 
+    best_trial = analysis.get_best_trial(metric=metric, mode=mode)
+    print(f"\n📊 Best trial: {best_trial.trial_id}")
+    print(f"   - {metric}: {best_trial.last_result[metric]:.6f}")
+    if 'val_f1_score' in best_trial.last_result:
+        print(f"   - F1: {best_trial.last_result['val_f1_score']:.4f}")
+    if 'val_roc_auc' in best_trial.last_result:
+        print(f"   - ROC-AUC: {best_trial.last_result['val_roc_auc']:.4f}")
+
+    '''
     except KeyboardInterrupt:
         print("\n\n⚠️  Training interrupted by user (Ctrl+C)")
     except Exception as e:
         print(f"\n\n❌ Error during training: {e}")
         import traceback
         traceback.print_exc()
-    #finally:
-    #    shutdown_ray()
+    finally:
+        shutdown_ray()  # ✅ Always cleanup
+    '''
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ray Tune hyperparameter optimization")
-    parser.add_argument("--address", default='192.168.1.58:6379', help="address of master")
-    parser.add_argument("--password", help="password to connect to master")
+    parser.add_argument("--address", default=None, help="address of master")
+    parser.add_argument("--password", default=None, help="Ray cluster password")
     parser.add_argument("--config_file", "-c", default='conv_ae2D',
                         help="Config file name")
     parser.add_argument("--num_samples", default=100, type=int,
@@ -208,13 +224,13 @@ if __name__ == "__main__":
                         help="W&B API key")
     parser.add_argument("--debug_mode", default=0, type=int,
                         help="Run single trial for debugging (0/1)")
+
     args = parser.parse_args()
-
-
-
 
     # Environment configuration
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"
+
+    ray.init(address='auto')
 
     # Run optimization
     main(args)
