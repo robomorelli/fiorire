@@ -1,66 +1,68 @@
+"""
+Main training script with Ray Tune optimization.
+"""
+
 import argparse
 import os
-import ray
 from ray.tune.schedulers import ASHAScheduler
-from utils.load_trainer import get_trainer
-from utils.general import extract_config, extract_fixed_config, get_sync_config, trial_dirname_creator
-from datetime import datetime
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import CLIReporter
-from trainer.utils import infer_metric_mode, get_opt_metric
+from datetime import datetime
 from omegaconf import OmegaConf
+from ray import tune
 
+from utils.load_trainer import get_trainer
+from utils.general import extract_config, get_sync_config, trial_dirname_creator
+from utils.load_dataset import prepare_shared_configuration
+from utils.ray_manager import initialize_ray_cluster
+from trainer.utils import get_opt_metric
 from config import *
 
 
 def main(args):
-    # Get date to name the results folder
+    """Main training function with shared datasets."""
+
+    # Initialize Ray (auto-cleanup on exit/Ctrl+C)
+    initialize_ray_cluster(address='auto')
+
+    # Setup
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
-    # =====================================================
-    # LOAD CONFIG
-    # =====================================================
+    # Load config
     cfg_path = os.path.join(config_path, args.config_file + '.yaml')
     ray_config, cfg = extract_config(cfg_path)
 
-    # =====================================================
-    # FREEZE CONFIG TO PREVENT CHANGES DURING EXECUTION
-    # =====================================================
+    # Freeze config
     print("\n" + "=" * 80)
     print("📌 FREEZING CONFIG")
     print("=" * 80)
 
-    # Convert OmegaConf → pure dict (no more file references!)
     cfg_frozen = OmegaConf.to_container(cfg, resolve=True)
     cfg = OmegaConf.create(cfg_frozen)
 
-    # Save frozen config snapshot (optional, for debugging)
     frozen_config_path = os.path.join('/tmp', f'frozen_config_{args.project_name}_{date_str}.yaml')
     OmegaConf.save(cfg, frozen_config_path)
     print(f"✅ Config frozen and saved to: {frozen_config_path}")
 
-    # Verify ray_config is pure dict
-    print(f"Ray config type: {type(ray_config)}")
-    if not isinstance(ray_config, dict):
-        print("⚠️ WARNING: ray_config is not a pure dict! Converting...")
-        ray_config = dict(ray_config)
+    # Prepare shared configuration (datasets)
+    shared_config = prepare_shared_configuration(cfg)
+    ray_config['shared_config'] = shared_config
 
-
-    # =====================================================
-    # DEBUG MODE
-    # =====================================================
+    # Debug mode
     if args.debug_mode:
-        print("🐛 DEBUG MODE: Running single trial")
-        ray_config, cfg = extract_fixed_config(cfg_path=None, cfg=cfg)
-        trainer_test = get_trainer(cfg.model.name)(config=ray_config)
+        print("\n🐛 DEBUG MODE: Running single trial")
+
+        from utils.general import extract_fixed_config
+        ray_config_debug, cfg_debug = extract_fixed_config(cfg_path=None, cfg=cfg)
+        ray_config_debug['shared_config'] = shared_config
+
+        trainer_test = get_trainer(cfg.model.name)(config=ray_config_debug)
         result = trainer_test.step()
         print("Debug mode training result:", result)
         return
 
-    # =====================================================
-    # SETUP RAY TUNE
-    # =====================================================
+    # Setup Ray Tune
     trainer = get_trainer(cfg.model.name)
 
     # Callbacks
@@ -82,8 +84,8 @@ def main(args):
     } if cfg.resources.gpu_trial != 0 else {"cpu": cfg.resources.cpu_trial}
 
     # Metrics
-    metric_loader_path = cfg.opt.metrics_dataset_path
-    metrics_dict = get_opt_metric(cfg=cfg, metrics_loader=metric_loader_path)
+    metrics_dataset_available = cfg.opt.get('evaluate_metrics', False)
+    metrics_dict = get_opt_metric(cfg=cfg, metrics_loader=metrics_dataset_available)
     metric, mode = metrics_dict['metric_key'], metrics_dict['mode']
 
     # Progress reporter
@@ -94,25 +96,37 @@ def main(args):
     )
 
     # Scheduler
-    sched = ASHAScheduler(metric=metric, mode=mode, max_t=10 ** 18, grace_period=50)
+    scheduler = ASHAScheduler(
+        metric=metric,
+        mode=mode,
+        max_t=10 ** 18,
+        grace_period=50
+    )
+
     sync_config = get_sync_config()
 
-    # =====================================================
-    # RUN RAY TUNE (with FROZEN config)
-    # =====================================================
-    print("\n🚀 Starting Ray Tune with FROZEN config...")
-    print(f"📁 Results will be saved to: ./ray_results/{args.project_name}_{cfg.opt.exp_name}_{date_str}\n")
+    # Run Ray Tune
+    results_dir = f'./ray_results/{args.project_name}_{cfg.opt.exp_name}_{date_str}'
+
+    print("\n" + "=" * 80)
+    print("🚀 STARTING RAY TUNE")
+    print("=" * 80)
+    print(f"📁 Results directory: {results_dir}")
+    print(f"🎯 Optimization metric: {metric} ({mode})")
+    print(f"🔢 Number of trials: {args.num_samples}")
+    print(f"💾 W&B logging: {'Enabled' if args.wandb else 'Disabled'}")
+    print()
 
     analysis = tune.run(
         trainer,
-        scheduler=sched,
+        scheduler=scheduler,
         resources_per_trial=resources_per_trial,
         num_samples=int(args.num_samples),
-        local_dir=f'./ray_results/{args.project_name}_{cfg.opt.exp_name}_{date_str}',
-        name="{}".format(cfg.opt.exp_name),
+        local_dir=results_dir,
+        name=cfg.opt.exp_name,
         progress_reporter=progress_reporter,
         sync_config=sync_config,
-        config=ray_config,  # ← FROZEN config (pure dict)
+        config=ray_config,
         callbacks=callbacks,
         checkpoint_at_end=False,
         checkpoint_freq=0,
@@ -121,27 +135,35 @@ def main(args):
         stop={"training_iteration": cfg.opt.max_epochs},
     )
 
-    print("\n✅ Ray Tune completed!")
-    print("Best config is:", analysis.get_best_config(metric="val_loss", mode="min"))
+    # Print results
+    print("\n" + "=" * 80)
+    print("✅ RAY TUNE COMPLETED")
+    print("=" * 80)
+    best_config = analysis.get_best_config(metric=metric, mode=mode)
+    print(f"🏆 Best configuration:\n{best_config}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--address", default='10.141.1.28:6379', help="address of master")
-    parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='conv_ae2D', help="[conv_ae1D, conv_ae2D, lstm]")
-    parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
-    parser.add_argument("--wandb", default=0, type=int, help="the model you want to hpo")
-    parser.add_argument("--project_name", default='fiorire1_1D', help="the model you want to hpo")
-    parser.add_argument("--entity", default='robmorelli', help="the model you want to hpo")
-    parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5", help="the model you want to hpo")
-    parser.add_argument("--debug_mode", default=1, help="the model you want to hpo")
+    parser = argparse.ArgumentParser(description="Ray Tune hyperparameter optimization")
+    parser.add_argument("--config_file", "-c", default='conv_ae2D',
+                        help="Config file name")
+    parser.add_argument("--num_samples", default=100, type=int,
+                        help="Number of trials to run")
+    parser.add_argument("--wandb", default=0, type=int,
+                        help="Enable W&B logging (0/1)")
+    parser.add_argument("--project_name", default='fiorire1_2D',
+                        help="W&B project name")
+    parser.add_argument("--entity", default='robmorelli',
+                        help="W&B entity name")
+    parser.add_argument("--wandb_key",
+                        default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
+                        help="W&B API key")
+    parser.add_argument("--debug_mode", default=0, type=int,
+                        help="Run single trial for debugging (0/1)")
     args = parser.parse_args()
 
+    # Environment configuration
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"
 
-    # Initialize Ray
-    ray.init(address='auto')
-
-    # Run main
+    # Run optimization
     main(args)
