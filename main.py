@@ -40,22 +40,13 @@ def main(args):
     '''
 
     # Setup
+    # Setup
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
-    # ✅ Create experiment directory FIRST
-    results_dir = f'./ray_results/{args.project_name}_{date_str}'
-    os.makedirs(results_dir, exist_ok=True)
-    print(f"\n📁 Experiment directory: {results_dir}")
-
-    # ✅ SNAPSHOT: Copy config YAML to experiment folder
-    original_cfg_path = os.path.join(config_path, args.config_file + '.yaml')
-    snapshot_cfg_path = os.path.join(results_dir, f'cfg_{args.config_file}.yaml')
-    shutil.copy(original_cfg_path, snapshot_cfg_path)
-    print(f"✅ Config snapshot saved to: {snapshot_cfg_path}")
-
-    # ✅ Load config FROM SNAPSHOT (not original)
-    #ray_config, cfg = extract_config(snapshot_cfg_path)
+    # Load config
+    cfg_path = os.path.join(config_path, args.config_file + '.yaml')
+    ray_config, cfg = extract_config(cfg_path)
 
     # Freeze config
     print("\n" + "=" * 80)
@@ -64,17 +55,14 @@ def main(args):
 
     cfg_frozen = OmegaConf.to_container(cfg, resolve=True)
     cfg = OmegaConf.create(cfg_frozen)
-    print(f"✅ Config frozen")
 
-    # ✅ Update ray_config to point to SNAPSHOT (not original)
-    # This ensures all trials load from the snapshot
-    ray_config['opt.config_file_path'] = snapshot_cfg_path
-    print(f"✅ Trials will load config from: {snapshot_cfg_path}")
+    frozen_config_path = os.path.join('/tmp', f'frozen_config_{args.project_name}_{date_str}.yaml')
+    OmegaConf.save(cfg, frozen_config_path)
+    print(f"✅ Config frozen and saved to: {frozen_config_path}")
 
-    # ✅ Prepare shared configuration (sequences in Ray Object Store)
+    # Prepare shared configuration
     shared_config = prepare_shared_configuration(cfg)
     ray_config['shared_config'] = shared_config
-
     # Debug mode
     if args.debug_mode:
         print("\n🐛 DEBUG MODE: Running single trial")
@@ -82,7 +70,6 @@ def main(args):
         from utils.general import extract_fixed_config
         ray_config_debug, cfg_debug = extract_fixed_config(cfg_path=None, cfg=cfg)
         ray_config_debug['shared_config'] = shared_config
-        ray_config_debug['opt.config_file_path'] = snapshot_cfg_path  # ← Use snapshot
 
         trainer_test = get_trainer(cfg.model.name)(config=ray_config_debug)
 
@@ -149,11 +136,13 @@ def main(args):
 
     sync_config = get_sync_config()
 
+    results_dir = os.path.join('./ray_results', f'{args.project_name}_{args.config_file}_{date_str}')
+    os.makedirs(results_dir, exist_ok=True)
+
     print("\n" + "=" * 80)
     print("🚀 STARTING RAY TUNE")
     print("=" * 80)
     print(f"📁 Results directory: {results_dir}")
-    print(f"📄 Config snapshot: {snapshot_cfg_path}")
     print(f"🎯 Optimization metric: {metric} ({mode})")
     print(f"🔢 Number of trials: {args.num_samples}")
     print(f"💾 W&B logging: {'Enabled' if args.wandb else 'Disabled'}")
@@ -222,7 +211,7 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_key",
                         default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
                         help="W&B API key")
-    parser.add_argument("--debug_mode", default=0, type=int,
+    parser.add_argument("--debug_mode", default=1, type=int,
                         help="Run single trial for debugging (0/1)")
 
     args = parser.parse_args()
