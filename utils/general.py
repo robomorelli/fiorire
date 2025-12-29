@@ -77,19 +77,37 @@ def find_project_root(current: Path, markers=('config', 'main.py')) -> Path:
             return parent
     return current  # fallback: return current if no marker found
 
-def resolve_paths(cfg: DictConfig, root_dir: str=root) -> DictConfig:
+
+def resolve_paths(cfg, root):
     """
-    Recursively find keys containing 'path' and resolve relative paths
-    against root_dir.
+    Recursively resolve relative paths in config to absolute paths.
     """
-    def _resolve(d):
-        for k, v in d.items():
-            if isinstance(v, DictConfig) or isinstance(v, dict):
-                _resolve(v)
-            elif isinstance(v, str) and "path" in k.lower():
-                if not os.path.isabs(v):
-                    abs_path = os.path.abspath(os.path.join(root_dir, v))
-                    d[k] = abs_path
+    from pathlib import Path
+
+    # ✅ Handle None root
+    if root is None:
+        root = Path.cwd()  # Use current working directory
+    else:
+        root = Path(root)
+
+    root_dir = str(root.resolve())
+
+    def _resolve(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if isinstance(v, str) and ('path' in k.lower() or 'dir' in k.lower()):
+                    # Skip if already absolute
+                    if not os.path.isabs(v):
+                        abs_path = os.path.abspath(os.path.join(root_dir, v))
+                        node[k] = abs_path
+                elif isinstance(v, (dict, DictConfig)):
+                    _resolve(v)
+                elif isinstance(v, (list, ListConfig)):
+                    _resolve(v)
+        elif isinstance(node, (list, ListConfig)):
+            for item in node:
+                if isinstance(item, (dict, DictConfig, list, ListConfig)):
+                    _resolve(item)
 
     _resolve(cfg)
     return cfg

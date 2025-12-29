@@ -68,11 +68,7 @@ def model_setup(config_file_name, config, root):
     """
     Setup model configuration with caching to prevent reloading from disk.
 
-    Strategy:
-    1. Load base config ONCE and cache it
-    2. Clone cached config for each worker
-    3. Merge Ray Tune parameters (frozen)
-    4. Result: Truly frozen config
+    ⚠️ NOTE: 'shared_config' must be extracted BEFORE OmegaConf merge!
     """
     import os
     from omegaconf import OmegaConf
@@ -80,35 +76,28 @@ def model_setup(config_file_name, config, root):
 
     cache_key = config_file_name
 
-    # =====================================================
+    # ✅ Extract shared_config FIRST (don't pass to OmegaConf)
+    shared_config = config.pop('shared_config', None) if config else None
+
     # Load base config ONCE (or use cached)
-    # =====================================================
     if cache_key not in _BASE_CONFIG_CACHE:
         print(f"📂 [PID {os.getpid()}] Loading and caching base config: {config_file_name}")
         base_cfg = OmegaConf.load(config_path + config_file_name)
-
-        # Store frozen snapshot in cache
         _BASE_CONFIG_CACHE[cache_key] = OmegaConf.to_container(base_cfg, resolve=True)
     else:
         print(f"📌 [PID {os.getpid()}] Using cached base config: {config_file_name}")
 
-    # Clone from cache (deep copy)
+    # Clone from cache
     cfg = OmegaConf.create(_BASE_CONFIG_CACHE[cache_key])
-
-    # Allow dynamic field insertion
     OmegaConf.set_struct(cfg, False)
 
-    # =====================================================
-    # Merge Ray Tune parameters (OVERRIDE cached values)
-    # =====================================================
+    # Merge Ray Tune parameters (WITHOUT shared_config)
     if config and len(config) > 0:
         print(f"🔀 [PID {os.getpid()}] Merging frozen Ray Tune parameters")
 
-        # Merge trial parameters from Ray Tune
         for k, v in config.items():
             OmegaConf.update(cfg, k, v, merge=True)
 
-        # Debug
         try:
             print(f"   ✓ Final opt.lr = {cfg.opt.get('lr', 'N/A')}")
         except:
@@ -116,14 +105,15 @@ def model_setup(config_file_name, config, root):
 
     # Resolve paths
     cfg = resolve_paths(cfg, root)
+    cfg.dataset.n_features = len(cfg.dataset.feats)
 
-    return cfg
+    # ✅ Return both cfg and shared_config separately
+    return cfg, shared_config
+
 
 def update_input_output(cfg):
     """
     Infer input and output dimensions from the configuration.
-    :param cfg: configuration object
-    :return: input_dim, output_dim
     """
     if isinstance(cfg.dataset.feats, (list, ListConfig)):
         feats = cfg.dataset.feats
@@ -138,17 +128,19 @@ def update_input_output(cfg):
     else:
         target = None
 
+    # Handle remove_columns
     if cfg.opt.get("remove_columns", False):
-        if isinstance(cfg.opt.get.remove_columns, (list, ListConfig)):
-            remove_columns = cfg.opt.get.remove_columns
-        elif isinstance(cfg.dataset.target, str):
-            remove_columns = [cfg.opt.get.remove_columns]
-    elif cfg.opt.get("remove_columns", False) is None:
-        remove_columns = []
+        remove_columns_val = cfg.opt.get("remove_columns")
+        if isinstance(remove_columns_val, (list, ListConfig)):
+            remove_columns = remove_columns_val
+        elif isinstance(remove_columns_val, str):
+            remove_columns = [remove_columns_val]
+        else:
+            remove_columns = []
     else:
         remove_columns = []
 
-        # Merge model and opt into cfg
+    # Update cfg
     cfg.dataset.feats = feats
     cfg.dataset.target = target
     cfg.opt.remove_columns = remove_columns
@@ -497,6 +489,7 @@ def validate_one_epoch(
     # Optionally evaluate anomaly detection metrics
     if evaluate_metrics:
         print("\n[INFO] Evaluating anomaly detection metrics...with error =", use_error)
+        print("\n[INFO] F1 score is computed approximatively don'0t trust")
         test_results, indices = test_anomaly_step(
             model=model,
             metric_dataloader=metric_loader,

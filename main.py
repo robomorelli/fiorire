@@ -185,12 +185,14 @@ def main(args):
         print(f"\n\n❌ Error during training: {e}")
         import traceback
         traceback.print_exc()
-    finally:
-        shutdown_ray()
+    #finally:
+    #    shutdown_ray()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ray Tune hyperparameter optimization")
+    parser.add_argument("--address", default='192.168.1.58:6379', help="address of master")
+    parser.add_argument("--password", help="password to connect to master")
     parser.add_argument("--config_file", "-c", default='conv_ae2D',
                         help="Config file name")
     parser.add_argument("--num_samples", default=100, type=int,
@@ -207,6 +209,9 @@ if __name__ == "__main__":
     parser.add_argument("--debug_mode", default=1, type=int,
                         help="Run single trial for debugging (0/1)")
     args = parser.parse_args()
+
+
+
 
     # Environment configuration
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"

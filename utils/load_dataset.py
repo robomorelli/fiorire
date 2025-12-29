@@ -3,8 +3,10 @@ Dataset loading and index generation utilities.
 Minimal, focused on the refactored tensor-based system.
 """
 
-import pandas as pd
-import numpy as np
+from torchvision.transforms import transforms as T
+from torchvision.transforms import Lambda
+
+from config import *
 import os
 from scipy import interpolate
 from omegaconf import ListConfig
@@ -18,7 +20,7 @@ from preprocessing.scaling import *
 # CORE FUNCTIONS - USATE NEL NUOVO SISTEMA
 # =========================================================
 
-def load_and_preprocess_dataframe(cfg, data_path):
+def load_and_preprocess_dataframe(cfg):
     """
     Load DataFrame and apply preprocessing:
     - Feature selection
@@ -35,6 +37,8 @@ def load_and_preprocess_dataframe(cfg, data_path):
         df: Preprocessed DataFrame
     """
     # 1. Load raw data
+    ### DATA PATH WAS NEEDED TO USE METRIC DATASET PATH INSTEAD OF DEFAULT DATA PATH CHOICE
+    data_path = cfg.dataset.data_path
     ext = os.path.splitext(data_path)[1].lower()
 
     print(f"   📂 Loading from: {data_path}")
@@ -371,7 +375,7 @@ def prepare_shared_configuration(cfg):
 
     # 1. Load data
     print("\n1️⃣ Loading dataset...")
-    df = load_and_preprocess_dataframe(cfg, data_path=cfg.dataset.data_path)
+    df = load_and_preprocess_dataframe(cfg)
     feature_columns = cfg.dataset.feats
     print(f"   ✓ Loaded: {df.shape}")
 
@@ -436,7 +440,7 @@ def prepare_shared_configuration(cfg):
             feature_columns=feature_columns,
             scaler=scaler,
             output_dir='./metric_datasets/',
-            force_regenerate=False,
+            force_regenerate=cfg.opt.get('force_regenerate', False),
             plot_samples=cfg.opt.get('plot_metric_samples', False),
             plot_percentage=cfg.opt.get('plot_metric_percentage', 0.05)
         )
@@ -586,54 +590,57 @@ def upsample_and_augment(
 
 def load_sequences_for_trial(cfg, shared_config, overlap):
     """
-    Load train/val sequences for a single trial with specified overlap.
+    Load train/val sequences for a single trial from Ray Object Store.
 
-    Uses shared base indices and applies trial-specific overlap.
+    Sequences are already in [N, L, F] format and standardized.
+    This function retrieves them and applies overlap subsampling if needed.
 
     Args:
         cfg: Trial configuration
-        shared_config: Shared configuration from prepare_shared_configuration
-        overlap: Overlap percentage for this trial
+        shared_config: Contains Ray ObjectRefs to sequences
+        overlap: Overlap percentage for this trial (0.0 = no overlap)
 
     Returns:
-        train_sequences: [N_train, L, F] numpy array
-        val_sequences: [N_val, L, F] numpy array
+        train_sequences: [N_train, L, F] torch.Tensor
+        val_sequences: [N_val, L, F] torch.Tensor
     """
-    from preprocessing.scaling import apply_scaler
+    import ray
+    import torch
+    import numpy as np
 
-    # Extract shared data
-    train_base_indices = np.array(shared_config['train_indices'])
-    val_base_indices = np.array(shared_config['val_indices'])
-    scaler = shared_config['scaler']
-    dataset_path = shared_config['dataset_path']
-    feature_columns = shared_config['feature_columns']
-    seq_len = shared_config['seq_len']
+    print(f"\n📂 [PID {os.getpid()}] Loading sequences from Ray Object Store...")
 
-    # Load DataFrame
-    df = load_and_preprocess_dataframe(cfg, dataset_path)
+    # ✅ Get from Ray Object Store → returns numpy [N, L, F]
+    train_sequences_np = ray.get(shared_config['train_sequences'])
+    val_sequences_np = ray.get(shared_config['val_sequences'])
 
-    # Scale
-    df_scaled = apply_scaler(df, scaler, feature_columns)
+    print(f"   ✓ Train base: {train_sequences_np.shape}")
+    print(f"   ✓ Val base: {val_sequences_np.shape}")
 
-    # Apply overlap to base indices
-    train_indices_with_overlap = apply_overlap_to_indices(
-        train_base_indices, seq_len, overlap
-    )
-    val_indices_with_overlap = apply_overlap_to_indices(
-        val_base_indices, seq_len, overlap
-    )
+    # Apply overlap subsampling if needed
+    if overlap > 0:
+        seq_len = shared_config['seq_len']
 
-    print(f"   📊 Trial overlap: {overlap}")
-    print(f"      - Train: {len(train_base_indices)} → {len(train_indices_with_overlap)} sequences")
-    print(f"      - Val: {len(val_base_indices)} → {len(val_indices_with_overlap)} sequences")
+        # Calculate step from overlap
+        # overlap=0.0 → all sequences (no subsampling)
+        # overlap=0.5 → every 2nd sequence (50% overlap)
+        # Formula: step = int(seq_len * (1 - overlap))
+        step = max(1, int(seq_len * (1 - overlap)))
 
-    # Extract sequences
-    train_sequences = extract_sequences_from_indices(
-        df_scaled, train_indices_with_overlap, seq_len, feature_columns
-    )
-    val_sequences = extract_sequences_from_indices(
-        df_scaled, val_indices_with_overlap, seq_len, feature_columns
-    )
+        train_sequences_np = train_sequences_np[::step]
+        val_sequences_np = val_sequences_np[::step]
+
+        print(f"   📊 Applied overlap {overlap:.1%} (step={step}):")
+        print(f"      - Train: {train_sequences_np.shape[0]} sequences")
+        print(f"      - Val: {val_sequences_np.shape[0]} sequences")
+    else:
+        print(f"   ℹ️  No overlap subsampling (overlap=0)")
+
+    # Convert to torch tensors
+    train_sequences = torch.from_numpy(train_sequences_np).float()
+    val_sequences = torch.from_numpy(val_sequences_np).float()
+
+    print(f"   ✓ Converted to torch tensors")
 
     return train_sequences, val_sequences
 
@@ -695,20 +702,26 @@ def extract_sequences_from_indices(df, indices, seq_len, feature_columns, perc_o
 
 
 def get_transform(cfg):
-    """
-    Get data transform (augmentation) if any.
+    # Define the dataset name to apply specific transformations
+    if cfg.dataset.name in fiorire_family:
+        if cfg.model.name == "conv_ae1D":
+            transform = T.Compose([
+                T.ToTensor(),
+                Lambda(lambda x: x.permute((0, 2, 1))),
+                Lambda(lambda x: x.squeeze(0))])
+        elif cfg.model.name == 'conv_ae2D':
+            transform = T.Compose([
+                T.ToTensor(),
+                Lambda(lambda x: x.permute((0, 2, 1)))])
+        else:
+            transform = T.Compose([
+                T.ToTensor(),
+                Lambda(lambda x: x.squeeze(0))  # Removes channel dim added by ToTensor
+            ])
+    else:
+        raise ValueError(f"Unsupported dataset name: {cfg.dataset.name}")
 
-    Args:
-        cfg: Configuration
-
-    Returns:
-        transform function or None
-    """
-    # Currently no transforms, but you can add augmentation here
-    # Example:
-    # if cfg.dataset.get('augmentation', False):
-    #     return some_transform_function
-    return None
+    return transform
 
 
 def create_dataloaders(train_dataset, val_dataset, cfg):

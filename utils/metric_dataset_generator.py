@@ -88,17 +88,44 @@ def generate_and_save_metric_dataset(
     strategy = cfg.opt.get('anomaly_strategy', 'none')
 
     if strategy == 'none':
-        print("\n   ℹ️  Strategy='none': No metric loader")
+        print("\n   ℹ️  Strategy='none': No metric dataset")
         return None
 
     # Create filename base
     dataset_name = cfg.dataset.get('name', 'dataset')
     exp_name = cfg.opt.get('exp_name', 'experiment')
     seed = cfg.opt.get('seed', 42)
-
-    # Generate based on strategy
     seq_len = cfg.dataset.seq_in_length
     anomaly_column = cfg.dataset.get('is_anomaly_column')
+
+    # ✅ PREDICT is_standardized from config (before generating dataset)
+    force_destd = cfg.opt.get('force_destandardization', False)
+
+    if strategy == 'use_original':
+        # Original anomalies are always from df_scaled → standardized
+        predicted_is_standardized = True
+    elif strategy in ['corrupt_validation', 'both']:
+        # Depends on force_destandardization flag
+        predicted_is_standardized = not force_destd
+    else:
+        predicted_is_standardized = True  # Default
+
+    # ✅ Build filename with correct suffix
+    if predicted_is_standardized:
+        scale_suffix = ""
+        scale_info = "STANDARDIZED (ready for model)"
+    else:
+        scale_suffix = "_original"
+        scale_info = "ORIGINAL SCALE (needs standardization)"
+
+    filename = f"metric_{exp_name}_{dataset_name}_{strategy}_seed{seed}{scale_suffix}.pt"
+    filepath = os.path.join(output_dir, filename)
+
+    # ✅ Check if already exists BEFORE generating
+    if os.path.exists(filepath) and not force_regenerate:
+        print(f"\n   ✓ Metric dataset already exists: {filepath}")
+        print(f"     (Use force_regenerate=True to regenerate)")
+        return filepath
 
     if strategy == 'use_original':
         metric_dataset, is_standardized = _create_original_anomaly_dataset(
@@ -145,14 +172,6 @@ def generate_and_save_metric_dataset(
         scale_suffix = "_original"
         scale_info = "ORIGINAL SCALE (needs standardization)"
 
-    filename = f"metric_{exp_name}_{dataset_name}_{strategy}_seed{seed}{scale_suffix}.pt"
-    filepath = os.path.join(output_dir, filename)
-
-    # Check if already exists
-    if os.path.exists(filepath) and not force_regenerate:
-        print(f"\n   ✓ Metric dataset already exists: {filepath}")
-        print(f"     (Use force_regenerate=True to regenerate)")
-        return filepath
 
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -272,13 +291,14 @@ def generate_and_save_metric_dataset(
                 feature_columns=feature_columns,
                 dataset_filepath=filepath,
                 sample_percentage=plot_percentage,
-                max_samples=100,
+                max_samples=10,
                 random_seed=seed
             )
         else:
             print(f"   ⚠️  No corrupted sequences to plot (corruption_ratio=0)")
 
     return filepath
+
 
 
 def _create_original_anomaly_dataset(df_scaled, seq_len, feature_columns, anomaly_column):
@@ -505,25 +525,14 @@ def plot_corrupted_sequences_samples(
     """
     Plot comparison between original and corrupted sequences.
 
-    Creates a figure for each sampled sequence with:
-    - Top: Original vs Corrupted (overlaid)
-    - Middle: Difference (Corrupted - Original)
-    - Bottom: Anomaly labels
-
-    Args:
-        original_sequences: [N, L, F] original sequences
-        corrupted_sequences: [N, L, F] corrupted sequences
-        labels: [N, L, 1] anomaly labels
-        anomaly_types: [N] anomaly type per sequence
-        affected_channels: [N] affected channels per sequence
-        feature_columns: List of feature names
-        dataset_filepath: Path where dataset was saved
-        sample_percentage: Percentage of sequences to plot (default 5%)
-        max_samples: Maximum number of plots to generate
-        random_seed: Random seed for sampling
+    Shows ONLY the affected channel (corrupted feature).
     """
-    import os
+    import matplotlib
+    matplotlib.use('Agg')  # ✅ Non-interactive backend
     import matplotlib.pyplot as plt
+
+    # ✅ Disable interactive mode
+    plt.ioff()
     import numpy as np
     from pathlib import Path
 
@@ -552,7 +561,7 @@ def plot_corrupted_sequences_samples(
 
     # Create output directory
     dataset_path = Path(dataset_filepath)
-    dataset_name = dataset_path.stem  # filename without extension
+    dataset_name = dataset_path.stem
     output_dir = dataset_path.parent / f"{dataset_name}_plots"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -576,6 +585,12 @@ def plot_corrupted_sequences_samples(
     print(f"   - Anomalous sequences available: {len(anomalous_indices)}")
     print(f"   - Plotting: {n_samples_actual} sequences")
 
+    # ✅ Convert feature_columns to list for indexing
+    if isinstance(feature_columns, (list, tuple)):
+        feature_columns_list = list(feature_columns)
+    else:
+        feature_columns_list = list(feature_columns)
+
     # Plot each sampled sequence
     for plot_idx, seq_idx in enumerate(sampled_indices):
         # Extract data for this sequence
@@ -583,36 +598,47 @@ def plot_corrupted_sequences_samples(
         corr_seq = corrupted_sequences[seq_idx]  # [L, F]
         label_seq = labels[seq_idx, :, 0]  # [L]
         anom_type = anomaly_types[seq_idx]
-        aff_channels = affected_channels[seq_idx]
+        aff_channel = affected_channels[seq_idx]
 
-        # Compute difference
-        diff_seq = corr_seq - orig_seq  # [L, F]
+        # ✅ Find the index of the affected channel
+        try:
+            affected_idx = feature_columns_list.index(aff_channel)
+        except ValueError:
+            print(f"   ⚠️  Warning: Channel '{aff_channel}' not found in feature_columns. Skipping seq {seq_idx}")
+            continue
+
+        # ✅ Extract ONLY the affected feature
+        orig_feature = orig_seq[:, affected_idx]  # [L]
+        corr_feature = corr_seq[:, affected_idx]  # [L]
+        diff_feature = corr_feature - orig_feature  # [L]
 
         # Create figure
         fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
         fig.suptitle(
-            f'Sequence {seq_idx} | Anomaly: {anom_type} | Affected: {aff_channels}',
+            f'Sequence {seq_idx} | Anomaly: {anom_type} | Affected: {aff_channel}',
             fontsize=14, fontweight='bold'
         )
 
         timesteps = np.arange(L)
 
         # ============================================================
-        # Plot 1: Original vs Corrupted (overlaid)
+        # Plot 1: Original vs Corrupted (ONLY affected feature)
         # ============================================================
         ax1 = axes[0]
 
-        for f_idx, feat_name in enumerate(feature_columns):
-            # Original
-            ax1.plot(timesteps, orig_seq[:, f_idx],
-                     label=f'{feat_name} (orig)', alpha=0.7, linewidth=1.5)
-            # Corrupted
-            ax1.plot(timesteps, corr_seq[:, f_idx],
-                     label=f'{feat_name} (corr)', alpha=0.7, linewidth=1.5, linestyle='--')
+        # Original
+        ax1.plot(timesteps, orig_feature,
+                 label=f'{aff_channel} (original)',
+                 alpha=0.8, linewidth=2, color='blue')
 
-        ax1.set_ylabel('Value', fontsize=11)
-        ax1.set_title('Original vs Corrupted (all features)', fontsize=12, fontweight='bold')
-        ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8, ncol=2)
+        # Corrupted
+        ax1.plot(timesteps, corr_feature,
+                 label=f'{aff_channel} (corrupted)',
+                 alpha=0.8, linewidth=2, color='red', linestyle='--')
+
+        ax1.set_ylabel('Value', fontsize=12)
+        ax1.set_title(f'Original vs Corrupted - {aff_channel}', fontsize=12, fontweight='bold')
+        ax1.legend(loc='upper right', fontsize=11)
         ax1.grid(True, alpha=0.3)
 
         # Highlight anomalous regions
@@ -622,18 +648,18 @@ def plot_corrupted_sequences_samples(
                         alpha=0.2, color='red', label='Anomaly region')
 
         # ============================================================
-        # Plot 2: Difference (Corrupted - Original)
+        # Plot 2: Difference (Corrupted - Original) for affected feature
         # ============================================================
         ax2 = axes[1]
 
-        for f_idx, feat_name in enumerate(feature_columns):
-            ax2.plot(timesteps, diff_seq[:, f_idx],
-                     label=f'{feat_name}', alpha=0.8, linewidth=1.5)
+        ax2.plot(timesteps, diff_feature,
+                 label=f'{aff_channel}',
+                 alpha=0.8, linewidth=2, color='purple')
 
         ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.8, alpha=0.5)
-        ax2.set_ylabel('Difference', fontsize=11)
-        ax2.set_title('Difference (Corrupted - Original)', fontsize=12, fontweight='bold')
-        ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+        ax2.set_ylabel('Difference', fontsize=12)
+        ax2.set_title(f'Difference (Corrupted - Original) - {aff_channel}', fontsize=12, fontweight='bold')
+        ax2.legend(loc='upper right', fontsize=11)
         ax2.grid(True, alpha=0.3)
 
         # Highlight anomalous regions
@@ -653,13 +679,13 @@ def plot_corrupted_sequences_samples(
                          where=(label_seq == 0),
                          color='green', alpha=0.3, label='Normal')
 
-        ax3.set_xlabel('Timestep', fontsize=11)
-        ax3.set_ylabel('Label', fontsize=11)
+        ax3.set_xlabel('Timestep', fontsize=12)
+        ax3.set_ylabel('Label', fontsize=12)
         ax3.set_title('Anomaly Labels', fontsize=12, fontweight='bold')
         ax3.set_ylim(-0.1, 1.1)
         ax3.set_yticks([0, 1])
         ax3.set_yticklabels(['Normal', 'Anomaly'])
-        ax3.legend(loc='upper right', fontsize=10)
+        ax3.legend(loc='upper right', fontsize=11)
         ax3.grid(True, alpha=0.3, axis='x')
 
         # ============================================================
@@ -667,7 +693,7 @@ def plot_corrupted_sequences_samples(
         # ============================================================
         plt.tight_layout()
 
-        output_filename = f"seq_{seq_idx:06d}_{anom_type}.png"
+        output_filename = f"seq_{seq_idx:06d}_{anom_type}_{aff_channel}.png"
         output_path = output_dir / output_filename
 
         plt.savefig(output_path, dpi=150, bbox_inches='tight')

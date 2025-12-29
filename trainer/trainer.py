@@ -32,8 +32,19 @@ class Trainer(tune.Trainable):
     def setup(self, config):
         """Setup trial."""
 
-        self.cfg = model_setup(config.get('opt.config_file_path'), config, None)
+        # ✅ Extract both cfg and shared_config
+        self.cfg, shared_config = model_setup(
+            config.get('opt.config_file_path'),
+            config,
+            None
+        )
+
         self.cfg, _, _ = update_input_output(self.cfg)
+
+        # ✅ Use shared_config separately
+        if shared_config is None:
+            raise ValueError("shared_config is missing!")
+
 
         # Training state
         self.max_epochs = self.cfg.opt.epochs
@@ -56,13 +67,13 @@ class Trainer(tune.Trainable):
             self.scaler_pre_training_params = None
 
         # Load sequences and create datasets
-        shared_config = config['shared_config']
         overlap = config.get('dataset.perc_overlap', 0.0)
 
         # ✅ Load from Ray Object Store
+        # Load sequences from Ray Object Store
         train_sequences, val_sequences = load_sequences_for_trial(
             cfg=self.cfg,
-            shared_config=shared_config,
+            shared_config=shared_config,  # ← Pass directly, not through OmegaConf
             overlap=overlap
         )
 
@@ -74,11 +85,11 @@ class Trainer(tune.Trainable):
         # Create dataloaders
         self.trainloader, self.valloader = create_dataloaders(train_dataset, val_dataset, self.cfg)
 
-        # ✅ Store scaler from Ray
+        # Store scaler from Ray
         self.scaler = ray.get(shared_config['scaler'])
         self.scaler_params = serialize_scaler(self.scaler)
 
-        # ✅ Load metric dataset and create loader
+        # Load metric dataset and create loader
         metric_dataset_path = shared_config.get('metric_loader_path')
         if self.cfg.opt.evaluate_metrics and metric_dataset_path and os.path.exists(metric_dataset_path):
 
@@ -92,7 +103,7 @@ class Trainer(tune.Trainable):
             print(f"   ✓ Loaded dataset: {len(metric_dataset)} sequences")
             print(f"   ✓ Strategy: {self.metric_loader_metadata.get('strategy', 'N/A')}")
 
-            # ✅ ASSERT: Data must be standardized
+            # ASSERT: Data must be standardized
             is_standardized = self.metric_loader_metadata.get('is_standardized', True)
 
             if not is_standardized:
@@ -113,10 +124,14 @@ class Trainer(tune.Trainable):
 
             print(f"   ✅ Validation: data is standardized")
 
-            # ✅ Create DataLoader with trainer's batch_size
+            # ✅ Add transform to loaded dataset
+            metric_dataset.transform = transform
+            print(f"   ✅ Transform applied to metric dataset")
+
+            # Create DataLoader with trainer's batch_size
             self.metrics_loader = DataLoader(
                 metric_dataset,
-                batch_size=self.cfg.opt.batch_size,  # ← Use hyperparameter
+                batch_size=self.cfg.opt.batch_size,
                 shuffle=False,
                 num_workers=0,
                 pin_memory=False
@@ -183,7 +198,7 @@ class Trainer(tune.Trainable):
         self.val_results, indices = validate_one_epoch(
             model=self.model, dataloader=self.valloader, metric_loader=self.metrics_loader,
             criterion=self.criterion, device=self.device, desc=f"Epoch {self.current_epoch} [Val]",
-            evaluate_metrics=evaluate_metrics, normal_anomalous_ratio=self.cfg.opt.normal_anomalous_ratio,
+            evaluate_metrics=evaluate_metrics, normal_anomalous_ratio=int(self.cfg.opt.get('corruption_ratio', 1)),
             num_thresholds=self.cfg.opt.get("num_thresholds", 100), use_error=self.cfg.opt.get("use_error", "abs")
         )
 
