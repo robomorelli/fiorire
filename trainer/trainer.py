@@ -6,13 +6,15 @@ import torch
 import numpy as np
 import os
 from ray import tune
+import ray
 
+from torch.utils.data import DataLoader
 from utils.load_model import get_model
 from utils.load_dataset import (
     load_sequences_for_trial,
     get_transform,
     create_dataloaders,
-    load_metric_loader_with_metadata  # ← Aggiungi questo
+    load_metric_loader_with_metadata
 )
 from dataset.sentinel import Dataset_seq
 from trainer.utils import (
@@ -57,12 +59,14 @@ class Trainer(tune.Trainable):
         shared_config = config['shared_config']
         overlap = config.get('dataset.perc_overlap', 0.0)
 
+        # ✅ Load from Ray Object Store
         train_sequences, val_sequences = load_sequences_for_trial(
             cfg=self.cfg,
             shared_config=shared_config,
             overlap=overlap
         )
 
+        # Create datasets
         transform = get_transform(self.cfg)
         train_dataset = Dataset_seq(sequences=train_sequences, transform=transform)
         val_dataset = Dataset_seq(sequences=val_sequences, transform=transform)
@@ -70,48 +74,61 @@ class Trainer(tune.Trainable):
         # Create dataloaders
         self.trainloader, self.valloader = create_dataloaders(train_dataset, val_dataset, self.cfg)
 
-        # Store scaler
-        self.scaler = shared_config['scaler']
+        # ✅ Store scaler from Ray
+        self.scaler = ray.get(shared_config['scaler'])
         self.scaler_params = serialize_scaler(self.scaler)
 
-        # ✅ Load metric loader and validate standardization
-        metric_loader_path = shared_config.get('metric_loader_path')
-        if self.cfg.opt.evaluate_metrics and metric_loader_path and os.path.exists(metric_loader_path):
-            self.metrics_loader, self.metric_loader_metadata = load_metric_loader_with_metadata(
-                metric_loader_path,
-                verbose=True
-            )
+        # ✅ Load metric dataset and create loader
+        metric_dataset_path = shared_config.get('metric_loader_path')
+        if self.cfg.opt.evaluate_metrics and metric_dataset_path and os.path.exists(metric_dataset_path):
 
-            # ✅ ASSERT: Data must be standardized (for now)
+            print(f"\n📂 Loading metric dataset: {metric_dataset_path}")
+
+            # Load dataset + metadata
+            saved_dict = torch.load(metric_dataset_path, map_location='cpu')
+            metric_dataset = saved_dict['dataset']
+            self.metric_loader_metadata = saved_dict['metadata']
+
+            print(f"   ✓ Loaded dataset: {len(metric_dataset)} sequences")
+            print(f"   ✓ Strategy: {self.metric_loader_metadata.get('strategy', 'N/A')}")
+
+            # ✅ ASSERT: Data must be standardized
             is_standardized = self.metric_loader_metadata.get('is_standardized', True)
 
             if not is_standardized:
                 error_msg = (
                         "\n" + "=" * 80 + "\n"
-                                          "❌ ERROR: Metric loader contains NON-STANDARDIZED data\n"
+                                          "❌ ERROR: Metric dataset contains NON-STANDARDIZED sequences\n"
                                           "=" * 80 + "\n"
-                                                     f"File: {metric_loader_path}\n"
+                                                     f"File: {metric_dataset_path}\n"
                                                      f"is_standardized: {is_standardized}\n"
                                                      "\n"
-                                                     "The metric loader was saved with force_destandardization=True,\n"
-                                                     "which means the data is in ORIGINAL SCALE (not standardized).\n"
+                                                     "The dataset was saved with force_destandardization=True.\n"
+                                                     "Currently, the trainer requires pre-standardized metric data.\n"
                                                      "\n"
-                                                     "Currently, the trainer requires pre-standardized metric loaders.\n"
-                                                     "Automatic standardization will be implemented in the future.\n"
-                                                     "\n"
-                                                     "SOLUTION:\n"
-                                                     "  1. Regenerate the metric loader with force_destandardization=False (default)\n"
-                                                     "  2. Or use a different metric loader that is already standardized\n"
-                                                     "\n"
-                                                     "To regenerate:\n"
-                                                     f"  - Remove file: {metric_loader_path}\n"
-                                                     "  - Set in config: force_destandardization: false  (or omit it)\n"
-                                                     "  - Re-run metric loader generation\n"
+                                                     "SOLUTION: Regenerate with force_destandardization=False (default)\n"
                         + "=" * 80
                 )
                 raise ValueError(error_msg)
 
-            print(f"   ✅ Metric loader validation: data is standardized")
+            print(f"   ✅ Validation: data is standardized")
+
+            # ✅ Create DataLoader with trainer's batch_size
+            self.metrics_loader = DataLoader(
+                metric_dataset,
+                batch_size=self.cfg.opt.batch_size,  # ← Use hyperparameter
+                shuffle=False,
+                num_workers=0,
+                pin_memory=False
+            )
+
+            print(f"   ✓ Created DataLoader: batch_size={self.cfg.opt.batch_size}")
+
+            # Print dataset composition
+            if hasattr(metric_dataset, 'anomaly_types'):
+                n_anomalous = (metric_dataset.anomaly_types != 'normal').sum()
+                n_normal = len(metric_dataset) - n_anomalous
+                print(f"   ✓ Composition: {n_normal} normal + {n_anomalous} anomalous")
 
         else:
             self.metrics_loader = None

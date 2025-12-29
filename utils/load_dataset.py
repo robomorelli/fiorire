@@ -8,6 +8,9 @@ import numpy as np
 import os
 from scipy import interpolate
 from omegaconf import ListConfig
+from xyzservices.providers import data_path
+
+from utils.metric_dataset_generator import generate_and_save_metric_dataset
 from preprocessing.scaling import *
 
 
@@ -348,49 +351,33 @@ def extract_sequences_with_labels(
 
 def prepare_shared_configuration(cfg):
     """
-    Main orchestration: prepare shared config for all Ray Tune trials.
-
-    Workflow:
-        1. Load and preprocess DataFrame (features, NaN, upsampling)
-        2. Generate train/val indices (with chunking)
-        3. Fit scaler on train only
-        4. Scale full DataFrame
-        5. Generate metric loader (if needed)
+    Prepare shared configuration using Ray Object Store.
+    Large objects (sequences, scaler) are stored in Ray's shared memory.
 
     Returns:
-        shared_config: Dict with all shared data
+        shared_config: Dict with Ray ObjectRefs and small metadata
     """
-    from preprocessing.scaling import fit_scaler_on_indices, apply_scaler
-    from utils.metric_loader_generator import generate_and_save_metric_loader
+    import ray
+    from pathlib import Path
 
     print("\n" + "=" * 80)
     print("📦 PREPARING SHARED CONFIGURATION")
     print("=" * 80)
 
-    # 1. Load and preprocess DataFrame
-    print("\n1️⃣ Loading and preprocessing DataFrame...")
-    data_path = cfg.dataset.data_path
-    df = load_and_preprocess_dataframe(cfg, data_path)
-
-    # 2. Validate config
-    feature_columns = cfg.dataset.feats  # Already processed in load_and_preprocess
-    seq_len = cfg.dataset.seq_in_length
-
-    if not isinstance(seq_len, int):
-        raise ValueError(
-            f"dataset.seq_in_length must be a fixed integer, got {type(seq_len)}. "
-            f"Remove it from tune_config!"
-        )
-
-    print(f"   ✓ Sequence length: {seq_len} (fixed)")
-
-    is_anomaly_column = cfg.dataset.get('is_anomaly_column')
-    filter_anomalies = cfg.opt.get('filter_anomalies', False)
+    # Extract config parameters
     seed = cfg.opt.get('seed', 42)
+    filter_anomalies = cfg.opt.get('filter_anomalies', False)
+    is_anomaly_column = cfg.dataset.get('is_anomaly_column', None)
 
-    # 3. Generate indices
-    print("\n2️⃣ Generating train/val indices...")
-    train_indices, val_indices, train_df_for_scaling, anomalous_indices = (
+    # 1. Load data
+    print("\n1️⃣ Loading dataset...")
+    df = load_and_preprocess_dataframe(cfg, data_path=cfg.dataset.data_path)
+    feature_columns = cfg.dataset.feats
+    print(f"   ✓ Loaded: {df.shape}")
+
+    # 2. Split indices
+    print("\n2️⃣ Splitting train/val indices...")
+    train_indexes, val_indexes, train_df_for_scaling, anomalous_indexes = (
         create_train_val_df_indexes(
             cfg=cfg,
             df=df,
@@ -400,59 +387,109 @@ def prepare_shared_configuration(cfg):
         )
     )
 
-    print(f"   ✓ Train indices: {len(train_indices)}")
-    print(f"   ✓ Val indices: {len(val_indices)}")
-    print(f"   ✓ Clean train data for scaling: {len(train_df_for_scaling)} rows")
+    print(f"   ✓ Train indices: {len(train_indexes)}")
+    print(f"   ✓ Val indices: {len(val_indexes)}")
+    if anomalous_indexes is not None:
+        print(f"   ✓ Anomalous indices: {len(anomalous_indexes)}")
 
+    # 3. Fit scaler on CLEAN train data
     print("\n3️⃣ Fitting scaler on CLEAN train data...")
     scaler, df_scaled, scaler_params = get_scaler(
         cfg=cfg,
-        df_fit=train_df_for_scaling,
+        df_fit=train_df_for_scaling,  # Already filtered
         df_transform=df
     )
+    print(f"   ✓ Scaler fitted: {scaler.__class__.__name__}")
 
-    print(f"   ✓ Scaler fitted on {len(train_df_for_scaling)} NORMAL train timesteps")
-    print(f"   ✓ Features: {len(feature_columns)}")
+    # 4. Extract sequences (no overlap - base sequences)
+    print("\n4️⃣ Extracting base sequences (no overlap)...")
+    seq_len = cfg.dataset.seq_in_length
 
-    # Verifica parametri
-    print("\n   Scaler parameters:")
-    for i, (feat, scaler_feat) in enumerate(zip(feature_columns, scaler.feature_names_in_)):
-        assert feat == scaler_feat
-        print(f"      {feat}: mean={scaler.mean_[i]:.4f}, std={scaler.scale_[i]:.4f}")
-
-
-    # 6. Generate metric loader
-    print("\n5️⃣ Generating metric loader...")
-    metric_loader_path = generate_and_save_metric_loader(
-        cfg=cfg,
-        df_scaled=df_scaled,
-        val_indices=val_indices,
+    train_sequences = extract_sequences_from_indices(
+        df=df_scaled,
+        indices=train_indexes,
+        seq_len=seq_len,
         feature_columns=feature_columns,
-        scaler=scaler,
-        output_dir='./metric_loaders/',
-        force_regenerate=False
+        perc_overlap=0  # No overlap - base sequences
     )
 
-    # Build shared config
+    val_sequences = extract_sequences_from_indices(
+        df=df_scaled,
+        indices=val_indexes,
+        seq_len=seq_len,
+        feature_columns=feature_columns,
+        perc_overlap=0  # No overlap - base sequences
+    )
+
+    print(f"   ✓ Train sequences: {train_sequences.shape}")
+    print(f"   ✓ Val sequences: {val_sequences.shape}")
+    print(f"   ✓ Memory: ~{(train_sequences.nbytes + val_sequences.nbytes) / 1024 ** 3:.2f} GB")
+
+    # 5. Generate metric dataset
+    print("\n5️⃣ Generating metric dataset...")
+    metric_dataset_path = None
+    if cfg.opt.get('anomaly_strategy', 'none') != 'none':
+        metric_dataset_path = generate_and_save_metric_dataset(
+            cfg=cfg,
+            df_scaled=df_scaled,
+            val_indices=val_indexes,
+            feature_columns=feature_columns,
+            scaler=scaler,
+            output_dir='./metric_datasets/',
+            force_regenerate=False,
+            plot_samples=cfg.opt.get('plot_metric_samples', False),
+            plot_percentage=cfg.opt.get('plot_metric_percentage', 0.05)
+        )
+        print(f"   ✓ Metric dataset: {metric_dataset_path}")
+
+    # ✅ 6. Put large objects in Ray Object Store
+    print("\n6️⃣ Storing objects in Ray Object Store...")
+
+    train_sequences_ref = ray.put(train_sequences)
+    val_sequences_ref = ray.put(val_sequences)
+    scaler_ref = ray.put(scaler)
+
+    print(f"   ✓ train_sequences → Ray ObjectRef")
+    print(f"   ✓ val_sequences → Ray ObjectRef")
+    print(f"   ✓ scaler → Ray ObjectRef")
+
+    # Clean up local copies to free memory
+    del train_sequences
+    del val_sequences
+    del df
+    del df_scaled
+    import gc
+    gc.collect()
+    print(f"   ✓ Local memory freed")
+
+    # ✅ 7. Build lightweight shared config
     shared_config = {
-        'train_indices': train_indices.tolist(),
-        'val_indices': val_indices.tolist(),
-        'scaler': scaler,
-        'metric_loader_path': metric_loader_path,
-        'dataset_path': data_path,
-        'feature_columns': feature_columns,
-        'seq_len': seq_len,
-        'seed': seed,
+        # Ray ObjectRefs (tiny - just pointers!)
+        'train_sequences': train_sequences_ref,
+        'val_sequences': val_sequences_ref,
+        'scaler': scaler_ref,
+
+        # Small metadata
+        'scaler_params': scaler_params,
+        'feature_columns': list(feature_columns),
+        'seq_len': int(seq_len),
+        'metric_loader_path': metric_dataset_path,
+
+        # Statistics
+        'train_size': int(len(train_indexes)),
+        'val_size': int(len(val_indexes)),
     }
 
     print("\n" + "=" * 80)
     print("✅ SHARED CONFIGURATION READY")
     print("=" * 80)
-    print(f"   - Train indices: {len(train_indices)}")
-    print(f"   - Val indices: {len(val_indices)}")
-    print(f"   - Scaler: {type(scaler).__name__}")
-    print(f"   - Metric loader: {metric_loader_path if metric_loader_path else 'None'}")
-    print("=" * 80 + "\n")
+    print(f"   - Train indices: {shared_config['train_size']}")
+    print(f"   - Val indices: {shared_config['val_size']}")
+    print(f"   - Scaler: {scaler.__class__.__name__}")
+    if metric_dataset_path:
+        print(f"   - Metric dataset: {metric_dataset_path}")
+    print(f"   - Using Ray Object Store: YES ✓")
+    print("=" * 80)
 
     return shared_config
 
