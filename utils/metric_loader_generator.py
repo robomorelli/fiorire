@@ -24,6 +24,9 @@ def generate_and_save_metric_loader(
 ):
     """
     Generate metric loader based on anomaly strategy and save to disk.
+
+    DEFAULT: Data is STANDARDIZED (is_standardized=True)
+    OPTIONAL: Set force_destandardization=True to save in ORIGINAL SCALE
     """
     strategy = cfg.opt.get('anomaly_strategy', 'none')
 
@@ -77,9 +80,15 @@ def generate_and_save_metric_loader(
         print(f"   ⚠️  No metric dataset created")
         return None
 
-    # Add suffix if data is standardized
-    suffix = "_std" if is_standardized else ""
-    filename = f"metric_{exp_name}_{dataset_name}_{strategy}_seed{seed}{suffix}.pkl"
+    # ✅ Add suffix based on scale
+    if is_standardized:
+        scale_suffix = ""  # Default - no suffix for standardized
+        scale_info = "STANDARDIZED (ready for model)"
+    else:
+        scale_suffix = "_original"  # Mark non-standardized data
+        scale_info = "ORIGINAL SCALE (needs standardization)"
+
+    filename = f"metric_{exp_name}_{dataset_name}_{strategy}_seed{seed}{scale_suffix}.pkl"
     filepath = os.path.join(output_dir, filename)
 
     # Check if already exists
@@ -94,12 +103,13 @@ def generate_and_save_metric_loader(
     print(f"\n📊 Generating metric loader:")
     print(f"   - Strategy: {strategy}")
     print(f"   - Output: {filepath}")
-    if is_standardized:
-        print(f"   - ⚠️  Data is in STANDARDIZED scale")
-    else:
-        print(f"   - ✓ Data is in ORIGINAL scale")
+    print(f"   - Data scale: {scale_info}")
 
-    # ✅ Create metadata dictionary
+    if not is_standardized:
+        print(f"\n   ⚠️  WARNING: Data saved in ORIGINAL SCALE")
+        print(f"      This metric loader will require standardization before use in training")
+
+    # Create metadata dictionary
     metadata = {
         'is_standardized': is_standardized,
         'strategy': strategy,
@@ -130,7 +140,7 @@ def generate_and_save_metric_loader(
         pin_memory=False
     )
 
-    # ✅ Save loader + metadata together
+    # Save loader + metadata together
     save_dict = {
         'loader': metric_loader,
         'metadata': metadata,
@@ -142,7 +152,7 @@ def generate_and_save_metric_loader(
     print(f"      - Path: {filepath}")
     print(f"      - Sequences: {len(metric_dataset)}")
     print(f"      - File size: {os.path.getsize(filepath) / 1024 ** 2:.2f} MB")
-    print(f"      - Metadata saved: is_standardized={is_standardized}")
+    print(f"      - is_standardized: {is_standardized}")
 
     return filepath
 

@@ -792,3 +792,55 @@ def apply_scaler_to_batch(batch, scaler, device):
     batch['input'] = x_tensor
 
     return batch
+
+
+def load_metric_loader_with_metadata(filepath, verbose=True):
+    """
+    Load metric loader and extract metadata.
+
+    Args:
+        filepath: Path to saved metric loader
+        verbose: Print info
+
+    Returns:
+        metric_loader: DataLoader
+        metadata: Dictionary with metadata (always contains 'is_standardized')
+    """
+    import torch
+
+    if verbose:
+        print(f"\n📂 Loading metric loader: {filepath}")
+
+    # Load saved dict
+    saved_dict = torch.load(filepath, map_location='cpu')
+
+    # Check if it's the new format (with metadata)
+    if isinstance(saved_dict, dict) and 'metadata' in saved_dict:
+        metric_loader = saved_dict['loader']
+        metadata = saved_dict['metadata']
+
+        if verbose:
+            print(f"   ✓ Loaded: {metadata.get('num_sequences', 'N/A')} sequences")
+            print(f"   ✓ Strategy: {metadata.get('strategy', 'N/A')}")
+
+            is_standardized = metadata.get('is_standardized', True)
+            if is_standardized:
+                print(f"   ✓ Data scale: STANDARDIZED ✓")
+            else:
+                print(f"   ⚠️  Data scale: ORIGINAL (NOT standardized!) ⚠️")
+
+        return metric_loader, metadata
+
+    else:
+        # Old format (backward compatibility)
+        if verbose:
+            print(f"   ⚠️  WARNING: Old format detected (no metadata)")
+            print(f"   ℹ️  Assuming data is STANDARDIZED (legacy behavior)")
+
+        metric_loader = saved_dict
+        metadata = {
+            'is_standardized': True,  # Assume standardized for old files
+            'legacy': True
+        }
+
+        return metric_loader, metadata

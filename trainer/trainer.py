@@ -8,7 +8,12 @@ import os
 from ray import tune
 
 from utils.load_model import get_model
-from utils.load_dataset import load_sequences_for_trial, get_transform, create_dataloaders
+from utils.load_dataset import (
+    load_sequences_for_trial,
+    get_transform,
+    create_dataloaders,
+    load_metric_loader_with_metadata  # ← Aggiungi questo
+)
 from dataset.sentinel import Dataset_seq
 from trainer.utils import (
     get_opt_metric, update_input_output, model_setup,
@@ -65,16 +70,52 @@ class Trainer(tune.Trainable):
         # Create dataloaders
         self.trainloader, self.valloader = create_dataloaders(train_dataset, val_dataset, self.cfg)
 
-        # Load metric loader
-        metric_loader_path = shared_config.get('metric_loader_path')
-        if self.cfg.opt.evaluate_metrics and metric_loader_path and os.path.exists(metric_loader_path):
-            self.metrics_loader = torch.load(metric_loader_path)
-        else:
-            self.metrics_loader = None
-
         # Store scaler
         self.scaler = shared_config['scaler']
         self.scaler_params = serialize_scaler(self.scaler)
+
+        # ✅ Load metric loader and validate standardization
+        metric_loader_path = shared_config.get('metric_loader_path')
+        if self.cfg.opt.evaluate_metrics and metric_loader_path and os.path.exists(metric_loader_path):
+            self.metrics_loader, self.metric_loader_metadata = load_metric_loader_with_metadata(
+                metric_loader_path,
+                verbose=True
+            )
+
+            # ✅ ASSERT: Data must be standardized (for now)
+            is_standardized = self.metric_loader_metadata.get('is_standardized', True)
+
+            if not is_standardized:
+                error_msg = (
+                        "\n" + "=" * 80 + "\n"
+                                          "❌ ERROR: Metric loader contains NON-STANDARDIZED data\n"
+                                          "=" * 80 + "\n"
+                                                     f"File: {metric_loader_path}\n"
+                                                     f"is_standardized: {is_standardized}\n"
+                                                     "\n"
+                                                     "The metric loader was saved with force_destandardization=True,\n"
+                                                     "which means the data is in ORIGINAL SCALE (not standardized).\n"
+                                                     "\n"
+                                                     "Currently, the trainer requires pre-standardized metric loaders.\n"
+                                                     "Automatic standardization will be implemented in the future.\n"
+                                                     "\n"
+                                                     "SOLUTION:\n"
+                                                     "  1. Regenerate the metric loader with force_destandardization=False (default)\n"
+                                                     "  2. Or use a different metric loader that is already standardized\n"
+                                                     "\n"
+                                                     "To regenerate:\n"
+                                                     f"  - Remove file: {metric_loader_path}\n"
+                                                     "  - Set in config: force_destandardization: false  (or omit it)\n"
+                                                     "  - Re-run metric loader generation\n"
+                        + "=" * 80
+                )
+                raise ValueError(error_msg)
+
+            print(f"   ✅ Metric loader validation: data is standardized")
+
+        else:
+            self.metrics_loader = None
+            self.metric_loader_metadata = None
 
         # Optimization metrics
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
