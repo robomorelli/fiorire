@@ -353,6 +353,10 @@ def extract_sequences_with_labels(
     return sequences, labels
 
 
+# ✅ Global cache to prevent GC (module-level)
+_RAY_OBJECT_CACHE = {}
+
+
 def prepare_shared_configuration(cfg):
     """
     Prepare shared configuration using Ray Object Store.
@@ -363,6 +367,7 @@ def prepare_shared_configuration(cfg):
     """
     import ray
     from pathlib import Path
+    global _RAY_OBJECT_CACHE
 
     print("\n" + "=" * 80)
     print("📦 PREPARING SHARED CONFIGURATION")
@@ -400,13 +405,13 @@ def prepare_shared_configuration(cfg):
     print("\n3️⃣ Fitting scaler on CLEAN train data...")
     scaler, df_scaled, scaler_params = get_scaler(
         cfg=cfg,
-        df_fit=train_df_for_scaling,  # Already filtered
+        df_fit=train_df_for_scaling,
         df_transform=df
     )
     print(f"   ✓ Scaler fitted: {scaler.__class__.__name__}")
 
     # 4. Extract sequences (no overlap - base sequences)
-    print("\n4️⃣ Extracting base sequences (no overlap)...")
+    print(f"\n4️⃣ Extracting base sequences with overlap {cfg.dataset.overlap} (train) and {cfg.opt.metric_seq_overlap} (val)...")
     seq_len = cfg.dataset.seq_in_length
 
     train_sequences = extract_sequences_from_indices(
@@ -414,7 +419,7 @@ def prepare_shared_configuration(cfg):
         indices=train_indexes,
         seq_len=seq_len,
         feature_columns=feature_columns,
-        perc_overlap=0  # No overlap - base sequences
+        perc_overlap=cfg.dataset.overlap
     )
 
     val_sequences = extract_sequences_from_indices(
@@ -422,7 +427,7 @@ def prepare_shared_configuration(cfg):
         indices=val_indexes,
         seq_len=seq_len,
         feature_columns=feature_columns,
-        perc_overlap=0  # No overlap - base sequences
+        perc_overlap=cfg.opt.metric_seq_overlap
     )
 
     print(f"   ✓ Train sequences: {train_sequences.shape}")
@@ -457,18 +462,27 @@ def prepare_shared_configuration(cfg):
     print(f"   ✓ val_sequences → Ray ObjectRef")
     print(f"   ✓ scaler → Ray ObjectRef")
 
-    # Clean up local copies to free memory
-    #del train_sequences
-    #del val_sequences
-    #del df
-    #del df_scaled
-    #import gc
-    #gc.collect()
-    #print(f"   ✓ Local memory freed")
+    # ✅ CRITICAL: Store in GLOBAL cache to prevent GC
+    # This keeps both arrays AND refs alive for the entire run
+    cache_key = f"run_{seed}_{id(train_sequences)}"
+    _RAY_OBJECT_CACHE[cache_key] = {
+        'train_arrays': train_sequences,
+        'val_arrays': val_sequences,
+        'scaler_obj': scaler,
+        'train_ref': train_sequences_ref,
+        'val_ref': val_sequences_ref,
+        'scaler_ref': scaler_ref,
+    }
 
-    # ✅ 7. Build lightweight shared config
+    print(f"   ✓ References cached globally (key: {cache_key})")
+
+    # DON'T delete local copies
+    # del train_sequences  # ← NO!
+    # gc.collect()          # ← NO!
+
+    # ✅ 7. Build lightweight shared config (NO ARRAYS!)
     shared_config = {
-        # Ray ObjectRefs (tiny - just pointers!)
+        # Ray ObjectRefs only (serializable!)
         'train_sequences': train_sequences_ref,
         'val_sequences': val_sequences_ref,
         'scaler': scaler_ref,
@@ -482,6 +496,9 @@ def prepare_shared_configuration(cfg):
         # Statistics
         'train_size': int(len(train_indexes)),
         'val_size': int(len(val_indexes)),
+
+        # Cache key (just a string - serializable!)
+        '_cache_key': cache_key,
     }
 
     print("\n" + "=" * 80)
@@ -493,10 +510,10 @@ def prepare_shared_configuration(cfg):
     if metric_dataset_path:
         print(f"   - Metric dataset: {metric_dataset_path}")
     print(f"   - Using Ray Object Store: YES ✓")
+    print(f"   - Global cache: {cache_key} ✓")
     print("=" * 80)
 
     return shared_config
-
 
 # =========================================================
 # UTILITY FUNCTIONS
