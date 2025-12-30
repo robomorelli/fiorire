@@ -12,10 +12,10 @@ from datetime import datetime
 from omegaconf import OmegaConf
 from ray import tune
 import ray
+
 from utils.load_trainer import get_trainer
 from utils.general import extract_config, get_sync_config, trial_dirname_creator
 from utils.load_dataset import prepare_shared_configuration
-from utils.ray_manager import setup_and_initialize_ray, shutdown_ray
 from trainer.utils import get_opt_metric
 from config import *
 
@@ -23,23 +23,6 @@ from config import *
 def main(args):
     """Main training function with shared datasets."""
 
-    '''
-    # ✅ Setup Ray environment
-    if args.address:
-        # PBS cluster mode
-        setup_and_initialize_ray(
-            address=args.address,
-            password=args.password
-        )
-    else:
-        # Local mode
-        setup_and_initialize_ray(
-            address=None,
-            object_store_memory_gb=30
-        )
-    '''
-
-    # Setup
     # Setup
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
@@ -63,6 +46,7 @@ def main(args):
     # Prepare shared configuration
     shared_config = prepare_shared_configuration(cfg)
     ray_config['shared_config'] = shared_config
+
     # Debug mode
     if args.debug_mode:
         print("\n🐛 DEBUG MODE: Running single trial")
@@ -90,7 +74,6 @@ def main(args):
                 print(f"  - Val ROC-AUC: {result['val_roc_auc']:.4f}")
 
         print("\n✅ Debug mode completed")
-        shutdown_ray()
         return
 
     # Setup Ray Tune
@@ -137,7 +120,6 @@ def main(args):
     sync_config = get_sync_config()
 
     results_dir = os.path.join('./ray_results', f'{args.project_name}_{args.config_file}_{date_str}')
-    os.makedirs(results_dir, exist_ok=True)
 
     print("\n" + "=" * 80)
     print("🚀 STARTING RAY TUNE")
@@ -148,7 +130,6 @@ def main(args):
     print(f"💾 W&B logging: {'Enabled' if args.wandb else 'Disabled'}")
     print()
 
-
     analysis = tune.run(
         trainer,
         scheduler=scheduler,
@@ -158,7 +139,7 @@ def main(args):
         name=cfg.opt.exp_name,
         progress_reporter=progress_reporter,
         sync_config=sync_config,
-        config=ray_config,  # ← Contains shared_config + snapshot path
+        config=ray_config,
         callbacks=callbacks,
         checkpoint_at_end=False,
         checkpoint_freq=0,
@@ -182,17 +163,6 @@ def main(args):
     if 'val_roc_auc' in best_trial.last_result:
         print(f"   - ROC-AUC: {best_trial.last_result['val_roc_auc']:.4f}")
 
-    '''
-    except KeyboardInterrupt:
-        print("\n\n⚠️  Training interrupted by user (Ctrl+C)")
-    except Exception as e:
-        print(f"\n\n❌ Error during training: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        shutdown_ray()  # ✅ Always cleanup
-    '''
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ray Tune hyperparameter optimization")
@@ -211,7 +181,7 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_key",
                         default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
                         help="W&B API key")
-    parser.add_argument("--debug_mode", default=1, type=int,
+    parser.add_argument("--debug_mode", default=0, type=int,
                         help="Run single trial for debugging (0/1)")
 
     args = parser.parse_args()
@@ -219,7 +189,8 @@ if __name__ == "__main__":
     # Environment configuration
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"
 
-    ray.init(address='auto')
+    # ✅ Initialize Ray (auto-connect to cluster or start local)
+    ray.init(address='auto', ignore_reinit_error=True)
 
     # Run optimization
     main(args)

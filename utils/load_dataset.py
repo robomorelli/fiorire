@@ -458,13 +458,13 @@ def prepare_shared_configuration(cfg):
     print(f"   ✓ scaler → Ray ObjectRef")
 
     # Clean up local copies to free memory
-    del train_sequences
-    del val_sequences
-    del df
-    del df_scaled
-    import gc
-    gc.collect()
-    print(f"   ✓ Local memory freed")
+    #del train_sequences
+    #del val_sequences
+    #del df
+    #del df_scaled
+    #import gc
+    #gc.collect()
+    #print(f"   ✓ Local memory freed")
 
     # ✅ 7. Build lightweight shared config
     shared_config = {

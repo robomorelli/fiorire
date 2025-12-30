@@ -276,7 +276,7 @@ class Dataset_seq(Dataset):
         if self.transform is not None:
             data = self.transform(data)
             target = self.transform(target)
-            labels = self.transform(labels)
+            labels = torch.permute(torch.tensor(labels), (1, 0))
         else:
             data = torch.FloatTensor(data)
             target = torch.FloatTensor(target)

@@ -77,6 +77,12 @@ class Trainer(tune.Trainable):
             overlap=overlap
         )
 
+        print(f"\n🔍 DEBUG Sequences loaded:")
+        print(f"   - train_sequences.shape: {train_sequences.shape}")
+        print(f"   - val_sequences.shape: {val_sequences.shape}")
+        print(f"   - train_sequences type: {type(train_sequences)}")
+        print(f"   - val_sequences type: {type(val_sequences)}")
+
         # Create datasets
         transform = get_transform(self.cfg)
         train_dataset = Dataset_seq(sequences=train_sequences, transform=transform)
