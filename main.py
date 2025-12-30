@@ -129,7 +129,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--address", default='10.141.1.28:6379', help="address of master")
     parser.add_argument("--password", help="password to connect to master")
-    parser.add_argument("--config_file", default='conv_ae2D', help="[conv_ae1D, conv_ae2D, lstm]")
+    parser.add_argument("--config_file", default='conv_ae1D', help="[conv_ae1D, conv_ae2D, lstm]")
     parser.add_argument("--num_samples", default=100, help="the model you want to hpo")
     parser.add_argument("--wandb", default=0, type=int, help="the model you want to hpo")
     parser.add_argument("--project_name", default='fiorire1_1D', help="the model you want to hpo")
