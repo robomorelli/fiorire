@@ -144,8 +144,81 @@ def update_input_output(cfg):
     cfg.dataset.feats = feats
     cfg.dataset.target = target
     cfg.opt.remove_columns = remove_columns
+    seq_out_length = cfg.dataset.get('seq_out_length', None)
+    if seq_out_length  is None:
+        cfg.dataset.seq_out_length  = cfg.dataset.seq_in_length
 
     return cfg, feats, target
+
+
+def compute_indices_with_overlap(base_indices, overlap, seq_len):
+    """
+    Compute final indices with overlap, respecting chunk boundaries.
+
+    Args:
+        base_indices: Base indices (may have gaps/chunks)
+        overlap: Percentage overlap (0.0 to 1.0)
+        seq_len: Sequence length
+
+    Returns:
+        final_indices: Indices with overlap applied
+    """
+    import numpy as np
+
+    # Ensure numpy array
+    if not isinstance(base_indices, np.ndarray):
+        base_indices = np.array(base_indices)
+
+    # Calculate step
+    step = max(1, int(seq_len * (1 - overlap)))
+
+    # ✅ Detect chunk boundaries (where diff > 1)
+    diffs = np.diff(base_indices)
+    chunk_breaks = np.where(diffs > 1)[0] + 1
+
+    # Split into chunks
+    chunks = np.split(base_indices, chunk_breaks)
+
+    final_indices = []
+
+    print(f"\n{'=' * 60}")
+    print(f"DEBUG: compute_indices_with_overlap")
+    print(f"{'=' * 60}")
+    print(f"Total base indices: {len(base_indices):,}")
+    print(f"Step: {step}")
+    print(f"Chunks detected: {len(chunks)}")
+    print(f"{'=' * 60}\n")
+
+    total_obtained = 0
+
+    for i, chunk in enumerate(chunks):
+        if len(chunk) == 0:
+            continue
+
+        # ✅ subsample chunk positions
+        chunk_final = chunk[::step]
+
+        expected = len(chunk) // step
+        obtained = len(chunk_final)
+        total_obtained += obtained
+
+        print(
+            f"Chunk {i:2d}: len={len(chunk):7,} | expected={expected:5,} | obtained={obtained:5,} | {'✓' if obtained >= expected else '✗'}")
+
+        final_indices.append(chunk_final)
+
+    print(f"\n{'=' * 60}")
+    print(f"Total expected:  {len(base_indices) // step:,}")
+    print(f"Total obtained:  {total_obtained:,}")
+    print(f"Difference:      {abs(len(base_indices) // step - total_obtained):,}")
+    print(f"{'=' * 60}\n")
+
+    # Concatenate all chunks
+    if len(final_indices) > 0:
+        return np.concatenate(final_indices)
+    else:
+        return np.array([], dtype=np.int64)
+
 
 def get_optimizazion_objects(cfg, model, opt_metric_dict):
 

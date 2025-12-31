@@ -9,18 +9,9 @@ from omegaconf import DictConfig, ListConfig
 from tqdm import tqdm
 
 # Import WOMBAT anomaly classes
-from wombats.anomalies.increasing import *
+from anomalies_register import ANOMALIES_REGISTRY
 from wombats.anomalies.invariant import *
 from wombats.anomalies.decreasing import *
-
-# WOMBAT Registry
-ANOMALIES_REGISTRY = {
-    'GWN': GWN,
-    'Constant': Constant,
-    'Step': Step,
-    'Impulse': Impulse,
-    'GNN': GNN,
-}
 
 
 def print_standardization_summary(sequences: np.ndarray, feature_columns: List[str], title: str = "Data Summary"):

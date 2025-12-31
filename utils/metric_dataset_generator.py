@@ -7,155 +7,237 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader
 from omegaconf import DictConfig
-from typing import Optional
+from typing import Optional, List, Tuple
+import sys
+sys.path.append("./")
 
 from dataset.sentinel import Dataset_seq, concatenate_datasets
+from wombats.anomalies.increasing import *
+from wombats.anomalies.invariant import *
+from wombats.anomalies.decreasing import *
 
+ANOMALIES_REGISTRY = {
+    'GWN':GWN,
+    'Constant':Constant,
+    'Step':Step,
+    'Impulse':Impulse,
+    'GNN':GNN,
+    'PrincipalSubspaceAlteration': PrincipalSubspaceAlteration,
+    }
 
-
-def extract_sequences_with_labels(
-    df,
-    indices,
-    seq_len,
-    feature_columns,
-    anomaly_column
-):
-    """
-    Extract sequences AND labels from DataFrame.
-
-    Args:
-        df: DataFrame (scaled)
-        indices: Starting indices
-        seq_len: Sequence length
-        feature_columns: Feature column names
-        anomaly_column: Anomaly label column
-
-    Returns:
-        sequences: [N, L, F] numpy array
-        labels: [N, L, 1] numpy array (1=anomaly, 0=normal)
-    """
-    N = len(indices)
-    F = len(feature_columns)
-
-    sequences = np.zeros((N, seq_len, F), dtype=np.float32)
-    labels = np.zeros((N, seq_len, 1), dtype=np.float32)
-
-    valid_count = 0
-    max_idx = len(df) - seq_len
-
-    for i, start_idx in enumerate(indices):
-        if start_idx > max_idx:
-            continue
-
-        end_idx = start_idx + seq_len
-
-        # Extract sequence
-        sequences[valid_count] = df.iloc[start_idx:end_idx][feature_columns].values
-
-        # Extract labels
-        if anomaly_column and anomaly_column in df.columns:
-            labels[valid_count, :, 0] = df.iloc[start_idx:end_idx][anomaly_column].values
-        else:
-            labels[valid_count, :, 0] = np.nan
-
-        valid_count += 1
-
-    # Trim to valid count
-    if valid_count < N:
-        sequences = sequences[:valid_count]
-        labels = labels[:valid_count]
-
-    return sequences, labels
 
 def generate_and_save_metric_dataset(
         cfg: DictConfig,
-        df_scaled,
-        val_indices,
+        clean_sequences,
         feature_columns,
         scaler,
-        output_dir='./metric_loaders/',
+        original_anomaly_sequences=None,
+        original_anomaly_labels=None,
+        output_dir='./metric_datasets/',
         force_regenerate=False,
-        plot_samples=True,  # ✅ New parameter
-        plot_percentage=0.05  # ✅ New parameter
+        plot_samples=True,
+        plot_percentage=0.05
 ):
     """
-    Generate metric dataset and save as PyTorch Dataset.
-    DataLoader will be created in the trainer with appropriate batch_size.
+    Generate metric dataset from pre-extracted sequences and save as PyTorch Dataset.
 
-    DEFAULT: Data is STANDARDIZED (is_standardized=True)
-    OPTIONAL: Set force_destandardization=True to save in ORIGINAL SCALE
+    Args:
+        cfg: Configuration
+        clean_sequences: [N, L, F] numpy array of clean, standardized sequences
+        feature_columns: List of feature column names
+        scaler: Fitted scaler (for potential destandardization)
+        original_anomaly_sequences: [M, L, F] original anomalous sequences (optional)
+        original_anomaly_labels: [M, 1, L] labels for original anomalies (optional)
+        output_dir: Directory to save dataset
+        force_regenerate: Force regeneration even if file exists
+        plot_samples: Whether to generate comparison plots
+        plot_percentage: Percentage of samples to plot
+
+    Returns:
+        filepath: Path to saved dataset file, or None if not generated
+
+    NOTE: Input sequences MUST be standardized (from df_scaled)
     """
+    import torch
+    import numpy as np
+    import os
+    from datetime import datetime
+    from dataset.sentinel import Dataset_seq, concatenate_datasets
+
     strategy = cfg.opt.get('anomaly_strategy', 'none')
 
     if strategy == 'none':
         print("\n   ℹ️  Strategy='none': No metric dataset")
         return None
 
-    # Create filename base
+    # Validate input
+    if clean_sequences is None or len(clean_sequences) == 0:
+        print("\n   ⚠️  No clean sequences provided!")
+        return None
+
+    print(f"\n   ✓ Received clean sequences: {clean_sequences.shape}")
+
+    # Create filename
     dataset_name = cfg.dataset.get('name', 'dataset')
     exp_name = cfg.opt.get('exp_name', 'experiment')
     seed = cfg.opt.get('seed', 42)
     seq_len = cfg.dataset.seq_in_length
-    anomaly_column = cfg.dataset.get('is_anomaly_column')
 
-    # ✅ PREDICT is_standardized from config (before generating dataset)
+    # ✅ PREDICT is_standardized from config
     force_destd = cfg.opt.get('force_destandardization', False)
 
     if strategy == 'use_original':
-        # Original anomalies are always from df_scaled → standardized
         predicted_is_standardized = True
     elif strategy in ['corrupt_validation', 'both']:
-        # Depends on force_destandardization flag
         predicted_is_standardized = not force_destd
     else:
-        predicted_is_standardized = True  # Default
+        predicted_is_standardized = True
 
-    # ✅ Build filename with correct suffix
-    if predicted_is_standardized:
-        scale_suffix = ""
-        scale_info = "STANDARDIZED (ready for model)"
-    else:
-        scale_suffix = "_original"
-        scale_info = "ORIGINAL SCALE (needs standardization)"
-
-    filename = f"metric_{exp_name}_{dataset_name}_{strategy}_seed{seed}{scale_suffix}.pt"
+    # Build filename with suffix
+    scale_suffix = "" if predicted_is_standardized else "_original"
+    filename = f"metric_{exp_name}_{dataset_name}_{strategy}_seed{seed}{scale_suffix}_{cfg.opt.corruption_config.delta_mean}.pt"
     filepath = os.path.join(output_dir, filename)
 
-    # ✅ Check if already exists BEFORE generating
+    # ✅ Check if already exists
     if os.path.exists(filepath) and not force_regenerate:
         print(f"\n   ✓ Metric dataset already exists: {filepath}")
         print(f"     (Use force_regenerate=True to regenerate)")
         return filepath
 
-    if strategy == 'use_original':
-        metric_dataset, is_standardized = _create_original_anomaly_dataset(
-            df_scaled, seq_len, feature_columns, anomaly_column
-        )
+    # ✅ Generate metric dataset based on strategy
+    original_sequences_for_plot = None
 
-    elif strategy == 'corrupt_validation':
-        metric_dataset, is_standardized = _create_corrupted_validation_dataset(
-            cfg, df_scaled, val_indices, seq_len, feature_columns, scaler
+    if strategy == 'corrupt_validation':
+        metric_dataset, is_standardized = _create_corrupted_sequences_dataset(
+            cfg=cfg,
+            clean_sequences=clean_sequences,
+            feature_columns=feature_columns,
+            scaler=scaler,
+            include_clean=True
+        )
+        original_sequences_for_plot = clean_sequences.copy()
+
+    elif strategy == 'use_original':
+        print("\n" + "!" * 80)
+        print("⚠️  WARNING: Strategy 'use_original' is NOT FULLY TESTED!")
+        print("   This strategy uses original anomalies from the dataset.")
+        print("   Results may vary depending on data quality and anomaly distribution.")
+        print("!" * 80 + "\n")
+
+        metric_dataset, is_standardized = _create_original_anomaly_sequences_dataset(
+            clean_sequences=clean_sequences,
+            original_anomaly_sequences=original_anomaly_sequences,
+            original_anomaly_labels=original_anomaly_labels,
+            force_destandardization=force_destd,
+            scaler=scaler,
+            feature_columns=feature_columns,
+            include_clean=True
         )
 
     elif strategy == 'both':
-        original_dataset, _ = _create_original_anomaly_dataset(
-            df_scaled, seq_len, feature_columns, anomaly_column
-        )
-        corrupted_dataset, is_standardized = _create_corrupted_validation_dataset(
-            cfg, df_scaled, val_indices, seq_len, feature_columns, scaler
+        print("\n" + "!" * 80)
+        print("⚠️  WARNING: Strategy 'both' is NOT FULLY TESTED!")
+        print("   This strategy combines corrupted validation + original anomalies.")
+        print("   Results may vary depending on data quality and anomaly distribution.")
+        print("!" * 80 + "\n")
+
+        # Get ONLY corrupted (no clean)
+        corrupted_dataset, is_std_corrupted = _create_corrupted_sequences_dataset(
+            cfg=cfg,
+            clean_sequences=clean_sequences,
+            feature_columns=feature_columns,
+            scaler=scaler,
+            include_clean=False
         )
 
-        if original_dataset is not None and corrupted_dataset is not None:
-            metric_dataset = concatenate_datasets(original_dataset, corrupted_dataset)
-            print(f"   ✓ Combined: {len(metric_dataset)} sequences")
-        elif original_dataset is not None:
-            metric_dataset = original_dataset
-            is_standardized = True
+        # Get ONLY original anomalies (no clean)
+        original_dataset, is_std_original = _create_original_anomaly_sequences_dataset(
+            clean_sequences=clean_sequences,
+            original_anomaly_sequences=original_anomaly_sequences,
+            original_anomaly_labels=original_anomaly_labels,
+            force_destandardization=force_destd,
+            scaler=scaler,
+            feature_columns=feature_columns,
+            include_clean=False
+        )
+
+        # Verify standardization match
+        if is_std_corrupted != is_std_original:
+            raise ValueError(
+                f"Standardization mismatch: corrupted={is_std_corrupted}, original={is_std_original}"
+            )
+
+        # Concatenate
+        if corrupted_dataset is not None and original_dataset is not None:
+            # Prepare clean sequences
+            if not is_std_corrupted and scaler is not None:
+                from preprocessing.scaling import inverse_transform_array
+                clean_for_both = inverse_transform_array(clean_sequences, scaler, feature_columns)
+            else:
+                clean_for_both = clean_sequences
+
+            # Combine sequences
+            all_sequences = np.concatenate([
+                clean_for_both,
+                corrupted_dataset.sequences,
+                original_dataset.sequences
+            ], axis=0)
+
+            # Combine labels
+            N_clean = len(clean_sequences)
+            L = clean_sequences.shape[1]
+
+            clean_labels = np.zeros((N_clean, 1, L), dtype=np.float32)
+            all_labels = np.concatenate([
+                clean_labels,
+                corrupted_dataset.anomaly_labels,
+                original_dataset.anomaly_labels
+            ], axis=0)
+
+            # Create final dataset
+            from dataset.sentinel import Dataset_seq
+            metric_dataset = Dataset_seq(
+                sequences=all_sequences,
+                targets=all_sequences,
+                anomaly_labels=all_labels,
+                transform=None
+            )
+
+            # Combine metadata
+            all_anomaly_types = (
+                    ['normal'] * N_clean +
+                    list(corrupted_dataset.anomaly_types) +
+                    list(original_dataset.anomaly_types)
+            )
+
+            all_affected_channels = (
+                    ['none'] * N_clean +
+                    list(corrupted_dataset.affected_channels) +
+                    list(original_dataset.affected_channels)
+            )
+
+            metric_dataset.anomaly_types = all_anomaly_types
+            metric_dataset.affected_channels = all_affected_channels
+
+            is_standardized = is_std_corrupted
+
+            print(f"   ✓ Combined 'both' strategy: {len(metric_dataset)} total sequences")
+            print(f"      - Clean: {N_clean}")
+            print(f"      - Corrupted: {len(corrupted_dataset)}")
+            print(f"      - Original: {len(original_dataset)}")
         elif corrupted_dataset is not None:
             metric_dataset = corrupted_dataset
+            is_standardized = is_std_corrupted
+            print(f"   ⚠️  Only corrupted dataset available")
+        elif original_dataset is not None:
+            metric_dataset = original_dataset
+            is_standardized = is_std_original
+            print(f"   ⚠️  Only original dataset available")
         else:
-            print(f"   ⚠️  No datasets to combine!")
+            print(f"   ⚠️  No datasets created!")
             return None
+
+        original_sequences_for_plot = clean_sequences.copy()
 
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
@@ -164,17 +246,11 @@ def generate_and_save_metric_dataset(
         print(f"   ⚠️  No metric dataset created")
         return None
 
-    # Add suffix based on scale
-    if is_standardized:
-        scale_suffix = ""
-        scale_info = "STANDARDIZED (ready for model)"
-    else:
-        scale_suffix = "_original"
-        scale_info = "ORIGINAL SCALE (needs standardization)"
-
-
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
+
+    # Scale info
+    scale_info = "STANDARDIZED (ready for model)" if is_standardized else "ORIGINAL SCALE"
 
     print(f"\n📊 Saving metric dataset:")
     print(f"   - Strategy: {strategy}")
@@ -183,9 +259,9 @@ def generate_and_save_metric_dataset(
 
     if not is_standardized:
         print(f"\n   ⚠️  WARNING: Data saved in ORIGINAL SCALE")
-        print(f"      This metric dataset will require standardization before use in training")
+        print(f"      This metric dataset will require standardization before use")
 
-    # Create metadata dictionary
+    # Create metadata
     metadata = {
         'is_standardized': is_standardized,
         'strategy': strategy,
@@ -195,10 +271,10 @@ def generate_and_save_metric_dataset(
         'seq_len': seq_len,
         'feature_columns': list(feature_columns),
         'num_sequences': len(metric_dataset),
-        'anomaly_column': anomaly_column,
+        'creation_date': datetime.now().isoformat(),
     }
 
-    # Add corruption config if applicable
+    # Add corruption config
     if strategy in ['corrupt_validation', 'both']:
         corruption_cfg = cfg.opt.get('corruption_config', {})
         metadata['corruption_config'] = {
@@ -215,15 +291,11 @@ def generate_and_save_metric_dataset(
 
     torch.save(save_dict, filepath)
 
-    # ✅ Calculate anomaly stats (gestisci sia numpy che torch)
+    # Calculate anomaly stats
     if hasattr(metric_dataset, 'anomaly_labels') and metric_dataset.anomaly_labels is not None:
         labels = metric_dataset.anomaly_labels
-
-        # Convert to torch if numpy
         if isinstance(labels, np.ndarray):
             labels = torch.from_numpy(labels)
-
-        # Now safely use torch operations
         n_anomalous_seqs = (labels.sum(dim=(1, 2)) > 0).sum().item()
         n_normal_seqs = len(metric_dataset) - n_anomalous_seqs
     else:
@@ -239,273 +311,485 @@ def generate_and_save_metric_dataset(
     print(f"      - is_standardized: {is_standardized}")
 
     # ✅ Generate plots if requested
-    if plot_samples and strategy in ['corrupt_validation', 'both']:
-        from utils.load_dataset import extract_sequences_from_indices
-
+    if plot_samples and original_sequences_for_plot is not None and strategy in ['corrupt_validation', 'both']:
         print(f"\n📊 Generating comparison plots...")
 
-        # Re-extract original clean sequences for comparison
-        original_sequences = extract_sequences_from_indices(
-            df_scaled,
-            val_indices,
-            seq_len,
-            feature_columns,
-            perc_overlap=cfg.opt.get("metric_seq_overlap", 0)
-        )
+        # ✅ Use corruption mapping to extract PAIRED sequences
+        if hasattr(metric_dataset, 'corruption_mapping'):
+            mapping = metric_dataset.corruption_mapping
+            original_indices = mapping['original_indices']
+            n_corrupted = mapping['n_corrupted']
 
-        # Extract data from dataset
-        corrupted_sequences = metric_dataset.sequences
-        labels = metric_dataset.anomaly_labels
-        anomaly_types = metric_dataset.anomaly_types if hasattr(metric_dataset, 'anomaly_types') else None
-        affected_channels = metric_dataset.affected_channels if hasattr(metric_dataset, 'affected_channels') else None
+            # ✅ Extract ORIGINAL sequences for the corrupted ones
+            original_part = original_sequences_for_plot[original_indices]  # [M, L, F]
 
-        # ✅ Extract only the corrupted part for plotting
-        # Dataset structure: [all_clean, corrupted_duplicates]
-        # We want to compare original clean with their corrupted versions
+            # ✅ Extract CORRUPTED sequences (last M in dataset)
+            all_sequences = metric_dataset.sequences
+            all_labels = metric_dataset.anomaly_labels
+            corrupted_part = all_sequences[-n_corrupted:]  # [M, L, F]
+            labels_part = all_labels[-n_corrupted:]  # [M, 1, L]
 
-        corruption_ratio = cfg.opt.get('corruption_config', {}).get('corruption_ratio', 1.0)
-        n_clean = len(original_sequences)
-        n_corrupted = int(n_clean * corruption_ratio)
+            # ✅ Extract metadata
+            anomaly_types = metric_dataset.anomaly_types if hasattr(metric_dataset, 'anomaly_types') else None
+            affected_channels = metric_dataset.affected_channels if hasattr(metric_dataset,
+                                                                            'affected_channels') else None
 
-        if n_corrupted > 0:
-            # Get corrupted sequences (last n_corrupted in dataset)
-            corrupted_part = corrupted_sequences[-n_corrupted:]
-            labels_part = labels[-n_corrupted:]
             anomaly_types_part = anomaly_types[-n_corrupted:] if anomaly_types is not None else None
             affected_channels_part = affected_channels[-n_corrupted:] if affected_channels is not None else None
 
-            # Get corresponding original sequences
-            # (the ones that were duplicated and corrupted)
-            seed = cfg.opt.get('corruption_config', {}).get('random_seed', 123)
-            np.random.seed(seed)
-            indices_corrupted = np.random.choice(n_clean, size=n_corrupted, replace=False)
-            original_part = original_sequences[indices_corrupted]
+            # ✅ CRITICAL: Verify shapes match
+            print(f"   ✓ Plotting alignment check:")
+            print(f"      - Original sequences: {original_part.shape}")
+            print(f"      - Corrupted sequences: {corrupted_part.shape}")
+            print(f"      - Mapping pairs: {len(original_indices)}")
 
-            # Plot
-            plot_corrupted_sequences_samples(
-                original_sequences=original_part,
-                corrupted_sequences=corrupted_part,
-                labels=labels_part,
-                anomaly_types=anomaly_types_part,
-                affected_channels=affected_channels_part,
-                feature_columns=feature_columns,
-                dataset_filepath=filepath,
-                sample_percentage=plot_percentage,
-                max_samples=10,
-                random_seed=seed
-            )
+            if original_part.shape[0] != corrupted_part.shape[0]:
+                print(f"   ❌ ERROR: Shape mismatch!")
+                print(f"      - Original: {original_part.shape[0]}")
+                print(f"      - Corrupted: {corrupted_part.shape[0]}")
+                print(f"      Skipping plots")
+            else:
+                print(f"   ✓ Shapes match - generating plots")
+
+                # ✅ NOW they correspond: original_part[i] ↔ corrupted_part[i]
+                plot_corrupted_sequences_samples(
+                    original_sequences=original_part,
+                    corrupted_sequences=corrupted_part,
+                    labels=labels_part,
+                    anomaly_types=anomaly_types_part,
+                    affected_channels=affected_channels_part,
+                    feature_columns=feature_columns,
+                    dataset_filepath=filepath,
+                    sample_percentage=plot_percentage,
+                    max_samples=10,
+                    random_seed=mapping['seed']
+                )
         else:
-            print(f"   ⚠️  No corrupted sequences to plot (corruption_ratio=0)")
+            print(f"   ⚠️  No corruption mapping found - skipping plots")
+            print(f"      (Mapping is required for accurate plot alignment)")
 
     return filepath
 
-
-
-def _create_original_anomaly_dataset(df_scaled, seq_len, feature_columns, anomaly_column):
-    """
-    Extract original anomalies from dataset.
-
-    Returns:
-        dataset: Dataset object
-        is_standardized: True (data is in scaled form)
-    """
-
-    if not anomaly_column or anomaly_column not in df_scaled.columns:
-        print(f"   ⚠️  No anomaly column '{anomaly_column}' found")
-        return None, False
-
-    # Find anomalous sequences
-    anomalous_indices = []
-    for i in range(len(df_scaled) - seq_len):
-        end_idx = i + seq_len
-        if df_scaled.iloc[i:end_idx][anomaly_column].sum() > 0:
-            anomalous_indices.append(i)
-
-    if not anomalous_indices:
-        print(f"   ⚠️  No original anomalies found")
-        return None, False
-
-    anomalous_indices = np.array(anomalous_indices)
-
-    print(f"   📌 Extracting original anomalies:")
-    print(f"      - Found: {len(anomalous_indices)} sequences")
-
-    # Extract sequences with labels
-    sequences, labels = extract_sequences_with_labels(
-        df_scaled,
-        anomalous_indices,
-        seq_len,
+def _create_original_anomaly_sequences_dataset(
+        clean_sequences,
+        original_anomaly_sequences,
+        original_anomaly_labels,
+        force_destandardization,
+        scaler,
         feature_columns,
-        anomaly_column
-    )
-
-    dataset = Dataset_seq(
-        sequences=sequences,
-        anomaly_labels=labels
-    )
-
-    print(f"      ✓ Dataset created: {len(dataset)} sequences")
-    print(f"      ℹ️  Data is in STANDARDIZED scale (from df_scaled)")
-
-    return dataset, True  # True = data is standardized
-
-
-def _create_corrupted_validation_dataset(
-        cfg,
-        df_scaled,
-        val_indices,
-        seq_len,
-        feature_columns,
-        scaler
+        include_clean=True
 ):
     """
-    Create dataset with BOTH normal and corrupted sequences.
+    Create dataset with original anomaly sequences.
 
-    Strategy:
-    - Extract ALL clean validation sequences (100% normal)
-    - Duplicate corruption_ratio% of them
-    - Corrupt the duplicates
-    - Concatenate: [all_clean, corrupted_duplicates]
-
-    Example with corruption_ratio=0.3:
-    - 1000 clean sequences (normal)
-    - + 300 duplicated and corrupted sequences (anomalous)
-    - Total: 1300 sequences in metric dataset
+    Args:
+        clean_sequences: [N, L, F] clean validation sequences
+        original_anomaly_sequences: [M, L, F] original anomalous sequences
+        original_anomaly_labels: [M, 1, L] binary labels for anomalies
+        force_destandardization: Whether to destandardize
+        scaler: Fitted scaler
+        feature_columns: Feature names
+        include_clean: If True, return [clean + original]. If False, return ONLY original.
 
     Returns:
-        dataset: Dataset_seq object with sequences + labels
-        is_standardized: True (default) or False (if forced)
+        dataset: Dataset_seq
+        is_standardized: bool
     """
-    from utils.anomaly_corruption import corrupt_sequences_wombat
-    from utils.load_dataset import extract_sequences_from_indices
+    import numpy as np
+    from dataset.sentinel import Dataset_seq
 
-    print(f"   🔧 Creating WOMBAT-corrupted validation dataset...")
+    print(f"\n   🔧 Creating original anomaly dataset...")
+    print(f"      - Include clean: {include_clean}")
 
-    # Extract ALL clean validation sequences (ALREADY SCALED)
-    all_clean_sequences = extract_sequences_from_indices(
-        df_scaled,
-        val_indices,
-        seq_len,
-        feature_columns,
-        perc_overlap=cfg.opt.get("metric_seq_overlap", 0)
-    )  # [N, L, F] - ALREADY SCALED
+    if original_anomaly_sequences is None or len(original_anomaly_sequences) == 0:
+        print(f"      ⚠️  No original anomaly sequences provided!")
+        return None, True
 
-    N_total = len(all_clean_sequences)
+    print(f"      - Clean sequences: {clean_sequences.shape}")
+    print(f"      - Original anomaly sequences: {original_anomaly_sequences.shape}")
+    print(f"      - Original anomaly labels: {original_anomaly_labels.shape}")
 
-    print(f"      - Total clean sequences: {all_clean_sequences.shape}")
-    print(f"      - Data already scaled (using training scaler)")
+    # Check destandardization
+    if force_destandardization:
+        print(f"      ⚠️  Destandardizing sequences")
+        from preprocessing.scaling import inverse_transform_array
 
-    # Get corruption config
-    corruption_ratio = cfg.opt.get('corruption_config', {}).get('corruption_ratio', 1.0)
-    random_seed = cfg.opt.get('corruption_config', {}).get('random_seed', 123)
-    force_destd = cfg.opt.get('force_destandardization', False)
+        # Destandardize both clean and original
+        clean_sequences_destd = inverse_transform_array(clean_sequences, scaler, feature_columns)
+        original_anomaly_sequences_destd = inverse_transform_array(original_anomaly_sequences, scaler, feature_columns)
 
-    if force_destd:
-        print(f"      ⚠️  WARNING: force_destandardization=True detected!")
-        print(f"      This will produce ORIGINAL SCALE data (not recommended for training)")
+        is_standardized = False
+    else:
+        clean_sequences_destd = clean_sequences
+        original_anomaly_sequences_destd = original_anomaly_sequences
+        is_standardized = True
 
-    # ✅ Determine number of sequences to corrupt
-    n_to_corrupt = int(N_total * corruption_ratio)
+    N_clean = len(clean_sequences)
+    M_original = len(original_anomaly_sequences)
+    L = clean_sequences.shape[1]
 
-    print(f"\n      📊 Corruption strategy:")
-    print(f"         - Corruption ratio: {corruption_ratio:.1%}")
-    print(f"         - Clean sequences (normal): {N_total}")
-    print(f"         - Sequences to corrupt: {n_to_corrupt}")
-    print(f"         - Total sequences: {N_total + n_to_corrupt}")
+    if include_clean:
+        # Standard: clean + original anomalies
+        all_sequences = np.concatenate([clean_sequences_destd, original_anomaly_sequences_destd], axis=0)
 
-    if n_to_corrupt == 0:
-        print(f"\n      ⚠️  Corruption ratio is 0 - no corrupted sequences will be added")
-        # Return only clean sequences
+        clean_labels = np.zeros((N_clean, 1, L), dtype=np.float32)
+        all_labels = np.concatenate([clean_labels, original_anomaly_labels], axis=0)
 
-        # Create labels (all zeros - no anomalies)
-        labels = torch.zeros((N_total, seq_len, 1), dtype=torch.float32)
-        anomaly_types = np.array(['normal'] * N_total, dtype=object)
-        affected_channels = np.array(['none'] * N_total, dtype=object)
+        # Metadata (assume original anomalies don't have type/channel info)
+        all_anomaly_types = ['normal'] * N_clean + ['original'] * M_original
+        all_affected_channels = ['none'] * N_clean + ['unknown'] * M_original
 
-        dataset = Dataset_seq(
-            sequences=torch.from_numpy(all_clean_sequences).float(),
-            anomaly_labels=labels
-        )
-        dataset.anomaly_types = anomaly_types
-        dataset.affected_channels = affected_channels
+        print(f"      ✓ Combined dataset: {all_sequences.shape}")
+        print(f"         - Clean: {N_clean} sequences")
+        print(f"         - Original anomalies: {M_original} sequences")
+    else:
+        # Only original anomalies (for "both" strategy)
+        all_sequences = original_anomaly_sequences_destd
+        all_labels = original_anomaly_labels
 
-        is_standardized = True  # Clean sequences are standardized
+        # Metadata
+        all_anomaly_types = ['original'] * M_original
+        all_affected_channels = ['unknown'] * M_original
 
-        print(f"\n      ✅ Dataset created: {len(dataset)} sequences (all normal)")
-        return dataset, is_standardized
+        print(f"      ✓ Original anomalies only: {all_sequences.shape}")
+        print(f"         - Original anomalies: {M_original} sequences")
 
-    # ✅ Randomly select sequences to duplicate and corrupt
-    np.random.seed(random_seed)
-    indices_to_corrupt = np.random.choice(N_total, size=n_to_corrupt, replace=False)
-    sequences_to_corrupt = all_clean_sequences[indices_to_corrupt]  # [n_to_corrupt, L, F]
+    # Verify label statistics
+    n_anomalous_timesteps = original_anomaly_labels.sum()
+    total_timesteps = original_anomaly_labels.size
+    anomaly_density = n_anomalous_timesteps / total_timesteps
+    print(f"      ✓ Anomaly density in original sequences: {anomaly_density:.2%}")
 
-    print(f"\n      💉 Corrupting {n_to_corrupt} duplicated sequences...")
-
-    # Corrupt the duplicates
-    corrupted_sequences, corrupted_labels, anomaly_types_corrupted, affected_channels_corrupted, is_standardized = corrupt_sequences_wombat(
-        sequences=sequences_to_corrupt,
-        feature_columns=feature_columns,
-        cfg=cfg,
-        standardization_mode="skip",
-        scaler=scaler,
-        force_destandardization=force_destd,
-        random_seed=random_seed,
-        verbose=True
-    )
-
-    # ✅ Create labels for clean sequences (all zeros)
-    clean_labels = torch.zeros((N_total, seq_len, 1), dtype=torch.float32)
-    clean_anomaly_types = np.array(['normal'] * N_total, dtype=object)
-    clean_affected_channels = np.array(['none'] * N_total, dtype=object)
-
-    # ✅ Concatenate: [all_clean, corrupted_duplicates]
-    all_sequences = np.concatenate([
-        all_clean_sequences,  # [N_total, L, F] - normal
-        corrupted_sequences  # [n_to_corrupt, L, F] - anomalous
-    ], axis=0)  # [N_total + n_to_corrupt, L, F]
-
-    all_labels = torch.cat([
-        clean_labels,  # [N_total, L, 1]
-        torch.from_numpy(corrupted_labels).float()  # [n_to_corrupt, L, 1]
-    ], dim=0)  # [N_total + n_to_corrupt, L, 1]
-
-    all_anomaly_types = np.concatenate([
-        clean_anomaly_types,  # [N_total]
-        anomaly_types_corrupted  # [n_to_corrupt]
-    ])
-
-    all_affected_channels = np.concatenate([
-        clean_affected_channels,  # [N_total]
-        affected_channels_corrupted  # [n_to_corrupt]
-    ])
-
-    # Create dataset
+    # Create Dataset_seq
     dataset = Dataset_seq(
-        sequences=torch.from_numpy(all_sequences).float(),
-        anomaly_labels=all_labels
+        sequences=all_sequences,
+        targets=all_sequences,
+        anomaly_labels=all_labels,
+        transform=None
     )
 
-    # Store metadata
+    # Metadata
     dataset.anomaly_types = all_anomaly_types
     dataset.affected_channels = all_affected_channels
 
-    print(f"\n      ✅ Combined dataset created:")
-    print(f"         - Normal sequences: {N_total}")
-    print(f"         - Anomalous sequences: {n_to_corrupt}")
-    print(f"         - Total: {len(dataset)} sequences")
-    print(f"         - Overall anomaly ratio: {all_labels.mean():.2%}")
-    print(f"         - Metadata: anomaly_types, affected_channels")
+    print(f"      ✓ Dataset created: {len(dataset)} sequences")
 
-    if is_standardized:
-        print(f"         - ✓ Data is STANDARDIZED (ready for model)")
+    return dataset, is_standardized
+
+
+def corrupt_sequences_wombat(
+        sequences: np.ndarray,
+        feature_columns: List[str],
+        anomalies_type: List[str],
+        delta_mean: float,
+        corruption_ratio: float,
+        random_seed: int,
+        scaler: Optional[object] = None,
+        force_destandardization: bool = False,
+        target_channels: Optional[List[str]] = None
+) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], bool, np.ndarray]:
+    """
+    Inject WOMBAT anomalies with full standardization handling.
+
+    Returns:
+        corrupted_sequences: [N, L, F]
+        labels: [N, 1, L]
+        anomaly_types_list: List[str]
+        affected_channels_list: List[str]
+        is_standardized: bool
+        indices_corrupted: np.ndarray - Indices that were selected for corruption
+    """
+
+    from tqdm import tqdm
+    from omegaconf import ListConfig
+
+    # ✅ Convert OmegaConf ListConfig to Python lists
+    if isinstance(feature_columns, ListConfig):
+        feature_columns = list(feature_columns)
+    if isinstance(anomalies_type, ListConfig):
+        anomalies_type = list(anomalies_type)
+    if target_channels is not None and isinstance(target_channels, ListConfig):
+        target_channels = list(target_channels)
+
+    # Set seed
+    np.random.seed(random_seed)
+
+    N, L, F = sequences.shape
+    sequences_std = sequences.copy()  # Work on standardized data
+
+    print(f"\n   🧪 WOMBAT Injection Configuration:")
+    print(f"      - Input: {sequences.shape} (ASSUMED STANDARDIZED)")
+    print(f"      - Anomaly types: {anomalies_type}")
+    print(f"      - Delta: {delta_mean} (FIXED)")
+    print(f"      - Corruption ratio: {corruption_ratio:.1%}")
+    print(f"      - Force destandardization: {force_destandardization}")
+    print(f"      - Random seed: {random_seed}")
+
+    # Available channels
+    if target_channels is not None:
+        available_channels = [
+            feature_columns.index(ch) for ch in target_channels
+            if ch in feature_columns
+        ]
     else:
-        print(f"         - ⚠️  Data is in ORIGINAL SCALE (requires standardization)")
+        available_channels = list(range(F))
 
-    # Summary
-    print(f"\n      📋 Anomaly distribution:")
-    unique_types, counts = np.unique(all_anomaly_types[all_anomaly_types != 'normal'], return_counts=True)
-    for atype, count in zip(unique_types, counts):
-        print(f"         * {atype}: {count}")
+    # Initialize
+    corrupted_std = sequences_std.copy()
+    labels = np.zeros((N, 1, L), dtype=np.float32)
+    anomaly_types_arr = np.array(['normal'] * N, dtype=object)
+    affected_channels_idx = np.full(N, -1, dtype=np.int32)
+
+    # Cache
+    fitted_cache = {}
+
+    # Select to corrupt
+    n_to_corrupt = int(N * corruption_ratio)
+    indices_to_corrupt = np.random.choice(N, size=n_to_corrupt, replace=False)
+
+    print(f"\n      💉 Step 1: Injecting anomalies ({n_to_corrupt}/{N} sequences)...")
+
+    # =========================================================
+    # STEP 1: INJECT (on standardized)
+    # =========================================================
+    for seq_idx in tqdm(indices_to_corrupt, desc="      Injecting", unit="seq", ncols=100, leave=False):
+        anomaly_type = np.random.choice(anomalies_type)
+        channel_idx = np.random.choice(available_channels)
+
+        cache_key = (channel_idx, anomaly_type)
+
+        # ✅ LAZY FIT
+        if cache_key not in fitted_cache:
+            if anomaly_type not in ANOMALIES_REGISTRY:
+                tqdm.write(f"         ⚠️  Unknown: {anomaly_type}")
+                continue
+
+            anomaly_cls = ANOMALIES_REGISTRY[anomaly_type]
+            anomaly_obj = anomaly_cls(delta=delta_mean)
+
+            # Fit on ALL sequences for this channel
+            channel_data = sequences_std[:, :, channel_idx]  # [N, L]
+
+            try:
+                anomaly_obj.fit(channel_data)
+                tqdm.write(
+                    f"         🔧 Fitted {anomaly_type} on channel {channel_idx} ({feature_columns[channel_idx]})")
+            except Exception as e:
+                tqdm.write(f"         ⚠️  Fit failed: {e}")
+                anomaly_obj.fit(channel_data[:1])
+
+            fitted_cache[cache_key] = anomaly_obj
+        else:
+            anomaly_obj = fitted_cache[cache_key]
+
+        # Extract channel
+        original_seq = sequences_std[seq_idx, :, channel_idx].copy()  # [L]
+
+        # ✅ DISTORT
+        try:
+            distorted_seq = anomaly_obj.distort(original_seq.reshape(1, -1))[0]  # [L]
+        except Exception as e:
+            tqdm.write(f"         ⚠️  Distort failed: {e}")
+            distorted_seq = original_seq.copy()
+
+        # ✅ CRITICAL: Compute mask ONLY where actually changed
+        mask = (np.abs(original_seq - distorted_seq) > 1e-10)
+
+        if mask.any():
+            # Update corrupted ONLY where changed
+            corrupted_std[seq_idx, mask, channel_idx] = distorted_seq[mask]
+
+            # Labels = 1 where changed
+            labels[seq_idx, 0, mask] = 1.0
+
+            # Metadata
+            anomaly_types_arr[seq_idx] = anomaly_type
+            affected_channels_idx[seq_idx] = channel_idx
+
+    total_anomalous = labels.sum()
+    print(f"\n      ✅ Injection complete:")
+    print(f"         - Corrupted: {n_to_corrupt}/{N} sequences")
+    print(f"         - Fitted injectors: {len(fitted_cache)}")
+    print(f"         - Anomalous timesteps: {total_anomalous:.0f}/{N * L} ({total_anomalous / (N * L) * 100:.1f}%)")
+
+    # =========================================================
+    # STEP 2: DESTANDARDIZATION (if requested)
+    # =========================================================
+    if force_destandardization:
+        if scaler is None:
+            raise ValueError("force_destandardization=True requires scaler")
+
+        print(f"\n      📈 Step 2: Destandardizing...")
+
+        from preprocessing.scaling import inverse_transform_array
+
+        # Destandardize corrupted
+        corrupted_destd = inverse_transform_array(corrupted_std, scaler, feature_columns)
+
+        # Destandardize original
+        sequences_destd = inverse_transform_array(sequences_std, scaler, feature_columns)
+
+        # ✅ PRESERVE: Replace normal timesteps with original values
+        print(f"         ↳ Preserving original values for normal timesteps...")
+        normal_mask = (labels[:, 0, :] == 0)  # [N, L]
+
+        for f_idx in range(F):
+            corrupted_destd[:, :, f_idx][normal_mask] = sequences_destd[:, :, f_idx][normal_mask]
+
+        corrupted_sequences = corrupted_destd
+        is_standardized = False
+
+        print(f"         ✓ Destandardized (back to original scale)")
+
+    else:
+        print(f"\n      📈 Step 2: Keeping standardized")
+
+        # ✅ PRESERVE even in standardized (safety - handles numerical errors)
+        print(f"         ↳ Preserving original values for normal timesteps...")
+        normal_mask = (labels[:, 0, :] == 0)  # [N, L]
+
+        #for f_idx in range(F):
+        #    corrupted_std[:, :, f_idx][normal_mask] = sequences_std[:, :, f_idx][normal_mask]
+
+        corrupted_sequences = corrupted_std
+        is_standardized = True
+
+        print(f"         ✓ Output is STANDARDIZED")
+
+    # Convert metadata
+    anomaly_types_list = anomaly_types_arr.tolist()
+    affected_channels_list = [
+        feature_columns[int(idx)] if idx >= 0 else 'none'
+        for idx in affected_channels_idx
+    ]
+
+    # ✅ NEW: Return also the indices that were corrupted
+    return (
+        corrupted_sequences,
+        labels,
+        anomaly_types_list,
+        affected_channels_list,
+        is_standardized,
+        indices_to_corrupt  # ← CRITICAL: Gli indici selezionati per corruzione
+    )
+
+
+def _create_corrupted_sequences_dataset(cfg, clean_sequences, feature_columns, scaler, include_clean=True):
+    """Create dataset with corrupted sequences."""
+    import numpy as np
+    from dataset.sentinel import Dataset_seq
+
+    print(f"\n   🔧 Creating corrupted validation dataset...")
+    print(f"      - Input sequences: {clean_sequences.shape}")
+    print(f"      - Include clean: {include_clean}")
+
+    # Get config
+    corruption_cfg = cfg.opt.get('corruption_config', {})
+    corruption_ratio = corruption_cfg.get('corruption_ratio', 1.0)
+    anomalies_type = corruption_cfg.get('anomalies_type', ['GWN'])
+    delta_mean = corruption_cfg.get('delta_mean', 0.8)
+    random_seed = corruption_cfg.get('random_seed', 123)
+    target_channels = corruption_cfg.get('target_channels', None)
+
+    force_destd = cfg.opt.get('force_destandardization', False)
+
+    # Use WOMBAT - returns indices_to_corrupt
+    corrupted_sequences, labels, anomaly_types, affected_channels, is_standardized, indices_to_corrupt = corrupt_sequences_wombat(
+        sequences=clean_sequences,
+        feature_columns=feature_columns,
+        anomalies_type=anomalies_type,
+        delta_mean=delta_mean,
+        corruption_ratio=corruption_ratio,
+        random_seed=random_seed,
+        scaler=scaler,
+        force_destandardization=force_destd,
+        target_channels=target_channels
+    )
+
+    print(f"      ✓ Sequences corrupted: {corrupted_sequences.shape}")
+
+    # ✅ FIX: Use indices directly instead of boolean indexing
+    # Find which of the selected indices actually got corrupted
+    was_corrupted_full = (labels.sum(axis=(1, 2)) > 0)  # [N_clean] boolean
+
+    # Filter indices_to_corrupt to keep only those that were actually corrupted
+    actually_corrupted_indices = []
+    for idx in indices_to_corrupt:
+        if was_corrupted_full[idx]:
+            actually_corrupted_indices.append(idx)
+
+    actually_corrupted_indices = np.array(actually_corrupted_indices)
+
+    # ✅ Extract using direct indexing (preserves order!)
+    corrupted_only = corrupted_sequences[actually_corrupted_indices]
+    labels_corrupted = labels[actually_corrupted_indices]
+    anomaly_types_corrupted = [anomaly_types[i] for i in actually_corrupted_indices]
+    affected_channels_corrupted = [affected_channels[i] for i in actually_corrupted_indices]
+
+    # ✅ Store the mapping (now in correct order!)
+    original_indices_corrupted = actually_corrupted_indices
+
+    print(f"      ✓ Corruption mapping:")
+    print(f"         - Selected for corruption: {len(indices_to_corrupt)}")
+    print(f"         - Actually corrupted: {len(original_indices_corrupted)}")
+
+    N_clean = len(clean_sequences)
+    L = clean_sequences.shape[1]
+
+    if include_clean:
+        # Standard: clean + corrupted
+        all_sequences = np.concatenate([clean_sequences, corrupted_only], axis=0)
+
+        clean_labels = np.zeros((N_clean, 1, L), dtype=np.float32)
+        all_labels = np.concatenate([clean_labels, labels_corrupted], axis=0)
+
+        # Metadata
+        all_anomaly_types = ['normal'] * N_clean + anomaly_types_corrupted
+        all_affected_channels = ['none'] * N_clean + affected_channels_corrupted
+
+        print(f"      ✓ Combined dataset: {all_sequences.shape}")
+        print(f"         - Clean: {N_clean} sequences")
+        print(f"         - Corrupted: {len(corrupted_only)} sequences")
+    else:
+        # Only corrupted (for "both" strategy)
+        all_sequences = corrupted_only
+        all_labels = labels_corrupted
+
+        # Metadata
+        all_anomaly_types = anomaly_types_corrupted
+        all_affected_channels = affected_channels_corrupted
+
+        print(f"      ✓ Corrupted-only dataset: {all_sequences.shape}")
+        print(f"         - Corrupted: {len(corrupted_only)} sequences")
+
+    # If destandardized, apply inverse to clean too
+    if include_clean and not is_standardized and scaler is not None:
+        from preprocessing.scaling import inverse_transform_array
+        print(f"      ℹ️  Clean sequences also destandardized for consistency")
+        clean_sequences_destd = inverse_transform_array(clean_sequences, scaler, feature_columns)
+        all_sequences[:N_clean] = clean_sequences_destd
+
+    # Create dataset
+    dataset = Dataset_seq(
+        sequences=all_sequences,
+        targets=all_sequences,
+        anomaly_labels=all_labels,
+        transform=None
+    )
+
+    # Metadata
+    dataset.anomaly_types = all_anomaly_types
+    dataset.affected_channels = all_affected_channels
+
+    # ✅ Store corruption mapping
+    dataset.corruption_mapping = {
+        'original_indices': original_indices_corrupted,
+        'seed': random_seed,
+        'n_clean': N_clean,
+        'n_corrupted': len(corrupted_only)
+    }
+
+    print(f"      ✓ Corruption mapping saved: {len(original_indices_corrupted)} pairs")
 
     return dataset, is_standardized
 
@@ -519,19 +803,16 @@ def plot_corrupted_sequences_samples(
         feature_columns,
         dataset_filepath,
         sample_percentage=0.05,
-        max_samples=100,
+        max_samples=10,
         random_seed=42
 ):
     """
     Plot comparison between original and corrupted sequences.
-
-    Shows ONLY the affected channel (corrupted feature).
+    Shows affected channel + neighboring channels for verification.
     """
     import matplotlib
-    matplotlib.use('Agg')  # ✅ Non-interactive backend
+    matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-
-    # ✅ Disable interactive mode
     plt.ioff()
     import numpy as np
     from pathlib import Path
@@ -571,7 +852,7 @@ def plot_corrupted_sequences_samples(
     np.random.seed(random_seed)
 
     # Find sequences with anomalies
-    has_anomaly = labels.sum(axis=(1, 2)) > 0  # [N]
+    has_anomaly = labels.sum(axis=(1, 2)) > 0
     anomalous_indices = np.where(has_anomaly)[0]
 
     if len(anomalous_indices) == 0:
@@ -585,108 +866,178 @@ def plot_corrupted_sequences_samples(
     print(f"   - Anomalous sequences available: {len(anomalous_indices)}")
     print(f"   - Plotting: {n_samples_actual} sequences")
 
-    # ✅ Convert feature_columns to list for indexing
+    # Convert feature_columns to list
     if isinstance(feature_columns, (list, tuple)):
         feature_columns_list = list(feature_columns)
     else:
         feature_columns_list = list(feature_columns)
+
+    # Convert metadata to numpy arrays
+    if not isinstance(anomaly_types, np.ndarray):
+        anomaly_types = np.array(anomaly_types)
+    if not isinstance(affected_channels, np.ndarray):
+        affected_channels = np.array(affected_channels)
 
     # Plot each sampled sequence
     for plot_idx, seq_idx in enumerate(sampled_indices):
         # Extract data for this sequence
         orig_seq = original_sequences[seq_idx]  # [L, F]
         corr_seq = corrupted_sequences[seq_idx]  # [L, F]
-        label_seq = labels[seq_idx, :, 0]  # [L]
+        label_seq = labels[seq_idx, 0, :]  # [L]
         anom_type = anomaly_types[seq_idx]
         aff_channel = affected_channels[seq_idx]
 
-        # ✅ Find the index of the affected channel
+        # Find affected channel index
         try:
             affected_idx = feature_columns_list.index(aff_channel)
         except ValueError:
-            print(f"   ⚠️  Warning: Channel '{aff_channel}' not found in feature_columns. Skipping seq {seq_idx}")
+            print(f"   ⚠️  Warning: Channel '{aff_channel}' not found. Skipping seq {seq_idx}")
             continue
 
-        # ✅ Extract ONLY the affected feature
-        orig_feature = orig_seq[:, affected_idx]  # [L]
-        corr_feature = corr_seq[:, affected_idx]  # [L]
-        diff_feature = corr_feature - orig_feature  # [L]
+        # ✅ Get neighboring channels
+        prev_idx = affected_idx - 1 if affected_idx > 0 else None
+        next_idx = affected_idx + 1 if affected_idx < F - 1 else None
 
-        # Create figure
-        fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+        # Create figure with 5 subplots
+        fig, axes = plt.subplots(5, 1, figsize=(16, 14), sharex=True)
         fig.suptitle(
             f'Sequence {seq_idx} | Anomaly: {anom_type} | Affected: {aff_channel}',
-            fontsize=14, fontweight='bold'
+            fontsize=16, fontweight='bold'
         )
 
         timesteps = np.arange(L)
 
+        # Highlight anomaly region (for all plots)
+        if label_seq.any():
+            anomaly_timesteps = np.where(label_seq > 0)[0]
+            if len(anomaly_timesteps) > 0:
+                anom_start = anomaly_timesteps[0]
+                anom_end = anomaly_timesteps[-1]
+
         # ============================================================
-        # Plot 1: Original vs Corrupted (ONLY affected feature)
+        # Plot 1: AFFECTED CHANNEL - Original vs Corrupted
         # ============================================================
         ax1 = axes[0]
 
-        # Original
-        ax1.plot(timesteps, orig_feature,
-                 label=f'{aff_channel} (original)',
-                 alpha=0.8, linewidth=2, color='blue')
+        orig_feature = orig_seq[:, affected_idx]
+        corr_feature = corr_seq[:, affected_idx]
 
-        # Corrupted
-        ax1.plot(timesteps, corr_feature,
-                 label=f'{aff_channel} (corrupted)',
+        ax1.plot(timesteps, orig_feature, label=f'{aff_channel} (original)',
+                 alpha=0.8, linewidth=2, color='blue')
+        ax1.plot(timesteps, corr_feature, label=f'{aff_channel} (corrupted)',
                  alpha=0.8, linewidth=2, color='red', linestyle='--')
 
-        ax1.set_ylabel('Value', fontsize=12)
-        ax1.set_title(f'Original vs Corrupted - {aff_channel}', fontsize=12, fontweight='bold')
-        ax1.legend(loc='upper right', fontsize=11)
+        ax1.set_ylabel('Value', fontsize=11)
+        ax1.set_title(f'🎯 AFFECTED: {aff_channel}', fontsize=12, fontweight='bold')
+        ax1.legend(loc='upper right', fontsize=10)
         ax1.grid(True, alpha=0.3)
 
-        # Highlight anomalous regions
-        anomaly_regions = np.where(label_seq > 0)[0]
-        if len(anomaly_regions) > 0:
-            ax1.axvspan(anomaly_regions[0], anomaly_regions[-1],
-                        alpha=0.2, color='red', label='Anomaly region')
+        if label_seq.any() and len(anomaly_timesteps) > 0:
+            ax1.axvspan(anom_start, anom_end, alpha=0.2, color='red')
 
         # ============================================================
-        # Plot 2: Difference (Corrupted - Original) for affected feature
+        # Plot 2: PREVIOUS CHANNEL - Should be UNCHANGED
         # ============================================================
         ax2 = axes[1]
 
-        ax2.plot(timesteps, diff_feature,
-                 label=f'{aff_channel}',
-                 alpha=0.8, linewidth=2, color='purple')
+        if prev_idx is not None:
+            prev_channel = feature_columns_list[prev_idx]
+            prev_orig = orig_seq[:, prev_idx]
+            prev_corr = corr_seq[:, prev_idx]
 
-        ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.8, alpha=0.5)
-        ax2.set_ylabel('Difference', fontsize=12)
-        ax2.set_title(f'Difference (Corrupted - Original) - {aff_channel}', fontsize=12, fontweight='bold')
-        ax2.legend(loc='upper right', fontsize=11)
+            ax2.plot(timesteps, prev_orig, label=f'{prev_channel} (original)',
+                     alpha=0.8, linewidth=2, color='blue')
+            ax2.plot(timesteps, prev_corr, label=f'{prev_channel} (corrupted)',
+                     alpha=0.8, linewidth=2, color='green', linestyle='--')
+
+            # Check if unchanged
+            max_diff = np.abs(prev_orig - prev_corr).max()
+            status = "✓ UNCHANGED" if max_diff < 1e-8 else f"⚠️ CHANGED! (max diff: {max_diff:.2e})"
+            ax2.set_title(f'Previous Channel: {prev_channel} | {status}',
+                          fontsize=11, fontweight='bold')
+        else:
+            ax2.text(0.5, 0.5, 'No previous channel', ha='center', va='center',
+                     transform=ax2.transAxes, fontsize=12)
+            ax2.set_title('Previous Channel: N/A', fontsize=11, fontweight='bold')
+
+        ax2.set_ylabel('Value', fontsize=11)
+        ax2.legend(loc='upper right', fontsize=10)
         ax2.grid(True, alpha=0.3)
 
-        # Highlight anomalous regions
-        if len(anomaly_regions) > 0:
-            ax2.axvspan(anomaly_regions[0], anomaly_regions[-1],
-                        alpha=0.2, color='red')
+        if label_seq.any() and len(anomaly_timesteps) > 0:
+            ax2.axvspan(anom_start, anom_end, alpha=0.1, color='gray')
 
         # ============================================================
-        # Plot 3: Anomaly Labels
+        # Plot 3: NEXT CHANNEL - Should be UNCHANGED
         # ============================================================
         ax3 = axes[2]
 
-        ax3.fill_between(timesteps, 0, label_seq,
+        if next_idx is not None:
+            next_channel = feature_columns_list[next_idx]
+            next_orig = orig_seq[:, next_idx]
+            next_corr = corr_seq[:, next_idx]
+
+            ax3.plot(timesteps, next_orig, label=f'{next_channel} (original)',
+                     alpha=0.8, linewidth=2, color='blue')
+            ax3.plot(timesteps, next_corr, label=f'{next_channel} (corrupted)',
+                     alpha=0.8, linewidth=2, color='green', linestyle='--')
+
+            # Check if unchanged
+            max_diff = np.abs(next_orig - next_corr).max()
+            status = "✓ UNCHANGED" if max_diff < 1e-8 else f"⚠️ CHANGED! (max diff: {max_diff:.2e})"
+            ax3.set_title(f'Next Channel: {next_channel} | {status}',
+                          fontsize=11, fontweight='bold')
+        else:
+            ax3.text(0.5, 0.5, 'No next channel', ha='center', va='center',
+                     transform=ax3.transAxes, fontsize=12)
+            ax3.set_title('Next Channel: N/A', fontsize=11, fontweight='bold')
+
+        ax3.set_ylabel('Value', fontsize=11)
+        ax3.legend(loc='upper right', fontsize=10)
+        ax3.grid(True, alpha=0.3)
+
+        if label_seq.any() and len(anomaly_timesteps) > 0:
+            ax3.axvspan(anom_start, anom_end, alpha=0.1, color='gray')
+
+        # ============================================================
+        # Plot 4: DIFFERENCE (Affected channel only)
+        # ============================================================
+        ax4 = axes[3]
+
+        diff_feature = corr_feature - orig_feature
+
+        ax4.plot(timesteps, diff_feature, label=f'{aff_channel}',
+                 alpha=0.8, linewidth=2, color='purple')
+        ax4.axhline(y=0, color='black', linestyle='-', linewidth=0.8, alpha=0.5)
+        ax4.set_ylabel('Difference', fontsize=11)
+        ax4.set_title(f'Difference (Corrupted - Original) - {aff_channel}',
+                      fontsize=11, fontweight='bold')
+        ax4.legend(loc='upper right', fontsize=10)
+        ax4.grid(True, alpha=0.3)
+
+        if label_seq.any() and len(anomaly_timesteps) > 0:
+            ax4.axvspan(anom_start, anom_end, alpha=0.2, color='red')
+
+        # ============================================================
+        # Plot 5: ANOMALY LABELS
+        # ============================================================
+        ax5 = axes[4]
+
+        ax5.fill_between(timesteps, 0, label_seq,
                          where=(label_seq > 0),
                          color='red', alpha=0.6, label='Anomaly')
-        ax3.fill_between(timesteps, 0, 1 - label_seq,
+        ax5.fill_between(timesteps, 0, 1,
                          where=(label_seq == 0),
                          color='green', alpha=0.3, label='Normal')
 
-        ax3.set_xlabel('Timestep', fontsize=12)
-        ax3.set_ylabel('Label', fontsize=12)
-        ax3.set_title('Anomaly Labels', fontsize=12, fontweight='bold')
-        ax3.set_ylim(-0.1, 1.1)
-        ax3.set_yticks([0, 1])
-        ax3.set_yticklabels(['Normal', 'Anomaly'])
-        ax3.legend(loc='upper right', fontsize=11)
-        ax3.grid(True, alpha=0.3, axis='x')
+        ax5.set_xlabel('Timestep', fontsize=12)
+        ax5.set_ylabel('Label', fontsize=11)
+        ax5.set_title('Anomaly Labels', fontsize=11, fontweight='bold')
+        ax5.set_ylim(-0.1, 1.1)
+        ax5.set_yticks([0, 1])
+        ax5.set_yticklabels(['Normal', 'Anomaly'])
+        ax5.legend(loc='upper right', fontsize=10)
+        ax5.grid(True, alpha=0.3, axis='x')
 
         # ============================================================
         # Save figure

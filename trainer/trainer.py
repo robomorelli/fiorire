@@ -11,171 +11,199 @@ import ray
 from torch.utils.data import DataLoader
 from utils.load_model import get_model
 from utils.load_dataset import (
-    load_sequences_for_trial,
-    get_transform,
-    create_dataloaders,
-    load_metric_loader_with_metadata
+    load_and_preprocess_dataframe,
+    create_datasets_from_splits,  # ← UPDATED
 )
-from dataset.sentinel import Dataset_seq
+from preprocessing.scaling import apply_scaler
 from trainer.utils import (
     get_opt_metric, update_input_output, model_setup,
     train_one_epoch, validate_one_epoch, get_optimizazion_objects,
-    load_pretrained_checkpoint
+    load_pretrained_checkpoint, compute_indices_with_overlap
 )
 from config import opt_metric_dict_keys
-from preprocessing.scaling import serialize_scaler
 
 
 class Trainer(tune.Trainable):
     """Generic trainer that works with all model types."""
 
     def setup(self, config):
-        """Setup trial."""
+        """Setup trial with DataFrame + indices."""
 
-        # ✅ Extract both cfg and shared_config
+        # ✅ 1. Load config and shared_config
         self.cfg, shared_config = model_setup(
             config.get('opt.config_file_path'),
             config,
-            None
+            None  # root_dir
         )
 
+        # ✅ 2. Update input/output dimensions - CRITICAL!
         self.cfg, _, _ = update_input_output(self.cfg)
 
-        # ✅ Use shared_config separately
-        if shared_config is None:
-            raise ValueError("shared_config is missing!")
+        # ✅ 3. Get parameters for this trial
+        overlap = self.cfg.dataset.get('perc_overlap', 0)
+        seq_len = shared_config['seq_len']
+        feature_columns = shared_config['feature_columns']
 
+        print(f"\n📂 Loading data for trial (overlap={overlap})...")
 
-        # Training state
-        self.max_epochs = self.cfg.opt.epochs
-        self.current_epoch = 0
-        self.best_val_loss = float(np.inf)
-        self.best_f1_score = -float(np.inf)
-        self.best_val_roc_auc = -float(np.inf)
-        self.best_fpr = float(np.inf)
-        self.best_tpr = 0
-        self.best_thresh_f1 = -float(np.inf)
+        # ✅ 4. Get indices and scaler from Ray
+        train_base_indices = ray.get(shared_config['train_indices'])
+        val_base_indices = ray.get(shared_config['val_indices'])
+        self.scaler = ray.get(shared_config['scaler'])
 
-        # Handle fine-tuning scaler params
-        if config.get('opt.fine_tuning') and self.cfg.opt.get('checkpoint_path'):
-            try:
-                checkpoint = torch.load(self.cfg.opt.checkpoint_path)
-                self.scaler_pre_training_params = checkpoint.get('scaler_params_pre_training')
-            except:
-                self.scaler_pre_training_params = None
+        print(f"   ✓ Retrieved from Ray:")
+        print(f"      - train_base_indices: {len(train_base_indices)}")
+        print(f"      - val_base_indices: {len(val_base_indices)}")
+
+        # ✅ 5. Compute final indices with overlap
+        train_indices = compute_indices_with_overlap(train_base_indices, overlap, seq_len)
+        val_indices = compute_indices_with_overlap(val_base_indices, overlap, seq_len)
+
+        print(f"   ✓ Indices with overlap:")
+        print(f"      - train_indices: {len(train_indices)}")
+        print(f"      - val_indices: {len(val_indices)}")
+
+        # ✅ 6. Load DataFrame
+        dataset_path = shared_config['dataset_path']
+        df = load_and_preprocess_dataframe(self.cfg, data_path=dataset_path)
+
+        # ✅ 7. Apply scaler (already fitted!)
+        df_scaled = apply_scaler(df, self.scaler, feature_columns)
+
+        print(f"   ✓ DataFrame loaded and scaled: {df_scaled.shape}")
+
+        print(f"\n🔍 DEBUG - Indici:")
+        print(f"   - train_indices: {len(train_indices)} elementi")
+        print(f"   - val_indices: {len(val_indices)} elementi")
+        print(f"   - train_indices[0:10]: {train_indices[:10]}")
+        print(f"   - val_indices[0:10]: {val_indices[:10]}")
+
+        # Verifica che NON siano uguali
+        if np.array_equal(train_indices, val_indices):
+            print("❌ ERROR: train_indices == val_indices!")
         else:
-            self.scaler_pre_training_params = None
+            print("✓ Indici diversi")
 
-        # Load sequences and create datasets
-        overlap = config.get('dataset.perc_overlap', 0.0)
-
-        # ✅ Load from Ray Object Store
-        # Load sequences from Ray Object Store
-        train_sequences, val_sequences = load_sequences_for_trial(
-            cfg=self.cfg,
-            shared_config=shared_config,  # ← Pass directly, not through OmegaConf
-            overlap=overlap
+        # ✅ 8. Create datasets using create_datasets_from_splits
+        # Create datasets
+        datasets, samplers = create_datasets_from_splits(
+            df_scaled=df_scaled,
+            splits={
+                'train': {
+                    'indices': train_indices,
+                    'shuffle': self.cfg.dataset.shuffle_train
+                },
+                'val': {
+                    'indices': val_indices,
+                    'shuffle': False
+                }
+            },
+            cfg=self.cfg
         )
 
-        print(f"\n🔍 DEBUG Sequences loaded:")
-        print(f"   - train_sequences.shape: {train_sequences.shape}")
-        print(f"   - val_sequences.shape: {val_sequences.shape}")
-        print(f"   - train_sequences type: {type(train_sequences)}")
-        print(f"   - val_sequences type: {type(val_sequences)}")
+        train_dataset = datasets['train']
+        val_dataset = datasets['val']
+        train_sampler = samplers['train']
+        val_sampler = samplers['val']
 
-        # Create datasets
-        transform = get_transform(self.cfg)
-        train_dataset = Dataset_seq(sequences=train_sequences, transform=transform)
-        val_dataset = Dataset_seq(sequences=val_sequences, transform=transform)
+        train_dataset.indices = train_indices
+        val_dataset.indices = val_indices
 
-        # Create dataloaders
-        self.trainloader, self.valloader = create_dataloaders(train_dataset, val_dataset, self.cfg)
+        # ✅ 9. Create dataloaders WITH samplers
+        self.trainloader = DataLoader(
+            train_dataset,
+            batch_size=self.cfg.opt.batch_size,
+            sampler=train_sampler
+        )
 
-        # Store scaler from Ray
-        self.scaler = ray.get(shared_config['scaler'])
-        self.scaler_params = serialize_scaler(self.scaler)
+        self.valloader = DataLoader(
+            val_dataset,
+            batch_size=self.cfg.opt.batch_size,
+            sampler=val_sampler
+        )
 
-        # Load metric dataset and create loader
+        print(f"   ✓ Dataloaders created")
+
+        # ✅ 10. Load metric dataset with standardization verification
+        self.metrics_loader = None  # Initialize to None
         metric_dataset_path = shared_config.get('metric_loader_path')
+
         if self.cfg.opt.evaluate_metrics and metric_dataset_path and os.path.exists(metric_dataset_path):
+            print(f"\n📊 Loading metric dataset...")
+            print(f"   - Path: {metric_dataset_path}")
 
-            print(f"\n📂 Loading metric dataset: {metric_dataset_path}")
-
-            # Load dataset + metadata
             saved_dict = torch.load(metric_dataset_path, map_location='cpu')
             metric_dataset = saved_dict['dataset']
-            self.metric_loader_metadata = saved_dict['metadata']
+            metadata = saved_dict.get('metadata', {})
 
-            print(f"   ✓ Loaded dataset: {len(metric_dataset)} sequences")
-            print(f"   ✓ Strategy: {self.metric_loader_metadata.get('strategy', 'N/A')}")
-
-            # ASSERT: Data must be standardized
-            is_standardized = self.metric_loader_metadata.get('is_standardized', True)
+            # ✅ Verify standardization
+            is_standardized = metadata.get('is_standardized', True)
 
             if not is_standardized:
-                error_msg = (
-                        "\n" + "=" * 80 + "\n"
-                                          "❌ ERROR: Metric dataset contains NON-STANDARDIZED sequences\n"
-                                          "=" * 80 + "\n"
-                                                     f"File: {metric_dataset_path}\n"
-                                                     f"is_standardized: {is_standardized}\n"
-                                                     "\n"
-                                                     "The dataset was saved with force_destandardization=True.\n"
-                                                     "Currently, the trainer requires pre-standardized metric data.\n"
-                                                     "\n"
-                                                     "SOLUTION: Regenerate with force_destandardization=False (default)\n"
-                        + "=" * 80
+                raise ValueError(
+                    f"❌ Metric dataset is NOT standardized!\n"
+                    f"   Path: {metric_dataset_path}\n"
+                    f"   Please regenerate with force_regenerate=True"
                 )
-                raise ValueError(error_msg)
 
-            print(f"   ✅ Validation: data is standardized")
+            print(f"   ✓ Standardized: {is_standardized}")
+            print(f"   ✓ Strategy: {metadata.get('strategy', 'N/A')}")
+            print(f"   ✓ Sequences: {len(metric_dataset)}")
 
-            # ✅ Add transform to loaded dataset
-            metric_dataset.transform = transform
-            print(f"   ✅ Transform applied to metric dataset")
+            # Add transform if missing
+            if not hasattr(metric_dataset, 'transform') or metric_dataset.transform is None:
+                from utils.load_dataset import get_transform
+                metric_dataset.transform = get_transform(self.cfg)
 
-            # Create DataLoader with trainer's batch_size
             self.metrics_loader = DataLoader(
                 metric_dataset,
                 batch_size=self.cfg.opt.batch_size,
-                shuffle=False,
-                num_workers=0,
-                pin_memory=False
+                shuffle=False
             )
+            print(f"   ✓ Metric loader created")
 
-            print(f"   ✓ Created DataLoader: batch_size={self.cfg.opt.batch_size}")
+        # ✅ 11. Store scaler params
+        self.scaler_params = shared_config.get('scaler_params', {})
+        self.scaler_pre_training_params = None
 
-            # Print dataset composition
-            if hasattr(metric_dataset, 'anomaly_types'):
-                n_anomalous = (metric_dataset.anomaly_types != 'normal').sum()
-                n_normal = len(metric_dataset) - n_anomalous
-                print(f"   ✓ Composition: {n_normal} normal + {n_anomalous} anomalous")
-
-        else:
-            self.metrics_loader = None
-            self.metric_loader_metadata = None
-
-        # Optimization metrics
+        # ✅ 12. Optimization metrics
         self.opt_metric_dict = get_opt_metric(self.cfg, self.metrics_loader)
         self.metric_key, self.mode, self.best_metric = (
             self.opt_metric_dict[k] for k in opt_metric_dict_keys
         )
 
-        # Device and model
+        # ✅ 13. Device and model
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
         self.model = get_model(self.cfg).to(self.device)
         self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         self.parameters_number = self.cfg.model.parameter_count
         self.data_path = self.cfg.dataset.data_path
 
-        # Load pretrained if fine-tuning
+        # ✅ 14. Load pretrained if fine-tuning
         self.model, self.pretrained_loaded = load_pretrained_checkpoint(
             model=self.model, config=self.cfg, device=self.device
         )
 
-        # Optimizer, scheduler, criterion
+        # ✅ 15. Optimizer, scheduler, criterion
         self.optimizer, self.scheduler, self.criterion, self.early_stopping = \
             get_optimizazion_objects(self.cfg, self.model, self.opt_metric_dict)
+
+        # ✅ 16. Initialize tracking variables
+        self.current_epoch = 0
+        self.max_epochs = self.cfg.opt.get('max_epochs', 200)
+
+        # Initialize best metrics
+        if self.mode == 'min':
+            self.best_val_loss = float('inf')
+            self.best_fpr = float('inf')
+        else:
+            self.best_val_loss = float('inf')
+            self.best_fpr = float('inf')
+
+        self.best_f1_score = -float('inf')
+        self.best_val_roc_auc = -float('inf')
+        self.best_tpr = 0
+        self.best_thresh_f1 = -float('inf')
 
     def step(self):
         """Single training step - required by Ray Tune."""

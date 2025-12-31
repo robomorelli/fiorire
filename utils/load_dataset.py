@@ -10,7 +10,7 @@ from config import *
 import os
 from scipy import interpolate
 from omegaconf import ListConfig
-from xyzservices.providers import data_path
+from torch.utils.data import SubsetRandomSampler
 
 from utils.metric_dataset_generator import generate_and_save_metric_dataset
 from preprocessing.scaling import *
@@ -20,7 +20,7 @@ from preprocessing.scaling import *
 # CORE FUNCTIONS - USATE NEL NUOVO SISTEMA
 # =========================================================
 
-def load_and_preprocess_dataframe(cfg):
+def load_and_preprocess_dataframe(cfg, data_path=None):
     """
     Load DataFrame and apply preprocessing:
     - Feature selection
@@ -31,14 +31,16 @@ def load_and_preprocess_dataframe(cfg):
 
     Args:
         cfg: Configuration
-        data_path: Path to data file
+        data_path: Optional path override (if None, uses cfg.dataset.data_path)
 
     Returns:
         df: Preprocessed DataFrame
     """
     # 1. Load raw data
-    ### DATA PATH WAS NEEDED TO USE METRIC DATASET PATH INSTEAD OF DEFAULT DATA PATH CHOICE
-    data_path = cfg.dataset.data_path
+    # Use override path if provided, otherwise use config path
+    if data_path is None:
+        data_path = cfg.dataset.data_path
+
     ext = os.path.splitext(data_path)[1].lower()
 
     print(f"   📂 Loading from: {data_path}")
@@ -134,7 +136,6 @@ def create_train_val_df_indexes(
         min_chunk_size=None,
         max_chunks=200,
         tolerance=0.01,
-
 ):
     """
     Split dataframe into train/val by chunk sampling with optional anomaly filtering.
@@ -143,8 +144,9 @@ def create_train_val_df_indexes(
         train_indexes: Training indices
         val_indexes: Validation indices
         df_train_values_for_scaling: DataFrame subset for scaler fitting
-        anomalous_indexes: Anomalous indices (if return_anomalies=True)
+        anomalous_data: Dict with 'window_start_indices', 'labels', 'all_indices_set' (if return_anomalies=True), else None
     """
+    import numpy as np
 
     def valid_chunk_splits(
             total_len,
@@ -182,6 +184,73 @@ def create_train_val_df_indexes(
             )
 
         return best_solution
+
+    def get_anomaly_windows_with_labels(anomalous_idx, df, ano_col, seq_len, total_len):
+        """
+        Create windows around anomalous points and extract labels for each window.
+
+        Args:
+            anomalous_idx: Array of indices where df[ano_col] == 1
+            df: Original dataframe with anomaly column
+            ano_col: Name of anomaly column
+            seq_len: Sequence length
+            total_len: Total length of dataframe
+
+        Returns:
+            window_start_indices: np.array of valid window start indices [M]
+            window_labels: np.array of binary labels [M, L] where L=seq_len
+            window_indices_set: set of all indices in anomalous windows (for filtering)
+        """
+        # Dictionary to track which timesteps are anomalous in each window
+        window_anomaly_positions = {}
+
+        for anomaly_idx in anomalous_idx:
+            # Find all valid windows that can contain this anomaly point
+            # A window [start, start+seq_len) contains anomaly_idx if:
+            # start <= anomaly_idx < start + seq_len
+            # Therefore: anomaly_idx - seq_len + 1 <= start <= anomaly_idx
+
+            earliest_start = max(0, anomaly_idx - seq_len + 1)
+            latest_start = min(anomaly_idx, total_len - seq_len)
+
+            if latest_start < 0:
+                continue
+
+            for start_idx in range(earliest_start, latest_start + 1):
+                # Ensure window doesn't exceed dataframe
+                if start_idx + seq_len > total_len:
+                    continue
+
+                if start_idx not in window_anomaly_positions:
+                    window_anomaly_positions[start_idx] = set()
+
+                # Position of anomaly within this window (relative to start)
+                relative_pos = anomaly_idx - start_idx
+                if 0 <= relative_pos < seq_len:
+                    window_anomaly_positions[start_idx].add(relative_pos)
+
+        # Convert to arrays
+        window_start_indices = np.array(sorted(window_anomaly_positions.keys()), dtype=np.int64)
+
+        if len(window_start_indices) == 0:
+            return np.array([], dtype=np.int64), np.array([], dtype=np.float32).reshape(0, seq_len), set()
+
+        # Create label arrays [M, L] by directly reading from DataFrame
+        window_labels = np.zeros((len(window_start_indices), seq_len), dtype=np.float32)
+
+        for i, start_idx in enumerate(window_start_indices):
+            # Extract actual labels from DataFrame for this window
+            end_idx = start_idx + seq_len
+            if end_idx <= len(df):
+                label_values = df[ano_col].iloc[start_idx:end_idx].values
+                window_labels[i, :] = label_values.astype(np.float32)
+
+        # Also return set of all indices (for filtering - backward compatibility)
+        window_indices_set = set()
+        for start_idx in window_start_indices:
+            window_indices_set.update(range(start_idx, min(start_idx + seq_len, total_len)))
+
+        return window_start_indices, window_labels, window_indices_set
 
     # Configuration
     seq_len = cfg.dataset.seq_in_length
@@ -251,7 +320,7 @@ def create_train_val_df_indexes(
         return train_indexes, val_indexes, df_train_values_for_scaling, None
 
     # =========================================================
-    # ANOMALY FILTERING (only if column exists)
+    # ANOMALY FILTERING WITH LABELS
     # =========================================================
     full_anomalous_idx = df[df[ano_col] == 1].index.to_numpy()
 
@@ -265,25 +334,35 @@ def create_train_val_df_indexes(
         df_train_values_for_scaling = df.iloc[train_indexes].reset_index(drop=True)
         return train_indexes, val_indexes, df_train_values_for_scaling, None
 
-    def get_anomaly_window_indexes(anomalous_idx, total_len):
-        window_indexes = set()
-        for i in anomalous_idx:
-            start = max(i - seq_len, 0)
-            end = min(start + seq_len, total_len)
-            start = max(end - seq_len, 0)
-            window_indexes.update(range(start, end))
-        return window_indexes
+    # ✅ NEW: Get anomaly windows WITH labels
+    anomaly_window_start_indices, anomaly_window_labels, anomalous_window_indexes = \
+        get_anomaly_windows_with_labels(
+            anomalous_idx=full_anomalous_idx,
+            df=df,
+            ano_col=ano_col,
+            seq_len=seq_len,
+            total_len=total_len
+        )
 
+    print(f"      - Anomaly windows found: {len(anomaly_window_start_indices)}")
+    if len(anomaly_window_start_indices) > 0:
+        avg_anomaly_density = anomaly_window_labels.mean()
+        print(f"      - Average anomaly density in windows: {avg_anomaly_density:.2%}")
+
+    # Filter train/val to remove anomalous windows
     train_anomalous_indexes = np.intersect1d(full_anomalous_idx, train_indexes)
     val_anomalous_indexes = np.intersect1d(full_anomalous_idx, val_indexes)
 
-    anomalous_window_indexes = list(get_anomaly_window_indexes(full_anomalous_idx, total_len))
-    train_anomalous_windows = get_anomaly_window_indexes(train_anomalous_indexes, total_len)
-    val_anomalous_windows = get_anomaly_window_indexes(val_anomalous_indexes, total_len)
+    # Get window indices as sets for filtering
+    _, _, train_window_set = get_anomaly_windows_with_labels(
+        train_anomalous_indexes, df, ano_col, seq_len, total_len
+    )
+    _, _, val_window_set = get_anomaly_windows_with_labels(
+        val_anomalous_indexes, df, ano_col, seq_len, total_len
+    )
 
-
-    train_normal_indexes = np.setdiff1d(train_indexes, list(train_anomalous_windows), assume_unique=True)
-    val_normal_indexes = np.setdiff1d(val_indexes, list(val_anomalous_windows), assume_unique=True)
+    train_normal_indexes = np.setdiff1d(train_indexes, list(train_window_set), assume_unique=True)
+    val_normal_indexes = np.setdiff1d(val_indexes, list(val_window_set), assume_unique=True)
 
     # For scaler fitting: only features (exclude anomaly column)
     scaling_cols = df.columns.difference([ano_col]) if ano_col in df.columns else df.columns
@@ -292,10 +371,17 @@ def create_train_val_df_indexes(
 
     print(f"      - Train normal: {len(train_normal_indexes)}")
     print(f"      - Val normal: {len(val_normal_indexes)}")
-    if anomalous_window_indexes:
-        print(f"      - Anomalous windows: {len(anomalous_window_indexes)}")
+    if len(anomalous_window_indexes) > 0:
+        print(f"      - Anomalous window indices: {len(anomalous_window_indexes)}")
 
-    return train_normal_indexes, val_normal_indexes, df_train_values_for_scaling, anomalous_window_indexes
+    # ✅ Return anomaly data as dict
+    anomalous_data = {
+        'window_start_indices': anomaly_window_start_indices,  # [M] start indices
+        'labels': anomaly_window_labels,  # [M, L] binary labels
+        'all_indices_set': anomalous_window_indexes  # set for filtering
+    }
+
+    return train_normal_indexes, val_normal_indexes, df_train_values_for_scaling, anomalous_data
 
 
 def extract_sequences_with_labels(
@@ -359,158 +445,240 @@ _RAY_OBJECT_CACHE = {}
 
 def prepare_shared_configuration(cfg):
     """
-    Prepare shared configuration using Ray Object Store.
-    Large objects (sequences, scaler) are stored in Ray's shared memory.
+    Prepare shared configuration using minimal Ray Object Store usage.
+
+    STRATEGY:
+    - Share only INDICES (tiny!) via Ray Object Store
+    - Share scaler via Ray Object Store
+    - Generate and save metric dataset to disk (as tensors)
+    - Each trial loads DataFrame and applies overlap independently
 
     Returns:
-        shared_config: Dict with Ray ObjectRefs and small metadata
+        shared_config: Dict with Ray ObjectRefs for indices/scaler + metadata
     """
     import ray
+    import torch
+    import os
+    import numpy as np
     from pathlib import Path
-    global _RAY_OBJECT_CACHE
 
     print("\n" + "=" * 80)
-    print("📦 PREPARING SHARED CONFIGURATION")
+    print("📦 PREPARING SHARED CONFIGURATION (Indices Strategy)")
     print("=" * 80)
 
     # Extract config parameters
     seed = cfg.opt.get('seed', 42)
     filter_anomalies = cfg.opt.get('filter_anomalies', False)
     is_anomaly_column = cfg.dataset.get('is_anomaly_column', None)
+    dataset_path = cfg.dataset.data_path
 
     # 1. Load data
     print("\n1️⃣ Loading dataset...")
     df = load_and_preprocess_dataframe(cfg)
     feature_columns = cfg.dataset.feats
     print(f"   ✓ Loaded: {df.shape}")
+    print(f"   ✓ Features: {len(feature_columns)}")
 
-    # 2. Split indices
-    print("\n2️⃣ Splitting train/val indices...")
-    train_indexes, val_indexes, train_df_for_scaling, anomalous_indexes = (
+    # 2. Split indices (NO OVERLAP - base indices only)
+    print("\n2️⃣ Splitting train/val indices (no overlap)...")
+    train_indexes, val_indexes, train_df_for_scaling, anomalous_data = (
         create_train_val_df_indexes(
             cfg=cfg,
             df=df,
-            return_anomalies=filter_anomalies,
+            return_anomalies=filter_anomalies,  # True if we want original anomalies
             ano_col=is_anomaly_column,
             seed=seed
         )
     )
 
-    print(f"   ✓ Train indices: {len(train_indexes)}")
-    print(f"   ✓ Val indices: {len(val_indexes)}")
-    if anomalous_indexes is not None:
-        print(f"   ✓ Anomalous indices: {len(anomalous_indexes)}")
+    print(f"   ✓ Train base indices: {len(train_indexes)}")
+    print(f"   ✓ Val base indices: {len(val_indexes)}")
+
+    # ✅ Extract anomaly info if available
+    anomaly_window_indices = None
+    anomaly_window_labels = None
+
+    if anomalous_data is not None:
+        anomaly_window_indices = anomalous_data['window_start_indices']
+        anomaly_window_labels = anomalous_data['labels']
+        print(f"   ✓ Anomaly windows: {len(anomaly_window_indices)}")
+        if len(anomaly_window_indices) > 0:
+            avg_density = anomaly_window_labels.mean()
+            print(f"   ✓ Average anomaly density: {avg_density:.2%}")
 
     # 3. Fit scaler on CLEAN train data
     print("\n3️⃣ Fitting scaler on CLEAN train data...")
     scaler, df_scaled, scaler_params = get_scaler(
         cfg=cfg,
-        df_fit=train_df_for_scaling,
+        df_fit=train_df_for_scaling,  # Already filtered from anomalies
         df_transform=df
     )
     print(f"   ✓ Scaler fitted: {scaler.__class__.__name__}")
+    print(f"   ✓ Scaler params: {scaler_params}")
 
-    # 4. Extract sequences (no overlap - base sequences)
-    print(f"\n4️⃣ Extracting base sequences with overlap {cfg.dataset.overlap} (train) and {cfg.opt.metric_seq_overlap} (val)...")
+    # 4. Generate and save metric dataset
+    print("\n4️⃣ Generating metric dataset...")
     seq_len = cfg.dataset.seq_in_length
-
-    train_sequences = extract_sequences_from_indices(
-        df=df_scaled,
-        indices=train_indexes,
-        seq_len=seq_len,
-        feature_columns=feature_columns,
-        perc_overlap=cfg.dataset.overlap
-    )
-
-    val_sequences = extract_sequences_from_indices(
-        df=df_scaled,
-        indices=val_indexes,
-        seq_len=seq_len,
-        feature_columns=feature_columns,
-        perc_overlap=cfg.opt.metric_seq_overlap
-    )
-
-    print(f"   ✓ Train sequences: {train_sequences.shape}")
-    print(f"   ✓ Val sequences: {val_sequences.shape}")
-    print(f"   ✓ Memory: ~{(train_sequences.nbytes + val_sequences.nbytes) / 1024 ** 3:.2f} GB")
-
-    # 5. Generate metric dataset
-    print("\n5️⃣ Generating metric dataset...")
     metric_dataset_path = None
-    if cfg.opt.get('anomaly_strategy', 'none') != 'none':
+
+    anomaly_strategy = cfg.opt.get('anomaly_strategy', 'none')
+    if anomaly_strategy != 'none':
+        print(f"   - Strategy: {anomaly_strategy}")
+
+        # Apply overlap for metric dataset
+        metric_seq_overlap = cfg.opt.get('metric_seq_overlap', 0)
+
+        from trainer.utils import compute_indices_with_overlap
+        val_indices_for_metric = compute_indices_with_overlap(
+            base_indices=val_indexes,
+            overlap=metric_seq_overlap,
+            seq_len=seq_len
+        )
+
+        print(f"   ✓ Metric overlap: {metric_seq_overlap}")
+        print(f"   ✓ Val indices for metric: {len(val_indices_for_metric)} (from {len(val_indexes)} base)")
+
+        # Extract clean sequences
+        print(f"   - Extracting clean sequences for metric dataset...")
+        clean_sequences = extract_sequences_from_indices(
+            df=df_scaled,
+            indices=val_indices_for_metric,
+            seq_len=seq_len,
+            feature_columns=feature_columns
+        )
+
+        print(f"   ✓ Clean sequences (std) extracted: {clean_sequences.shape}")
+
+        # ✅ Extract original anomaly sequences if strategy requires them
+        original_anomaly_sequences = None
+        original_anomaly_labels = None
+
+        if anomaly_strategy in ['use_original', 'both']:
+            if anomaly_window_indices is not None and len(anomaly_window_indices) > 0:
+                print(f"   - Extracting original anomaly sequences...")
+
+                # Apply overlap to anomaly window start indices
+                anomalous_indices_for_metric = compute_indices_with_overlap(
+                    base_indices=anomaly_window_indices,
+                    overlap=metric_seq_overlap,
+                    seq_len=seq_len
+                )
+
+                print(f"   ✓ Anomalous indices for metric: {len(anomalous_indices_for_metric)}")
+
+                # Extract sequences
+                original_anomaly_sequences = extract_sequences_from_indices(
+                    df=df_scaled,
+                    indices=anomalous_indices_for_metric,
+                    seq_len=seq_len,
+                    feature_columns=feature_columns,
+                    perc_overlap=0
+                )
+
+                # ✅ Extract labels directly from DataFrame
+                if is_anomaly_column and is_anomaly_column in df.columns:
+                    original_anomaly_labels = []
+                    for idx in anomalous_indices_for_metric:
+                        if idx + seq_len <= len(df):
+                            label_seq = df[is_anomaly_column].iloc[idx:idx + seq_len].values
+                            original_anomaly_labels.append(label_seq)
+
+                    original_anomaly_labels = np.array(original_anomaly_labels)  # [N, L]
+                    # Reshape to [N, 1, L]
+                    original_anomaly_labels = original_anomaly_labels[:, np.newaxis, :]
+
+                    print(f"   ✓ Original anomaly sequences: {original_anomaly_sequences.shape}")
+                    print(f"   ✓ Original anomaly labels: {original_anomaly_labels.shape}")
+                else:
+                    print(f"   ⚠️  Anomaly column '{is_anomaly_column}' not found in DataFrame!")
+                    original_anomaly_sequences = None
+                    original_anomaly_labels = None
+            else:
+                print(f"   ⚠️  No anomalous indices found! Cannot use '{anomaly_strategy}' strategy")
+                print(f"       Falling back to 'corrupt_validation' strategy")
+                anomaly_strategy = 'corrupt_validation'
+
+        # Pass to generation function
         metric_dataset_path = generate_and_save_metric_dataset(
             cfg=cfg,
-            df_scaled=df_scaled,
-            val_indices=val_indexes,
+            clean_sequences=clean_sequences,
             feature_columns=feature_columns,
             scaler=scaler,
+            original_anomaly_sequences=original_anomaly_sequences,
+            original_anomaly_labels=original_anomaly_labels,
             output_dir='./metric_datasets/',
             force_regenerate=cfg.opt.get('force_regenerate', False),
             plot_samples=cfg.opt.get('plot_metric_samples', False),
             plot_percentage=cfg.opt.get('plot_metric_percentage', 0.05)
         )
-        print(f"   ✓ Metric dataset: {metric_dataset_path}")
 
-    # ✅ 6. Put large objects in Ray Object Store
-    print("\n6️⃣ Storing objects in Ray Object Store...")
+        if metric_dataset_path and os.path.exists(metric_dataset_path):
+            # Verify it was saved correctly
+            saved_dict = torch.load(metric_dataset_path, map_location='cpu')
+            is_standardized = saved_dict['metadata'].get('is_standardized', True)
 
-    train_sequences_ref = ray.put(train_sequences)
-    val_sequences_ref = ray.put(val_sequences)
+            print(f"   ✓ Metric dataset saved: {metric_dataset_path}")
+            print(f"   ✓ Standardized: {is_standardized}")
+            print(f"   ✓ Sequences: {len(saved_dict['dataset'])}")
+
+            if not is_standardized:
+                print(f"   ⚠️  WARNING: Metric dataset is NOT standardized!")
+        else:
+            print(f"   ⚠️  Metric dataset generation failed or disabled")
+    else:
+        print(f"   - Anomaly strategy is 'none' - skipping metric dataset")
+
+    # 5. Put SMALL objects in Ray Object Store
+    print("\n5️⃣ Storing indices and scaler in Ray Object Store...")
+
+    # Calculate memory usage
+    indices_size = (train_indexes.nbytes + val_indexes.nbytes) / 1024  # KB
+    print(f"   - Indices size: ~{indices_size:.2f} KB (tiny!)")
+
+    # Put in Ray (only small objects!)
+    train_indices_ref = ray.put(train_indexes)
+    val_indices_ref = ray.put(val_indexes)
     scaler_ref = ray.put(scaler)
 
-    print(f"   ✓ train_sequences → Ray ObjectRef")
-    print(f"   ✓ val_sequences → Ray ObjectRef")
+    print(f"   ✓ train_indices ({len(train_indexes)} items) → Ray ObjectRef")
+    print(f"   ✓ val_indices ({len(val_indexes)} items) → Ray ObjectRef")
     print(f"   ✓ scaler → Ray ObjectRef")
 
-    # ✅ CRITICAL: Store in GLOBAL cache to prevent GC
-    # This keeps both arrays AND refs alive for the entire run
-    cache_key = f"run_{seed}_{id(train_sequences)}"
-    _RAY_OBJECT_CACHE[cache_key] = {
-        'train_arrays': train_sequences,
-        'val_arrays': val_sequences,
-        'scaler_obj': scaler,
-        'train_ref': train_sequences_ref,
-        'val_ref': val_sequences_ref,
-        'scaler_ref': scaler_ref,
-    }
-
-    print(f"   ✓ References cached globally (key: {cache_key})")
-
-    # DON'T delete local copies
-    # del train_sequences  # ← NO!
-    # gc.collect()          # ← NO!
-
-    # ✅ 7. Build lightweight shared config (NO ARRAYS!)
+    # 6. Build shared config (lightweight!)
     shared_config = {
-        # Ray ObjectRefs only (serializable!)
-        'train_sequences': train_sequences_ref,
-        'val_sequences': val_sequences_ref,
+        # Ray ObjectRefs (tiny pointers!)
+        'train_indices': train_indices_ref,
+        'val_indices': val_indices_ref,
         'scaler': scaler_ref,
+
+        # Paths (strings)
+        'dataset_path': str(dataset_path),
+        'metric_loader_path': metric_dataset_path,
 
         # Small metadata
         'scaler_params': scaler_params,
         'feature_columns': list(feature_columns),
         'seq_len': int(seq_len),
-        'metric_loader_path': metric_dataset_path,
 
         # Statistics
         'train_size': int(len(train_indexes)),
         'val_size': int(len(val_indexes)),
-
-        # Cache key (just a string - serializable!)
-        '_cache_key': cache_key,
     }
 
     print("\n" + "=" * 80)
     print("✅ SHARED CONFIGURATION READY")
     print("=" * 80)
-    print(f"   - Train indices: {shared_config['train_size']}")
-    print(f"   - Val indices: {shared_config['val_size']}")
+    print(f"   Strategy: Indices + DataFrame (each trial loads independently)")
+    print(f"   - Train base indices: {shared_config['train_size']}")
+    print(f"   - Val base indices: {shared_config['val_size']}")
+    print(f"   - Dataset path: {shared_config['dataset_path']}")
     print(f"   - Scaler: {scaler.__class__.__name__}")
     if metric_dataset_path:
         print(f"   - Metric dataset: {metric_dataset_path}")
-    print(f"   - Using Ray Object Store: YES ✓")
-    print(f"   - Global cache: {cache_key} ✓")
+    else:
+        print(f"   - Metric dataset: None")
+    print(f"   - Ray Object Store usage: ~{indices_size:.2f} KB (minimal!)")
+    print(f"   - Overlap: Will be applied per-trial in Trainer")
     print("=" * 80)
 
     return shared_config
@@ -601,121 +769,37 @@ def upsample_and_augment(
     return df_high
 
 
-# =========================================================
-# TENSOR-BASED LOADING FUNCTIONS (per i trial)
-# =========================================================
-
-def load_sequences_for_trial(cfg, shared_config, overlap):
+def extract_sequences_from_indices(df, indices, seq_len, feature_columns):
     """
-    Load train/val sequences for a single trial from Ray Object Store.
-
-    Sequences are already in [N, L, F] format and standardized.
-    This function retrieves them and applies overlap subsampling if needed.
+    Extract sequences from DataFrame at given indices.
 
     Args:
-        cfg: Trial configuration
-        shared_config: Contains Ray ObjectRefs to sequences
-        overlap: Overlap percentage for this trial (0.0 = no overlap)
+        df: DataFrame (or already converted to numpy)
+        indices: Start indices for sequences (ALREADY with overlap applied!)
+        seq_len: Sequence length
+        feature_columns: Feature column names
 
     Returns:
-        train_sequences: [N_train, L, F] torch.Tensor
-        val_sequences: [N_val, L, F] torch.Tensor
+        sequences: [N, L, F] numpy array
     """
-    import ray
-    import torch
     import numpy as np
 
-    print(f"\n📂 [PID {os.getpid()}] Loading sequences from Ray Object Store...")
-
-    # ✅ Get from Ray Object Store → returns numpy [N, L, F]
-    train_sequences_np = ray.get(shared_config['train_sequences'])
-    val_sequences_np = ray.get(shared_config['val_sequences'])
-
-    print(f"   ✓ Train base: {train_sequences_np.shape}")
-    print(f"   ✓ Val base: {val_sequences_np.shape}")
-
-    # Apply overlap subsampling if needed
-    if overlap > 0:
-        seq_len = shared_config['seq_len']
-
-        # Calculate step from overlap
-        # overlap=0.0 → all sequences (no subsampling)
-        # overlap=0.5 → every 2nd sequence (50% overlap)
-        # Formula: step = int(seq_len * (1 - overlap))
-        step = max(1, int(seq_len * (1 - overlap)))
-
-        train_sequences_np = train_sequences_np[::step]
-        val_sequences_np = val_sequences_np[::step]
-
-        print(f"   📊 Applied overlap {overlap:.1%} (step={step}):")
-        print(f"      - Train: {train_sequences_np.shape[0]} sequences")
-        print(f"      - Val: {val_sequences_np.shape[0]} sequences")
+    # Convert to NumPy ONCE (if not already)
+    if hasattr(df, 'values'):
+        data = df[feature_columns].values  # [T, F]
     else:
-        print(f"   ℹ️  No overlap subsampling (overlap=0)")
+        data = df  # Already numpy
 
-    # Convert to torch tensors
-    train_sequences = torch.from_numpy(train_sequences_np).float()
-    val_sequences = torch.from_numpy(val_sequences_np).float()
-
-    print(f"   ✓ Converted to torch tensors")
-
-    return train_sequences, val_sequences
-
-
-def apply_overlap_to_indices(base_indices, seq_len, overlap):
-    """
-    Apply overlap to base indices, respecting gaps.
-
-    Gap-aware: only creates intermediate sequences between consecutive indices.
-
-    Args:
-        base_indices: Base indices (overlap=0)
-        seq_len: Sequence length
-        overlap: Overlap percentage (0.0 to 1.0)
-
-    Returns:
-        new_indices: Indices with overlap applied
-    """
-    if overlap == 0.0:
-        return base_indices
-
-    step = seq_len - int(seq_len * overlap)
-
-    new_indices = [base_indices[0]]
-
-    for i in range(len(base_indices) - 1):
-        current = base_indices[i]
-        next_idx = base_indices[i + 1]
-
-        # Gap-aware: only if consecutive (next - current == seq_len)
-        if next_idx - current == seq_len:
-            # Create intermediate sequences
-            intermediates = range(current + step, next_idx, step)
-            new_indices.extend(intermediates)
-
-        new_indices.append(next_idx)
-
-    return np.array(new_indices)
-
-
-def extract_sequences_from_indices(df, indices, seq_len, feature_columns, perc_overlap=0):
-    """
-    Extract sequences from DataFrame at given indices (OPTIMIZED).
-    """
-    # Convert to NumPy ONCE
-    data = df[feature_columns].values  # [T, F]
-
+    # Filter invalid indices (beyond data length)
     max_idx = len(data) - seq_len
     valid_indices = indices[indices <= max_idx]
-    step = seq_len - int(seq_len * perc_overlap)
-    step = max(1, step)
-    valid_indices = valid_indices[::step]
 
-    # Vectorized extraction usando broadcasting
+    # ✅ NO downsampling here - indices already have overlap applied!
+    # Vectorized extraction
     idx_array = valid_indices[:, None] + np.arange(seq_len)[None, :]  # [N, seq_len]
-    sequences = data[idx_array]  # [N, seq_len, F] - allocazione diretta
+    sequences = data[idx_array]  # [N, seq_len, F]
 
-    return sequences.astype(np.float32)  # Cast finale se necessario
+    return sequences.astype(np.float32)
 
 
 def get_transform(cfg):
@@ -775,91 +859,6 @@ def create_dataloaders(train_dataset, val_dataset, cfg):
     return trainloader, valloader
 
 
-def load_metric_loader_with_metadata(filepath, verbose=True):
-    """
-    Load metric loader and extract metadata.
-
-    Args:
-        filepath: Path to saved metric loader
-        verbose: Print info
-
-    Returns:
-        metric_loader: DataLoader
-        metadata: Dictionary with metadata
-    """
-    import torch
-
-    if verbose:
-        print(f"\n📂 Loading metric loader: {filepath}")
-
-    # Load saved dict
-    saved_dict = torch.load(filepath, map_location='cpu')
-
-    # Check if it's the new format (with metadata)
-    if isinstance(saved_dict, dict) and 'metadata' in saved_dict:
-        metric_loader = saved_dict['loader']
-        metadata = saved_dict['metadata']
-
-        if verbose:
-            print(f"   ✓ Loaded: {metadata.get('num_sequences', 'N/A')} sequences")
-            print(f"   ✓ Strategy: {metadata.get('strategy', 'N/A')}")
-            print(f"   ✓ Data scale: {'STANDARDIZED' if metadata.get('is_standardized') else 'ORIGINAL'}")
-
-        return metric_loader, metadata
-
-    else:
-        # Old format (backward compatibility)
-        if verbose:
-            print(f"   ⚠️  WARNING: Old format detected (no metadata)")
-            print(f"   ℹ️  Assuming data is STANDARDIZED (legacy behavior)")
-
-        metric_loader = saved_dict
-        metadata = {
-            'is_standardized': True,  # Assume standardized for old files
-            'legacy': True
-        }
-
-        return metric_loader, metadata
-
-
-def apply_scaler_to_batch(batch, scaler, device):
-    """
-    Apply sklearn scaler to a PyTorch batch.
-
-    Args:
-        batch: Dictionary with 'input' tensor [B, L, F]
-        scaler: Fitted sklearn scaler
-        device: torch device
-
-    Returns:
-        batch: Dictionary with scaled 'input' tensor
-    """
-    import torch
-    import numpy as np
-
-    x = batch['input']  # [B, L, F]
-    B, L, F = x.shape
-
-    # Convert to numpy
-    x_np = x.cpu().numpy()  # [B, L, F]
-
-    # Reshape to [B*L, F] for scaler
-    x_flat = x_np.reshape(-1, F)  # [B*L, F]
-
-    # Apply scaler
-    x_scaled = scaler.transform(x_flat)  # [B*L, F]
-
-    # Reshape back to [B, L, F]
-    x_scaled = x_scaled.reshape(B, L, F)
-
-    # Convert back to tensor
-    x_tensor = torch.from_numpy(x_scaled).float().to(device)
-
-    # Update batch
-    batch['input'] = x_tensor
-
-    return batch
-
 
 def load_metric_loader_with_metadata(filepath, verbose=True):
     """
@@ -911,3 +910,175 @@ def load_metric_loader_with_metadata(filepath, verbose=True):
         }
 
         return metric_loader, metadata
+
+
+def create_datasets_from_splits(df_scaled, splits, cfg, transform=None):
+    """
+    Universal dataset creation from arbitrary number of index splits.
+
+    Creates a Dataset_seq_df for each split provided.
+
+    Args:
+        df_scaled: Scaled DataFrame
+        splits: Dict mapping split names to config dicts with 'indices' and 'shuffle'
+                Example: {
+                    'train': {'indices': train_idx, 'shuffle': True},
+                    'val': {'indices': val_idx, 'shuffle': False}
+                }
+        cfg: Configuration object
+        transform: Optional transform override (if None, uses get_transform(cfg))
+
+    Returns:
+        datasets: Dict mapping split names to Dataset_seq_df instances
+        samplers: Dict mapping split names to samplers
+
+    Example:
+        >>> splits = {
+        ...     'train': {'indices': train_indices, 'shuffle': True},
+        ...     'val': {'indices': val_indices, 'shuffle': False}
+        ... }
+        >>> datasets, samplers = create_datasets_from_splits(
+        ...     df_scaled=df_scaled,
+        ...     splits=splits,
+        ...     cfg=cfg
+        ... )
+        >>> train_dataset = datasets['train']
+        >>> val_dataset = datasets['val']
+    """
+    from dataset.sentinel import Dataset_seq_df
+    from utils.load_dataset import get_transform
+
+    if not isinstance(splits, dict) or len(splits) == 0:
+        raise ValueError("splits must be a non-empty dict")
+
+    # Validate splits format
+    for split_name, split_config in splits.items():
+        if not isinstance(split_config, dict):
+            raise ValueError(
+                f"Invalid format for split '{split_name}': "
+                f"expected dict with 'indices' and 'shuffle', got {type(split_config)}"
+            )
+        if 'indices' not in split_config:
+            raise ValueError(
+                f"Missing 'indices' key in split '{split_name}'"
+            )
+
+    # Get transform if not provided
+    if transform is None:
+        transform = get_transform(cfg)
+
+    # Create samplers for all splits
+    samplers = get_samplers_from_index_sets(splits, seed=cfg.opt.get('seed', 42))
+
+    # Dataset arguments (common for all splits)
+    dataset_args = dict(
+        df=df_scaled,
+        target=cfg.dataset.target,
+        sequence_length=cfg.dataset.seq_in_length,
+        out_window=cfg.dataset.seq_out_length,
+        forecast=cfg.dataset.forecast,
+        remove_target=cfg.dataset.remove_target,
+        transform=transform,
+        is_anomaly_column=cfg.dataset.get('is_anomaly_column', None)
+    )
+
+    # Create datasets for all splits
+    datasets = {}
+    for split_name, sampler in samplers.items():
+        datasets[split_name] = Dataset_seq_df(
+            **dataset_args,
+            sampler=sampler,
+            indices=sampler.indices
+        )
+
+    # Print summary
+    print(f"\n   ✓ Datasets created (on-the-fly extraction):")
+    for split_name, dataset in datasets.items():
+        shuffle_status = "shuffled" if splits[split_name].get('shuffle', False) else "sequential"
+        print(f"      - {split_name}: {len(dataset)} sequences ({shuffle_status})")
+
+    return datasets, samplers
+
+
+def get_samplers_from_index_sets(index_sets: dict, seed=42):
+    """
+    Creates SubsetRandomSamplers for multiple index lists with per-split shuffle control.
+
+    Args:
+        index_sets (dict): Dictionary where keys are split names (e.g., 'train', 'val')
+                          and values are dicts with:
+                          - 'indices': list/array of indices (REQUIRED)
+                          - 'shuffle': bool (whether to shuffle this split, default: False)
+        seed (int): Random seed for reproducibility (default: 42)
+
+    Returns:
+        dict: Dictionary with same keys, values are SubsetRandomSampler objects.
+
+    Example:
+        >>> index_sets = {
+        ...     'train': {'indices': [0,1,2,...,1000], 'shuffle': True},
+        ...     'val': {'indices': [1001,1002,...,1200], 'shuffle': False}
+        ... }
+        >>> samplers = get_samplers_from_index_sets(index_sets, seed=42)
+        >>> train_sampler = samplers['train']  # Shuffled indices
+        >>> val_sampler = samplers['val']      # Sequential indices
+    """
+    import numpy as np
+    from torch.utils.data import SubsetRandomSampler
+
+    np.random.seed(seed)
+    samplers = {}
+
+    for key, config in index_sets.items():
+        # Validate config format
+        if not isinstance(config, dict):
+            raise ValueError(
+                f"Invalid format for '{key}': expected dict with 'indices' and 'shuffle', "
+                f"got {type(config)}"
+            )
+
+        # Extract indices (required)
+        if 'indices' not in config:
+            raise ValueError(f"Missing required 'indices' key for split '{key}'")
+
+        index_list = config['indices']
+
+        # Extract shuffle flag (optional, default False)
+        shuffle = config.get('shuffle', False)
+
+        # Convert to numpy array
+        idxs = np.array(sorted(index_list))
+
+        # Shuffle if requested
+        if shuffle:
+            np.random.shuffle(idxs)
+
+        # Create sampler
+        samplers[key] = SubsetRandomSampler(idxs)
+
+    return samplers
+
+
+def apply_step_get_samplers_from_index_sets(index_sets: dict, shuffle=False, seed=101):
+    """
+    Creates SubsetRandomSamplers for multiple index lists, each with a specified step.
+
+    Args:
+        index_sets (dict): A dictionary where keys are names (e.g., 'train', 'val') and
+                           values are tuples of (index_list, step_size).
+        shuffle (bool): Whether to shuffle indices for each sampler.
+
+    Returns:
+        dict: A dictionary with the same keys as index_sets, where values are SubsetRandomSampler objects.
+    """
+    np.random.seed(seed)
+    samplers = {}
+
+    for key, (index_list, step, shuffle) in index_sets.items():
+        index_list = np.array(sorted(index_list))
+        idxs = index_list[::step] if step > 0 else index_list
+        if shuffle:
+            np.random.shuffle(idxs)
+        samplers[key] = SubsetRandomSampler(idxs)
+
+    return samplers

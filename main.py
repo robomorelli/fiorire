@@ -39,9 +39,9 @@ def main(args):
     cfg_frozen = OmegaConf.to_container(cfg, resolve=True)
     cfg = OmegaConf.create(cfg_frozen)
 
-    frozen_config_path = os.path.join('/tmp', f'frozen_config_{args.project_name}_{date_str}.yaml')
-    OmegaConf.save(cfg, frozen_config_path)
-    print(f"✅ Config frozen and saved to: {frozen_config_path}")
+    #frozen_config_path = os.path.join('/tmp', f'frozen_config_{args.project_name}_{date_str}.yaml')
+    #OmegaConf.save(cfg, frozen_config_path)
+    #print(f"✅ Config frozen and saved to: {frozen_config_path}")
 
     # Prepare shared configuration
     shared_config = prepare_shared_configuration(cfg)
@@ -61,7 +61,7 @@ def main(args):
         print("Running debug training steps...")
         print("=" * 80)
 
-        for step in range(5):
+        for step in range(15):
             result = trainer_test.step()
             print(f"\nStep {step + 1}/5:")
             print(f"  - Epoch: {result.get('epoch', 'N/A')}")
@@ -172,16 +172,16 @@ if __name__ == "__main__":
                         help="Config file name")
     parser.add_argument("--num_samples", default=100, type=int,
                         help="Number of trials to run")
-    parser.add_argument("--wandb", default=0, type=int,
+    parser.add_argument("--wandb", default=1, type=int,
                         help="Enable W&B logging (0/1)")
-    parser.add_argument("--project_name", default='fiorire1_2D',
+    parser.add_argument("--project_name", default='fiorire1_2D_zbook',
                         help="W&B project name")
     parser.add_argument("--entity", default='robmorelli',
                         help="W&B entity name")
     parser.add_argument("--wandb_key",
                         default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
                         help="W&B API key")
-    parser.add_argument("--debug_mode", default=0, type=int,
+    parser.add_argument("--debug_mode", default=1, type=int,
                         help="Run single trial for debugging (0/1)")
 
     args = parser.parse_args()
