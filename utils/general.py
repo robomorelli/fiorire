@@ -77,7 +77,24 @@ def find_project_root(current: Path, markers=('config', 'main.py')) -> Path:
             return parent
     return current  # fallback: return current if no marker found
 
+def resolve_paths(cfg: DictConfig, root_dir: str=root) -> DictConfig:
+    """
+    Recursively find keys containing 'path' and resolve relative paths
+    against root_dir.
+    """
+    def _resolve(d):
+        for k, v in d.items():
+            if isinstance(v, DictConfig) or isinstance(v, dict):
+                _resolve(v)
+            elif isinstance(v, str) and "path" in k.lower():
+                if not os.path.isabs(v):
+                    abs_path = os.path.abspath(os.path.join(root_dir, v))
+                    d[k] = abs_path
 
+    _resolve(cfg)
+    return cfg
+
+''' 
 def resolve_paths(cfg, root):
     """
     Recursively resolve relative paths in config to absolute paths.
@@ -112,7 +129,7 @@ def resolve_paths(cfg, root):
     _resolve(cfg)
     return cfg
 
-''' 
+
 def extract_config(cfg_path=None, cfg=None, fine_tuning=False):
     """
     Estrae configurazione da YAML e mappa a Ray Tune functions.

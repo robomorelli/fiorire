@@ -20,7 +20,7 @@ from trainer.utils import (
     train_one_epoch, validate_one_epoch, get_optimizazion_objects,
     load_pretrained_checkpoint, compute_indices_with_overlap
 )
-from config import opt_metric_dict_keys
+from config import opt_metric_dict_keys, root
 
 
 class Trainer(tune.Trainable):
@@ -33,7 +33,7 @@ class Trainer(tune.Trainable):
         self.cfg, shared_config = model_setup(
             config.get('opt.config_file_path'),
             config,
-            None  # root_dir
+            root=root
         )
 
         # ✅ 2. Update input/output dimensions - CRITICAL!
@@ -64,8 +64,7 @@ class Trainer(tune.Trainable):
         print(f"      - val_indices: {len(val_indices)}")
 
         # ✅ 6. Load DataFrame
-        dataset_path = shared_config['dataset_path']
-        df = load_and_preprocess_dataframe(self.cfg, data_path=dataset_path)
+        df = load_and_preprocess_dataframe(self.cfg)
 
         # ✅ 7. Apply scaler (already fitted!)
         df_scaled = apply_scaler(df, self.scaler, feature_columns)

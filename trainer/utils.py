@@ -64,7 +64,7 @@ class EarlyStopping:
 _BASE_CONFIG_CACHE = {}
 
 
-def model_setup(config_file_name, config, root):
+def model_setup(config_file_name, config, root=None):
     """
     Setup model configuration with caching to prevent reloading from disk.
 
@@ -105,6 +105,8 @@ def model_setup(config_file_name, config, root):
 
     # Resolve paths
     cfg = resolve_paths(cfg, root)
+    shared_config = resolve_paths(shared_config, root)
+
     cfg.dataset.n_features = len(cfg.dataset.feats)
 
     # ✅ Return both cfg and shared_config separately

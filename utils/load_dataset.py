@@ -572,7 +572,6 @@ def prepare_shared_configuration(cfg):
                     indices=anomalous_indices_for_metric,
                     seq_len=seq_len,
                     feature_columns=feature_columns,
-                    perc_overlap=0
                 )
 
                 # ✅ Extract labels directly from DataFrame

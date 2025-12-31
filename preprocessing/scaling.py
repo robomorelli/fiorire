@@ -81,6 +81,7 @@ def apply_scaler(df, scaler, feature_columns):
     Returns:
         Scaled DataFrame
     """
+    print(df.describe())
     df_scaled = df.copy()
 
     # Transform
@@ -91,6 +92,7 @@ def apply_scaler(df, scaler, feature_columns):
         df_scaled[col] = scaled_values[:, i]
 
     print(f"   ✓ Scaled {len(feature_columns)} features")
+    print(df_scaled.describe())
 
     return df_scaled
 
