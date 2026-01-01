@@ -1,9 +1,21 @@
 #!/bin/bash
 
-#sh /davinci-1/home/morellir/artificial_intelligence/repos/fiorire_1/launch_wrapper.sh num_nodes 2 num_gpus 1 num_cpus 16 config_file conv_ae1D
+# ============================================================================
+# Launch wrapper for PBS jobs
+# ============================================================================
+# Usage:
+#   sh launch_wrapper.sh \
+#       num_nodes 2 \
+#       num_gpus 1 \
+#       num_cpus 16 \
+#       config_file conv_ae2D \
+#       num_samples 100 \
+#       project_name fiorire1_2D \
+#       wandb 1 \
+#       debug 0
+# ============================================================================
 
 # Default values
-# Set defaults if empty for PBS resource specification
 NUM_NODES=${NUM_NODES:-1}
 NUM_GPUS=${NUM_GPUS:-1}
 NUM_CPUS=${NUM_CPUS:-12}
@@ -13,7 +25,7 @@ ENTITY=""
 WANDB=""
 WANDB_KEY=""
 PROJECT_NAME=""
-#WANDB_KEY=-"56b6f7f0b13c4d89207e51c28ceb90c24201eab5"
+DEBUG="0"  # ✅ Default: 0 (non-debug mode)
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
@@ -56,6 +68,10 @@ while [[ $# -gt 0 ]]; do
       WANDB_KEY="$value"
       shift 2
       ;;
+    debug)  # ✅ New: debug mode
+      DEBUG="$value"
+      shift 2
+      ;;
     *)
       echo "Unknown option: $key"
       exit 1
@@ -63,6 +79,32 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ============================================================================
+# Validate required arguments
+# ============================================================================
+if [[ -z "$CONFIG_FILE" ]]; then
+  echo ""
+  echo "="*80
+  echo "❌ ERROR: config_file argument is required!"
+  echo "="*80
+  echo ""
+  echo "Usage:"
+  echo "  sh launch_wrapper.sh \\"
+  echo "      num_nodes 2 \\"
+  echo "      num_gpus 1 \\"
+  echo "      num_cpus 16 \\"
+  echo "      config_file conv_ae2D \\"
+  echo "      num_samples 100 \\"
+  echo "      project_name my_project \\"
+  echo "      wandb 1 \\"
+  echo "      debug 0"
+  echo ""
+  exit 1
+fi
+
+# ============================================================================
+# Build PBS environment variables
+# ============================================================================
 PBS_ENV_VARS=""
 
 if [[ -n "$NUM_NODES" ]]; then
@@ -92,18 +134,30 @@ fi
 if [[ -n "$PROJECT_NAME" ]]; then
   PBS_ENV_VARS+="project_name=${PROJECT_NAME},"
 fi
+if [[ -n "$DEBUG" ]]; then  # ✅ Pass debug
+  PBS_ENV_VARS+="debug=${DEBUG},"
+fi
 
 # Remove trailing comma
 PBS_ENV_VARS=${PBS_ENV_VARS%,}
 
-# Build PBS script
-PBS_JOB="/davinci-1/home/morellir/artificial_intelligence/repos/fiorire/launch_hpo_temp.pbs"
+# ============================================================================
+# Create unique PBS job file (with timestamp and config name)
+# ============================================================================
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+PBS_JOB="/davinci-1/home/morellir/artificial_intelligence/repos/fiorire/pbs_jobs/launch_hpo_${CONFIG_FILE}_${TIMESTAMP}.pbs"
 
+# Create directory for PBS jobs
+mkdir -p /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/pbs_jobs
+
+# ============================================================================
+# Build PBS script
+# ============================================================================
 cat > "$PBS_JOB" <<EOF
 #!/bin/bash
-#PBS -N fiorire_hpo_multinode
-#PBS -o fiorire_hpo_multinode.log
-#PBS -e fiorire_hpo_multinode.err
+#PBS -N fiorire_${CONFIG_FILE}
+#PBS -o fiorire_${CONFIG_FILE}_${TIMESTAMP}.log
+#PBS -e fiorire_${CONFIG_FILE}_${TIMESTAMP}.err
 #PBS -q gpu
 #PBS -k oe
 #PBS -m e
@@ -111,22 +165,34 @@ cat > "$PBS_JOB" <<EOF
 #PBS -l select=${NUM_NODES}:ngpus=${NUM_GPUS}:ncpus=${NUM_CPUS},walltime=72:00:00
 #PBS -v $PBS_ENV_VARS
 
-##PBS -v num_nodes=${NUM_NODES},num_gpus=${NUM_GPUS},num_cpus=${NUM_CPUS},config_file=${config_file},num_samples=${NUM_SAMPLES},wandb_key=${WANDB_KEY},entity=${ENTITY}
-
 module load proxy/proxy_20
 bash /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/launch_hpo.sh
 EOF
 
-echo "Submitting job with:"
-echo "- Nodes: ${NUM_NODES:-default (1)}"
-echo "- GPUs per node: ${NUM_GPUS:-default (1)}"
-echo "- CPUs per node: ${NUM_CPUS:-default (12)}"
-echo "- Model: ${CONFIG_FILE:-default value from Python}"
-echo "- Num Samples: ${NUM_SAMPLES:-default value from Python}"
-echo "- WANDB KEY: ${WANDB_KEY:-default value from Python}"
-echo "- ENTITY: ${ENTITY:-default value from Python}"
-echo "- WANDB: ${WANDB:-default value from Python}"
-echo "- PROJECT_NAME: ${PROJECT_NAME:-default value from Python}"
+# ============================================================================
+# Display configuration and submit
+# ============================================================================
+echo ""
+echo "="*80
+echo "🚀 SUBMITTING PBS JOB"
+echo "="*80
+echo ""
+echo "PBS Job file: $PBS_JOB"
+echo ""
+echo "Configuration:"
+echo "  - Config file: ${CONFIG_FILE} ✅"
+echo "  - Nodes: ${NUM_NODES}"
+echo "  - GPUs per node: ${NUM_GPUS}"
+echo "  - CPUs per node: ${NUM_CPUS}"
+echo "  - Num Samples: ${NUM_SAMPLES:-default}"
+echo "  - Project: ${PROJECT_NAME:-default}"
+echo "  - Entity: ${ENTITY:-default}"
+echo "  - W&B: ${WANDB:-default}"
+echo "  - Debug mode: ${DEBUG} 🐛"  # ✅ Show debug status
+echo ""
 
-
-qsub "$PBS_JOB"
+# Submit job
+JOB_ID=$(qsub "$PBS_JOB")
+echo "✅ Job submitted: $JOB_ID"
+echo "📁 PBS script: $PBS_JOB"
+echo ""

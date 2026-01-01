@@ -1,43 +1,114 @@
 #!/bin/bash
 
+# ============================================================================
+# Launch HPO training with Ray cluster
+# ============================================================================
+# This script is executed BY PBS on allocated nodes
+# ============================================================================
+
 # Load required modules
 module load openmpi
 module load proxy/proxy_20
 
-cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire_1
+cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
 
-# Read PBS environment
+# ============================================================================
+# Read PBS environment variables
+# ============================================================================
 NUM_NODES=${num_nodes}
 NUM_GPUS=${num_gpus}
 NUM_CPUS=${num_cpus}
-CONFIG_FILE=${model_name}
+CONFIG_FILE=${config_file}
 NUM_SAMPLES=${num_samples}
 ENTITY=${entity}
 WANDB_KEY=${wandb_key}
 PROJECT_NAME=${project_name}
 WANDB=${wandb}
+DEBUG=${debug:-0}  # ✅ Default: 0 if not set
 
-echo "python configuration:"
-echo " - Nodes: $NUM_NODES"
-echo " - GPUs per node: $NUM_GPUS"
-echo " - CPUs per node: $NUM_CPUS"
-echo " - Model: ${CONFIG_FILE:-default}"
-echo " - Num Samples: ${NUM_SAMPLES:-default}"
-echo " - ENTITY: ${ENTITY:-default}"
-echo " - WANDB_KEY: ${WANDB_KEY:-default}"
-echo " - PROJECT_NAME: ${PROJECT_NAME:-default}"
-echo " - WANDB: ${WANDB:-default}"
+# ============================================================================
+# CRITICAL VALIDATION: CONFIG_FILE must not be empty
+# ============================================================================
+if [[ -z "$CONFIG_FILE" ]]; then
+  echo ""
+  echo "="*80
+  echo "❌ CRITICAL ERROR: CONFIG_FILE is empty or not set!"
+  echo "="*80
+  echo ""
+  echo "PBS variables received:"
+  echo "-------------------------------------------"
+  env | grep -E "^(config_file|model_name|num_|entity|wandb|project|debug)" | sort
+  echo "-------------------------------------------"
+  echo ""
+  echo "Possible causes:"
+  echo "  1. launch_wrapper.sh didn't pass 'config_file' argument"
+  echo "  2. Variable name mismatch in PBS -v list"
+  echo "  3. PBS variable not exported correctly"
+  echo ""
+  echo "Expected variable: config_file=<value>"
+  echo "Actual value: config_file='${config_file}'"
+  echo ""
+  echo "Please verify launch_wrapper.sh passes:"
+  echo "  sh launch_wrapper.sh ... config_file conv_ae2D"
+  echo ""
+  exit 1
+fi
 
-# Discover nodes
+# ============================================================================
+# Optional validation: check if config YAML file exists
+# ============================================================================
+CONFIG_YAML_PATH="/davinci-1/home/morellir/artificial_intelligence/repos/fiorire/train_configurations/${CONFIG_FILE}.yaml"
+if [[ ! -f "$CONFIG_YAML_PATH" ]]; then
+  echo ""
+  echo "="*80
+  echo "⚠️  WARNING: Config YAML not found!"
+  echo "="*80
+  echo ""
+  echo "Expected path: $CONFIG_YAML_PATH"
+  echo "Config file: ${CONFIG_FILE}.yaml"
+  echo ""
+  echo "Python will try to load it, but may fail."
+  echo "Continuing anyway..."
+  echo ""
+fi
+
+# ============================================================================
+# Display configuration
+# ============================================================================
+echo ""
+echo "="*80
+echo "🐍 PYTHON CONFIGURATION"
+echo "="*80
+echo "  - Nodes: $NUM_NODES"
+echo "  - GPUs per node: $NUM_GPUS"
+echo "  - CPUs per node: $NUM_CPUS"
+echo "  - Config file: ${CONFIG_FILE} ✅"
+echo "  - Num Samples: ${NUM_SAMPLES:-default}"
+echo "  - Entity: ${ENTITY:-default}"
+echo "  - Project: ${PROJECT_NAME:-default}"
+echo "  - W&B: ${WANDB:-default}"
+echo "  - Debug mode: ${DEBUG} 🐛"  # ✅ Show debug status
+echo ""
+
+# ============================================================================
+# Discover allocated nodes
+# ============================================================================
 NODES=($(sort -u $PBS_NODEFILE))
 MASTER_NODE=${NODES[0]}
 WORKER_NODES=("${NODES[@]:1}")
 NUM_ACTUAL_NODES=${#NODES[@]}
+
+echo "="*80
+echo "📡 RAY CLUSTER SETUP"
+echo "="*80
 echo "Allocated nodes: ${NODES[*]}"
 echo "Master node: $MASTER_NODE"
 echo "Worker nodes: ${WORKER_NODES[*]}"
+echo ""
 
+# ============================================================================
 # Ray environment setup
+# ============================================================================
 REDIS_PASSWORD="5241590000000000"
 TMPDIR="/tmp/ray-$USER"
 mkdir -p "$TMPDIR"
@@ -53,40 +124,54 @@ for port in {6379..6399}; do
     break
   fi
 done
+
 if [[ -z "$REDIS_PORT" ]]; then
-  echo "[ERROR] No free Redis port found on $MASTER_NODE"
+  echo "❌ ERROR: No free Redis port found on $MASTER_NODE"
   exit 1
 fi
 
+echo "✅ Redis address: $REDIS_ADDRESS"
+echo ""
+
+# ============================================================================
 # Define cleanup function
+# ============================================================================
 cleanup_ray_cluster() {
-  echo "[CLEANUP] Stopping Ray on all nodes..."
+  echo ""
+  echo "="*80
+  echo "🧹 CLEANUP: Stopping Ray on all nodes"
+  echo "="*80
 
   for NODE in "${NODES[@]}"; do
-    echo "[CLEANUP] Checking and stopping Ray on $NODE"
+    echo "[CLEANUP] Stopping Ray on $NODE"
     ssh $NODE "
       source ~/.bashrc
       conda activate fiorire
       export TMPDIR='/tmp/ray-$USER'
       CURRENT_CLUSTER=\$(cat \$TMPDIR/ray_current_cluster 2>/dev/null || true)
       if [[ \"\$CURRENT_CLUSTER\" == \"$REDIS_ADDRESS\" ]]; then
-        echo \"[CLEANUP] Stopping Ray on $NODE (owned cluster)\"
+        echo \"  → Stopping Ray (owned cluster)\"
         ray stop
       else
-        echo \"[CLEANUP] Skipped Ray stop on $NODE (not matching cluster)\"
+        echo \"  → Skipped (not matching cluster)\"
       fi
     " &
   done
 
   wait
-  echo "[CLEANUP] Ray cleanup complete."
+  echo "✅ Ray cleanup complete"
+  echo ""
 }
 
 # Trap exit and signals
 trap cleanup_ray_cluster EXIT SIGINT SIGTERM
 
+# ============================================================================
 # Start Ray head
-echo "[MASTER] Starting Ray head on $MASTER_NODE ($MASTER_IP)"
+# ============================================================================
+echo "="*80
+echo "🚀 STARTING RAY HEAD"
+echo "="*80
 ssh $MASTER_NODE "
   source ~/.bashrc
   conda activate fiorire
@@ -101,28 +186,48 @@ ssh $MASTER_NODE "
 
 sleep 10
 
+# ============================================================================
 # Start Ray workers
-for WORKER in "${WORKER_NODES[@]}"; do
-  echo "[WORKER] Starting Ray worker on $WORKER"
-  ssh $WORKER "
-    source ~/.bashrc
-    conda activate fiorire
-    export TMPDIR='/tmp/ray-$USER'
-    module load proxy/proxy_20
-    mkdir -p \$TMPDIR
-    chmod 700 \$TMPDIR
-    ray stop
-    WORKER_IP=\$(hostname -I | awk '{print \$1}')
-    eval \$(python /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/set_gpus_env.py --n $NUM_GPUS)
-    ray start --address=$REDIS_ADDRESS --redis-password=$REDIS_PASSWORD --node-ip-address=\$WORKER_IP
-  " &
-done
+# ============================================================================
+if [[ ${#WORKER_NODES[@]} -gt 0 ]]; then
+  echo ""
+  echo "="*80
+  echo "🔗 STARTING RAY WORKERS"
+  echo "="*80
 
-wait
+  for WORKER in "${WORKER_NODES[@]}"; do
+    echo "[WORKER] Starting on $WORKER"
+    ssh $WORKER "
+      source ~/.bashrc
+      conda activate fiorire
+      export TMPDIR='/tmp/ray-$USER'
+      module load proxy/proxy_20
+      mkdir -p \$TMPDIR
+      chmod 700 \$TMPDIR
+      ray stop
+      WORKER_IP=\$(hostname -I | awk '{print \$1}')
+      eval \$(python /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/set_gpus_env.py --n $NUM_GPUS)
+      ray start --address=$REDIS_ADDRESS --redis-password=$REDIS_PASSWORD --node-ip-address=\$WORKER_IP
+    " &
+  done
 
+  wait
+fi
+
+# ============================================================================
 # Run training
+# ============================================================================
 MODEL_CONFIG_PATH="main.py"
-echo "[MASTER] Running main.py on $MASTER_NODE"
+
+echo ""
+echo "="*80
+echo "🏃 RUNNING TRAINING"
+echo "="*80
+echo "Script: $MODEL_CONFIG_PATH"
+echo "Config: $CONFIG_FILE ✅ (validated)"
+echo "Debug mode: $DEBUG 🐛"
+echo ""
+
 ssh $MASTER_NODE "
   source ~/.bashrc
   conda activate fiorire
@@ -130,16 +235,25 @@ ssh $MASTER_NODE "
   module load proxy/proxy_20
   cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
 
-  CMD=\"python $MODEL_CONFIG_PATH --address $REDIS_ADDRESS --password $REDIS_PASSWORD\"
+  # Build command - CONFIG_FILE is ALWAYS passed (validated above)
+  CMD=\"python \$MODEL_CONFIG_PATH --address $REDIS_ADDRESS --password $REDIS_PASSWORD\"
+  CMD+=\" --config_file $CONFIG_FILE\"
+  CMD+=\" --debug_mode $DEBUG\"  # ✅ ALWAYS pass debug_mode
 
-  [[ -n \"$CONFIG_FILE\" ]] && CMD+=\" --config_file $CONFIG_FILE\"
+  # Optional arguments
   [[ -n \"$NUM_SAMPLES\" ]] && CMD+=\" --num_samples $NUM_SAMPLES\"
   [[ -n \"$WANDB_KEY\" ]] && CMD+=\" --wandb_key $WANDB_KEY\"
   [[ -n \"$ENTITY\" ]] && CMD+=\" --entity $ENTITY\"
   [[ -n \"$WANDB\" ]] && CMD+=\" --wandb $WANDB\"
   [[ -n \"$PROJECT_NAME\" ]] && CMD+=\" --project_name $PROJECT_NAME\"
 
-  echo \"[MASTER] Running: \$CMD\"
+  echo \"\"
+  echo \"Full command:\"
+  echo \"-------------------------------------------\"
+  echo \"\$CMD\"
+  echo \"-------------------------------------------\"
+  echo \"\"
+
   eval \$CMD
 "
 
