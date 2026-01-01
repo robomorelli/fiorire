@@ -4,7 +4,7 @@
 module load openmpi
 module load proxy/proxy_20
 
-cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire_1
+cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
 
 # Read PBS environment
 NUM_NODES=${num_nodes}
