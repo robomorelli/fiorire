@@ -618,7 +618,8 @@ def test_anomaly_step(
     model.eval()
     anomaly_errors_list = []
     anomaly_masks_list = []
-    normal_errors_list = [] if external_normal_errors is None or compare_external_with_loader else None
+    #normal_errors_list = [] if external_normal_errors is None or compare_external_with_loader else None
+    normal_errors_list = []
 
     normal_running_sum = 0.0
     normal_running_count = 0
@@ -663,7 +664,7 @@ def test_anomaly_step(
             anom_bar.update(1)
 
         # Normals
-        if is_norm.any() and normal_errors_list is not None:
+        if is_norm.any() and normal_errors_list is None:
             x_norm, target_norm = x[is_norm], target[is_norm]
             recon = model(x_norm)
 
@@ -712,6 +713,7 @@ def test_anomaly_step(
 
     np.random.seed(seed)
     idx_main = np.random.permutation(normal_errors_all.shape[0])[:N_norm_needed]
+    normal_errors_all = normal_errors_all if normal_errors_all else normal_errors_list
     normal_errors = normal_errors_all[idx_main]
 
     print(f"\n[INFO] Selected anomalous sequences: {N_anom}")
