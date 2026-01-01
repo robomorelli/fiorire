@@ -169,7 +169,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ray Tune hyperparameter optimization")
     parser.add_argument("--address", default=None, help="address of master")
     parser.add_argument("--password", default=None, help="Ray cluster password")
-    parser.add_argument("--config_file", "-c", default='conv_ae2D_ref',
+    parser.add_argument("--config_file", "-c", default='conv_ae2D',
                         help="Config file name")
     parser.add_argument("--num_samples", default=100, type=int,
                         help="Number of trials to run")
@@ -182,7 +182,7 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_key",
                         default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
                         help="W&B API key")
-    parser.add_argument("--debug_mode", default=0, type=int,
+    parser.add_argument("--debug_mode", default=1, type=int,
                         help="Run single trial for debugging (0/1)")
 
     args = parser.parse_args()
