@@ -13,6 +13,7 @@ from omegaconf import OmegaConf
 
 from config import *
 
+
 def main(args):
     # Get date to name the results folder
     now = datetime.now()
