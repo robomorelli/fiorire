@@ -107,8 +107,6 @@ def model_setup(config_file_name, config, root=None):
     cfg = resolve_paths(cfg, root)
     shared_config = resolve_paths(shared_config, root)
 
-    cfg.dataset.n_features = len(cfg.dataset.feats)
-
     # ✅ Return both cfg and shared_config separately
     return cfg, shared_config
 
@@ -713,7 +711,7 @@ def test_anomaly_step(
 
     np.random.seed(seed)
     idx_main = np.random.permutation(normal_errors_all.shape[0])[:N_norm_needed]
-    normal_errors_all = normal_errors_all if normal_errors_all else normal_errors_list
+    normal_errors_all = normal_errors_all if normal_errors_all is not None else normal_errors_list
     normal_errors = normal_errors_all[idx_main]
 
     print(f"\n[INFO] Selected anomalous sequences: {N_anom}")

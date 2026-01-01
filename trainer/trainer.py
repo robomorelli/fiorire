@@ -42,7 +42,8 @@ class Trainer(tune.Trainable):
         # ✅ 3. Get parameters for this trial
         overlap = self.cfg.dataset.get('perc_overlap', 0)
         seq_len = shared_config['seq_len']
-        feature_columns = shared_config['feature_columns']
+        self.cfg.dataset.feast, feature_columns = shared_config['feature_columns'], shared_config['feature_columns']
+        self.cfg.dataset.n_features = len(feature_columns)
 
         print(f"\n📂 Loading data for trial (overlap={overlap})...")
 
