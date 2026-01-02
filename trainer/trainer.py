@@ -58,11 +58,12 @@ class Trainer(tune.Trainable):
 
         # ✅ 5. Compute final indices with overlap
         train_indices = compute_indices_with_overlap(train_base_indices, overlap, seq_len)
-        val_indices = compute_indices_with_overlap(val_base_indices, overlap, seq_len)
+        val_indices = compute_indices_with_overlap(val_base_indices, 0, seq_len)
+        self.train_indices, self.val_indices = train_indices, val_indices
 
         print(f"   ✓ Indices with overlap:")
         print(f"      - train_indices: {len(train_indices)}")
-        print(f"      - val_indices: {len(val_indices)}")
+        print(f"      - val_indices: {len(val_indices)} NOTE: OVERLAP IS 0 FOR VALIDATION SEQUENCES")
 
         # ✅ 6. Load DataFrame
         df = load_and_preprocess_dataframe(self.cfg)
@@ -327,6 +328,9 @@ class Trainer(tune.Trainable):
             'parameters_number': self.parameters_number,
             'param_conf': self.parameters_number,
             'metric_score': self.val_results if "metric_score" in self.val_results else None,
+            'data_path': self.data_path,
+            'train_indices': self.train_indices,
+            'val_indices': self.val_indices,
             'metric_dataset_path': self.metric_dataset_path,
             "indices": self.val_results.get("indices", None),
         }, checkpoint_path)

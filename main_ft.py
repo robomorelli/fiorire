@@ -3,7 +3,7 @@ import ray
 import torch
 from ray.tune.schedulers import ASHAScheduler
 from utils.load_trainer import get_trainer
-from utils.general import (extract_config, extract_fixed_config, get_sync_config,
+from utils.general import (extract_config, extract_fixed_config, get_sync_config, clean_loaded_cfg,
                            merge_pretraining_finetuning_configs, trial_dirname_creator, get_finetuning_local_dir)
 from utils.load_dataset import prepare_shared_configuration
 from datetime import datetime
@@ -31,6 +31,7 @@ def main(args):
 
     # Load pretrained config
     loaded_cfg = torch.load(cfg_ft.model.checkpoint_path)['cfg']
+    loaded_cfg = clean_loaded_cfg(loaded_cfg)
     _, cfg_pre = extract_config(cfg_path=None, cfg=loaded_cfg)
 
     # Merge configs
@@ -43,8 +44,8 @@ def main(args):
     print("📌 FREEZING CONFIG")
     print("=" * 80)
 
-    cfg_frozen = OmegaConf.to_container(cfg, resolve=True)
-    cfg = OmegaConf.create(cfg_frozen)
+    #cfg_frozen = OmegaConf.to_container(cfg, resolve=True)
+    #cfg = OmegaConf.create(cfg_frozen)
 
     #frozen_config_path = os.path.join('/tmp', f'frozen_config_ft_{args.project_name}_{date_str}.yaml')
     #OmegaConf.save(cfg, frozen_config_path)

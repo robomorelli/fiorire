@@ -190,63 +190,411 @@ def extract_config(cfg_path=None, cfg=None, fine_tuning=False):
                 cfg['opt']['fine_tuning'] = fine_tuning_flag
 
     return config, cfg
-''' 
-def extract_config(cfg_path=None, cfg=None, fine_tuning=False):
+'''
 
-    assert cfg_path is not None or cfg is not None
+import re
+from omegaconf import OmegaConf
+import ray.tune as tune
+
+
+def extract_config(cfg_path=None, cfg=None, fine_tuning=False):
+    """
+    Extract Ray Tune config from OmegaConf configuration.
+
+    Args:
+        cfg_path: Path to YAML config file (optional if cfg provided)
+        cfg: OmegaConf object (optional if cfg_path provided)
+        fine_tuning: Whether this is a fine-tuning config
+
+    Returns:
+        config: Dict with Ray Tune search spaces
+        cfg: OmegaConf configuration
+    """
+    assert cfg_path is not None or cfg is not None, "Either cfg_path or cfg must be provided"
 
     if cfg is None:
         cfg = OmegaConf.load(cfg_path)
 
-    config = {}
-    for k, v in cfg.tune_config.items():
-        try:
-            # Handle numeric values
-            config[k] = ray_mapper[v.split('(')[0]](
-                [float(s) if '.' in s else int(s) for s in v.split(v.split('(')[0])[1].strip("()[]").split(',')]
-            )
-        except:
-            # Handle string or categorical values
-            config[k] = ray_mapper[v.split('(')[0]](
-                [s.strip().strip("''").strip('"') for s in v.split(v.split('(')[0])[1].strip("()[]").split(',')]
-            )
+    # Ray tune function mapper
+    ray_mapper = {
+        'tune.choice': tune.choice,
+        'tune.uniform': tune.uniform,
+        'tune.loguniform': tune.loguniform,
+        'tune.randint': tune.randint,
+        'tune.quniform': tune.quniform,
+        'tune.qloguniform': tune.qloguniform,
+        'tune.randn': tune.randn,
+        'tune.qrandn': tune.qrandn,
+    }
 
+    config = {}
+
+    for k, v in cfg.tune_config.items():
+        # ✅ FIX: Use regex to extract tune function name robustly
+        # Matches: tune.choice, tune.uniform, etc. at the START of the string
+        match = re.match(r'^(tune\.\w+)\s*\((.+)\)$', v.strip())
+
+        if not match:
+            raise ValueError(f"Invalid tune config format for '{k}': {v}")
+
+        tune_func_name = match.group(1)  # e.g., "tune.choice"
+        params_str = match.group(2)  # e.g., '["path/to/file.pt"]'
+
+        # Check if tune function is valid
+        if tune_func_name not in ray_mapper:
+            raise ValueError(f"Unknown tune function '{tune_func_name}' for key '{k}'")
+
+        tune_func = ray_mapper[tune_func_name]
+
+        # ✅ Parse parameters based on tune function type
+        if tune_func_name == 'tune.choice':
+            # Parse list: ["item1", "item2", ...] or [1, 2, 3]
+            params = parse_choice_params(params_str)
+            config[k] = tune_func(params)
+
+        elif tune_func_name in ['tune.uniform', 'tune.loguniform', 'tune.quniform', 'tune.qloguniform']:
+            # Parse range: (min, max) or (min, max, q)
+            params = parse_range_params(params_str)
+            config[k] = tune_func(*params)
+
+        elif tune_func_name in ['tune.randint', 'tune.randn', 'tune.qrandn']:
+            # Parse simple params
+            params = parse_simple_params(params_str)
+            config[k] = tune_func(*params)
+
+        else:
+            # Fallback: try to eval (dangerous but backward compatible)
+            try:
+                config[k] = eval(v)
+            except Exception as e:
+                raise ValueError(f"Failed to parse '{k}': {v}\nError: {e}")
+
+    # ✅ Handle fine-tuning specific extraction
     if fine_tuning:
         # Extract checkpoint_path and fine_tuning from tune_config
-        # These should have single values: tune.choice([value])
         checkpoint_path = config.get('opt.checkpoint_path')
-        fine_tuning = config.get('opt.fine_tuning')
+        fine_tuning_flag = config.get('opt.fine_tuning')
 
-        cfg['model']['checkpoint_path'] = ','.join(checkpoint_path.categories)
-        cfg['opt']['fine_tuning'] = fine_tuning.categories[0]
+        if checkpoint_path:
+            # Extract single value from tune.choice
+            if hasattr(checkpoint_path, 'categories'):
+                cfg['model']['checkpoint_path'] = checkpoint_path.categories[0]
+            else:
+                cfg['model']['checkpoint_path'] = checkpoint_path
+
+        if fine_tuning_flag:
+            if hasattr(fine_tuning_flag, 'categories'):
+                cfg['opt']['fine_tuning'] = fine_tuning_flag.categories[0]
+            else:
+                cfg['opt']['fine_tuning'] = fine_tuning_flag
 
     return config, cfg
+
+
+def parse_choice_params(params_str):
+    """
+    Parse tune.choice parameters: ["item1", "item2"] or [1, 2, 3]
+
+    Args:
+        params_str: String like '["item1", "item2"]' or '[1, 2, 3]'
+
+    Returns:
+        List of parsed values
+    """
+    # Remove outer brackets
+    params_str = params_str.strip()
+    if params_str.startswith('[') and params_str.endswith(']'):
+        params_str = params_str[1:-1]
+
+    # Split by comma (but respect quoted strings)
+    items = []
+    current = []
+    in_quotes = False
+    quote_char = None
+
+    for char in params_str + ',':  # Add comma at end to trigger last item
+        if char in ['"', "'"]:
+            if not in_quotes:
+                in_quotes = True
+                quote_char = char
+            elif char == quote_char:
+                in_quotes = False
+                quote_char = None
+        elif char == ',' and not in_quotes:
+            item = ''.join(current).strip()
+            if item:
+                items.append(parse_value(item))
+            current = []
+            continue
+        current.append(char)
+
+    return items
+
+
+def parse_range_params(params_str):
+    """
+    Parse range parameters: (min, max) or (min, max, q)
+
+    Args:
+        params_str: String like '0.0001, 0.001' or '0.0001, 0.001, 0.0001'
+
+    Returns:
+        Tuple of float values
+    """
+    # Remove parentheses if present
+    params_str = params_str.strip().strip('()')
+
+    # Split by comma
+    parts = [p.strip() for p in params_str.split(',')]
+
+    # Convert to float
+    return tuple(float(p) for p in parts)
+
+
+def parse_simple_params(params_str):
+    """
+    Parse simple parameters: single value or two values
+
+    Args:
+        params_str: String like '10' or '0, 10'
+
+    Returns:
+        Tuple of values
+    """
+    # Remove parentheses if present
+    params_str = params_str.strip().strip('()')
+
+    # Split by comma
+    parts = [p.strip() for p in params_str.split(',')]
+
+    # Try to convert to int, then float
+    result = []
+    for p in parts:
+        try:
+            result.append(int(p))
+        except ValueError:
+            result.append(float(p))
+
+    return tuple(result) if len(result) > 1 else result[0]
+
+
+def parse_value(value_str):
+    """
+    Parse a single value (string, int, or float).
+
+    Args:
+        value_str: String representation of value
+
+    Returns:
+        Parsed value (str, int, or float)
+    """
+    value_str = value_str.strip()
+
+    # Remove quotes if present
+    if (value_str.startswith('"') and value_str.endswith('"')) or \
+            (value_str.startswith("'") and value_str.endswith("'")):
+        return value_str[1:-1]
+
+    # Try to parse as number
+    try:
+        # Try int first
+        if '.' not in value_str:
+            return int(value_str)
+        else:
+            return float(value_str)
+    except ValueError:
+        # Return as string
+        return value_str
 
 
 def extract_fixed_config(cfg_path=None, cfg=None):
+    """
+    Extract fixed config for testing/debugging (takes first value from each tune parameter).
 
-    assert cfg_path is not None or cfg is not None
+    Args:
+        cfg_path: Path to YAML config file (optional if cfg provided)
+        cfg: OmegaConf object (optional if cfg_path provided)
+
+    Returns:
+        config: Dict with fixed values (first from each tune parameter)
+        cfg: OmegaConf configuration
+    """
+    assert cfg_path is not None or cfg is not None, "Either cfg_path or cfg must be provided"
 
     if cfg is None:
         cfg = OmegaConf.load(cfg_path)
 
     config = {}
+
     for k, v in cfg.tune_config.items():
-        if isinstance(v, (list, ListConfig)):  # e.g. [0.001, 0.003]
-            config[k] = v[0]  # Use first value for testing
-        elif isinstance(v, str) and v.startswith("tune.choice"):
-            # Handle cases where string parsing is needed
-            '''
-            if k in enabled_comma_names:
-                values = v[v.find("[") + 1: v.find("]")]
-                config[k] = eval(values[0].strip())
-            else:
-            '''
-            values = v[v.find("[")+1 : v.find("]")].split(",")
-            config[k] = eval(values[0].strip())
+        # ✅ Handle list/ListConfig directly
+        if isinstance(v, (list, ListConfig)):
+            config[k] = v[0]  # Use first value
+
+        # ✅ Handle string with tune.* function
+        elif isinstance(v, str) and v.strip().startswith("tune."):
+            # Use regex to extract function and parameters
+            match = re.match(r'^tune\.\w+\s*\((.+)\)$', v.strip())
+
+            if not match:
+                raise ValueError(f"Invalid tune config format for '{k}': {v}")
+
+            params_str = match.group(1)
+
+            # Extract first value from the parameter list
+            first_value = extract_first_value(params_str)
+            config[k] = first_value
+
         else:
-            config[k] = v  # Fallback
+            # ✅ Fallback: use value as-is
+            config[k] = v
+
     return config, cfg
+
+
+def extract_first_value(params_str):
+    """
+    Extract the first value from tune parameter string.
+
+    Handles:
+    - tune.choice(["item1", "item2"]) → "item1"
+    - tune.choice([1, 2, 3]) → 1
+    - tune.uniform(0.001, 0.01) → 0.001
+    - tune.randint(1, 10) → 1
+
+    Args:
+        params_str: Parameter string (e.g., '["item1", "item2"]' or '0.001, 0.01')
+
+    Returns:
+        First value parsed appropriately
+    """
+    params_str = params_str.strip()
+
+    # ✅ Handle list parameters: ["item1", "item2"] or [1, 2, 3]
+    if params_str.startswith('[') and params_str.endswith(']'):
+        # Remove outer brackets
+        inner = params_str[1:-1].strip()
+
+        # Parse first item (respecting quotes)
+        first_item = extract_first_list_item(inner)
+        return parse_value(first_item)
+
+    # ✅ Handle range parameters: (min, max) or min, max
+    else:
+        # Remove parentheses if present
+        inner = params_str.strip('()')
+
+        # Split by comma and take first
+        parts = split_respecting_quotes(inner)
+        if parts:
+            return parse_value(parts[0])
+
+        raise ValueError(f"Could not extract first value from: {params_str}")
+
+
+def extract_first_list_item(list_content):
+    """
+    Extract first item from list content, respecting quoted strings.
+
+    Args:
+        list_content: String like '"item1", "item2"' or '1, 2, 3'
+
+    Returns:
+        First item as string
+    """
+    current = []
+    in_quotes = False
+    quote_char = None
+    depth = 0  # Track nested brackets/parentheses
+
+    for char in list_content:
+        # Track quotes
+        if char in ['"', "'"]:
+            if not in_quotes:
+                in_quotes = True
+                quote_char = char
+            elif char == quote_char:
+                in_quotes = False
+                quote_char = None
+
+        # Track nesting
+        elif not in_quotes:
+            if char in ['[', '(']:
+                depth += 1
+            elif char in [']', ')']:
+                depth -= 1
+            elif char == ',' and depth == 0:
+                # Found separator at top level - return current item
+                return ''.join(current).strip()
+
+        current.append(char)
+
+    # Return accumulated item
+    return ''.join(current).strip()
+
+
+def split_respecting_quotes(text):
+    """
+    Split by comma but respect quoted strings.
+
+    Args:
+        text: String to split
+
+    Returns:
+        List of parts
+    """
+    parts = []
+    current = []
+    in_quotes = False
+    quote_char = None
+
+    for char in text + ',':  # Add comma to trigger last part
+        if char in ['"', "'"]:
+            if not in_quotes:
+                in_quotes = True
+                quote_char = char
+            elif char == quote_char:
+                in_quotes = False
+                quote_char = None
+        elif char == ',' and not in_quotes:
+            part = ''.join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            continue
+
+        current.append(char)
+
+    return parts
+
+
+def parse_value(value_str):
+    """
+    Parse a single value (string, int, float, or path).
+
+    Args:
+        value_str: String representation of value
+
+    Returns:
+        Parsed value (str, int, or float)
+    """
+    value_str = value_str.strip()
+
+    # Remove quotes if present
+    if (value_str.startswith('"') and value_str.endswith('"')) or \
+            (value_str.startswith("'") and value_str.endswith("'")):
+        return value_str[1:-1]
+
+    # Try to parse as number
+    try:
+        # Try int first
+        if '.' not in value_str and 'e' not in value_str.lower():
+            return int(value_str)
+        else:
+            return float(value_str)
+    except ValueError:
+        # Return as string (could be a path or identifier)
+        return value_str
 
 
 def merge_pretraining_finetuning_configs(pretraining_cfg, finetuning_cfg, output_path=None):
@@ -666,6 +1014,23 @@ def get_finetuning_local_dir(checkpoint_path, date_str):
 
     return local_dir, pretrained_trial_id
 
+
+def clean_loaded_cfg(loaded_cfg):
+
+    # ✅ FIX: Remove opt.config_file_path from loaded_cfg
+    # This field is not needed in fine-tuning and causes parsing issues
+    if 'tune_config' in loaded_cfg and 'opt.config_file_path' in loaded_cfg['tune_config']:
+        print("⚠️  Removing 'opt.config_file_path' from pretrained config (not needed for fine-tuning)")
+        del loaded_cfg['tune_config']['opt.config_file_path']
+
+    # Also remove from opt section if present
+    if 'opt' in loaded_cfg and 'config_file_path' in loaded_cfg['opt']:
+        del loaded_cfg['opt']['config_file_path']
+
+    # Now safe to extract config
+    _, cfg_pre = extract_config(cfg_path=None, cfg=loaded_cfg)
+
+    return loaded_cfg
 
 '''
 

@@ -36,8 +36,8 @@ def main(args):
     print("📌 FREEZING CONFIG")
     print("=" * 80)
 
-    cfg_frozen = OmegaConf.to_container(cfg, resolve=True)
-    cfg = OmegaConf.create(cfg_frozen)
+    #cfg_frozen = OmegaConf.to_container(cfg, resolve=True)
+    #cfg = OmegaConf.create(cfg_frozen)
 
     #frozen_config_path = os.path.join('/tmp', f'frozen_config_{args.project_name}_{date_str}.yaml')
     #OmegaConf.save(cfg, frozen_config_path)
@@ -173,7 +173,7 @@ if __name__ == "__main__":
                         help="Config file name")
     parser.add_argument("--num_samples", default=100, type=int,
                         help="Number of trials to run")
-    parser.add_argument("--wandb", default=1, type=int,
+    parser.add_argument("--wandb", default=0, type=int,
                         help="Enable W&B logging (0/1)")
     parser.add_argument("--project_name", default='conv_ae2D_CMG_scratch',
                         help="W&B project name")
@@ -182,7 +182,7 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_key",
                         default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
                         help="W&B API key")
-    parser.add_argument("--debug_mode", default=0, type=int,
+    parser.add_argument("--debug_mode", default=1, type=int,
                         help="Run single trial for debugging (0/1)")
 
     args = parser.parse_args()

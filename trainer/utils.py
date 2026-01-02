@@ -567,8 +567,7 @@ def validate_one_epoch(
             model=model,
             metric_dataloader=metric_loader,
             device=device,
-            external_normal_errors=all_errors,
-            compare_external_with_loader=False,
+            external_normal_errors=None,
             num_thresh=num_thresholds,
             epsilon=1e-5,
             desc=f"Testing anomalies ({use_error})",
@@ -605,7 +604,6 @@ def test_anomaly_step(
     metric_dataloader,
     device="cuda",
     external_normal_errors=None,
-    compare_external_with_loader=False,
     num_thresh=100,
     epsilon=1e-5,
     desc="Testing anomalies",
@@ -616,8 +614,9 @@ def test_anomaly_step(
     model.eval()
     anomaly_errors_list = []
     anomaly_masks_list = []
-    #normal_errors_list = [] if external_normal_errors is None or compare_external_with_loader else None
-    normal_errors_list = []
+    # ✅ FIX: Inizializza a None se external non è passato
+    should_compute_normal_errors = (external_normal_errors is None)
+    normal_errors_list = [] if should_compute_normal_errors else None
 
     normal_running_sum = 0.0
     normal_running_count = 0
@@ -662,7 +661,7 @@ def test_anomaly_step(
             anom_bar.update(1)
 
         # Normals
-        if is_norm.any() and normal_errors_list is None:
+        if is_norm.any() and should_compute_normal_errors:
             x_norm, target_norm = x[is_norm], target[is_norm]
             recon = model(x_norm)
 
@@ -690,17 +689,16 @@ def test_anomaly_step(
     # ==============================
     # 2) NORMAL ERROR SOURCE
     # ==============================
-    if external_normal_errors is not None:
+    if should_compute_normal_errors:
+        # ✅ Calcolati dal loader
+        normal_errors_all = torch.cat(normal_errors_list, dim=0)
+        normal_error_source = "loader"
+    else:
+        # ✅ Usati quelli esterni
         if last_layer == "Conv2d":
             external_normal_errors = torch.squeeze(external_normal_errors, (1))
 
         normal_errors_all = external_normal_errors.cpu()
-        normal_error_source = "external"
-        normal_loader_all = torch.cat(normal_errors_list, dim=0) if compare_external_with_loader else None
-    else:
-        normal_errors_all = torch.cat(normal_errors_list, dim=0)
-        normal_loader_all = None
-        normal_error_source = "loader"
 
     # ==============================
     # 3) SAMPLE NORMAL SEQUENCES
@@ -711,7 +709,6 @@ def test_anomaly_step(
 
     np.random.seed(seed)
     idx_main = np.random.permutation(normal_errors_all.shape[0])[:N_norm_needed]
-    normal_errors_all = normal_errors_all if normal_errors_all is not None else normal_errors_list
     normal_errors = normal_errors_all[idx_main]
 
     print(f"\n[INFO] Selected anomalous sequences: {N_anom}")
