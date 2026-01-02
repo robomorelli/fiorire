@@ -803,23 +803,21 @@ def extract_sequences_from_indices(df, indices, seq_len, feature_columns):
 
 def get_transform(cfg):
     # Define the dataset name to apply specific transformations
-    if cfg.dataset.name in fiorire_family:
-        if cfg.model.name == "conv_ae1D":
-            transform = T.Compose([
-                T.ToTensor(),
-                Lambda(lambda x: x.permute((0, 2, 1))),
-                Lambda(lambda x: x.squeeze(0))])
-        elif cfg.model.name == 'conv_ae2D':
-            transform = T.Compose([
-                T.ToTensor(),
-                Lambda(lambda x: x.permute((0, 2, 1)))])
-        else:
-            transform = T.Compose([
-                T.ToTensor(),
-                Lambda(lambda x: x.squeeze(0))  # Removes channel dim added by ToTensor
-            ])
+
+    if cfg.model.name == "conv_ae1D":
+        transform = T.Compose([
+            T.ToTensor(),
+            Lambda(lambda x: x.permute((0, 2, 1))),
+            Lambda(lambda x: x.squeeze(0))])
+    elif cfg.model.name == 'conv_ae2D':
+        transform = T.Compose([
+            T.ToTensor(),
+            Lambda(lambda x: x.permute((0, 2, 1)))])
     else:
-        raise ValueError(f"Unsupported dataset name: {cfg.dataset.name}")
+        transform = T.Compose([
+            T.ToTensor(),
+            Lambda(lambda x: x.squeeze(0))  # Removes channel dim added by ToTensor
+        ])
 
     return transform
 
