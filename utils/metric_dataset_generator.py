@@ -78,6 +78,7 @@ def generate_and_save_metric_dataset(
     print(f"\n   ✓ Received clean sequences: {clean_sequences.shape}")
 
     # Create filename
+    model_name = cfg.model.get('name', 'unknown_model')
     dataset_name = cfg.dataset.get('name', 'dataset')
     exp_name = cfg.opt.get('exp_name', 'experiment')
     seed = cfg.opt.get('seed', 42)
@@ -95,7 +96,7 @@ def generate_and_save_metric_dataset(
 
     # Build filename with suffix
     scale_suffix = "" if predicted_is_standardized else "_original"
-    filename = f"metric_{exp_name}_{dataset_name}_{strategy}_seed{seed}{scale_suffix}_{cfg.opt.corruption_config.delta_mean}.pt"
+    filename = f"metric_{model_name}_{exp_name}_{dataset_name}_{strategy}_seed{seed}{scale_suffix}_{cfg.opt.corruption_config.delta_mean}.pt"
     filepath = os.path.join(output_dir, filename)
 
     # ✅ Check if already exists

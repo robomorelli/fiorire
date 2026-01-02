@@ -236,7 +236,7 @@ ssh $MASTER_NODE "
   cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
 
   # Build command - CONFIG_FILE is ALWAYS passed (validated above)
-  CMD=\"python \$MODEL_CONFIG_PATH --address $REDIS_ADDRESS --password $REDIS_PASSWORD\"
+  CMD=\"python main.py --address $REDIS_ADDRESS --password $REDIS_PASSWORD\"
   CMD+=\" --config_file $CONFIG_FILE\"
   CMD+=\" --debug_mode $DEBUG\"  # ✅ ALWAYS pass debug_mode
 
