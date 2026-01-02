@@ -193,13 +193,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fine-tuning with Ray Tune")
     parser.add_argument("--address", default='10.141.1.28:6379', help="Ray cluster address")
     parser.add_argument("--password", default=None, help="Ray cluster password")
-    parser.add_argument("--config_file", default='conv_ae2D_ft_MGM',
+    parser.add_argument("--config_file", default='conv_ae2D_CMG_ft',
                         help="Fine-tuning config file")
     parser.add_argument("--num_samples", default=100, type=int,
                         help="Number of trials")
     parser.add_argument("--wandb", default=0, type=int,
                         help="Enable W&B logging (0/1)")
-    parser.add_argument("--project_name", default='fiorire1_2D_ft',
+    parser.add_argument("--project_name", default='conv2D_CMG_ft',
                         help="W&B project name")
     parser.add_argument("--entity", default='robmorelli',
                         help="W&B entity")
