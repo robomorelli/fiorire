@@ -126,7 +126,7 @@ class Trainer(tune.Trainable):
 
         # ✅ 10. Load metric dataset with standardization verification
         self.metrics_loader = None  # Initialize to None
-        metric_dataset_path = shared_config.get('metric_loader_path')
+        metric_dataset_path, self.metric_dataset_path = shared_config.get('metric_loader_path'), shared_config.get('metric_loader_path')
 
         if self.cfg.opt.evaluate_metrics and metric_dataset_path and os.path.exists(metric_dataset_path):
             print(f"\n📊 Loading metric dataset...")
@@ -327,6 +327,7 @@ class Trainer(tune.Trainable):
             'parameters_number': self.parameters_number,
             'param_conf': self.parameters_number,
             'metric_score': self.val_results if "metric_score" in self.val_results else None,
+            'metric_dataset_path': self.metric_dataset_path,
             "indices": self.val_results.get("indices", None),
         }, checkpoint_path)
         return checkpoint_path
