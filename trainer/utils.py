@@ -523,6 +523,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train
 
 @torch.no_grad()
 def validate_one_epoch(
+    cfg,
     model,
     dataloader: Optional[torch.utils.data.DataLoader],
     metric_loader: Optional[torch.utils.data.DataLoader],
@@ -559,6 +560,12 @@ def validate_one_epoch(
         "val_loss": epoch_loss / len(dataloader),
     }
 
+    if cfg.opt.get('use_val_normal_errors', 0) and cfg.dataset.get('val_overlap', 0) == 0 \
+        and cfg.opt.get('anomaly_strategy', None) == "corrupt_validation" and cfg.opt.corruption_config.get('corruption_ratio', None) == 1:
+        print('USING NORMAL ERRORS FROM VAL')
+    else:
+        all_errors = None
+
     # Optionally evaluate anomaly detection metrics
     if evaluate_metrics:
         print("\n[INFO] Evaluating anomaly detection metrics...with error =", use_error)
@@ -567,7 +574,7 @@ def validate_one_epoch(
             model=model,
             metric_dataloader=metric_loader,
             device=device,
-            external_normal_errors=None,
+            external_normal_errors=all_errors,
             num_thresh=num_thresholds,
             epsilon=1e-5,
             desc=f"Testing anomalies ({use_error})",
@@ -600,21 +607,39 @@ def validate_one_epoch(
 
 @torch.no_grad()
 def test_anomaly_step(
-    model,
-    metric_dataloader,
-    device="cuda",
-    external_normal_errors=None,
-    num_thresh=100,
-    epsilon=1e-5,
-    desc="Testing anomalies",
-    normal_anomalies_ratio=1,
-    seed=123,
-    use_error="abs"  # "abs" = |x - y|, "se" = (x - y)^2
+        model,
+        metric_dataloader,
+        device="cuda",
+        external_normal_errors=None,
+        num_thresh=100,
+        epsilon=1e-5,
+        desc="Testing anomalies",
+        normal_anomalies_ratio=1,
+        seed=123,
+        use_error="abs"
 ):
+    """
+    Compute anomaly detection metrics with comprehensive NaN/Inf checking.
+
+    Args:
+        model: The trained model
+        metric_dataloader: DataLoader with metric dataset (normal + anomalies)
+        device: Device to run on
+        external_normal_errors: Pre-computed normal errors (optional)
+        num_thresh: Number of thresholds (deprecated, using Youden's index)
+        epsilon: Small constant for normalization stability
+        desc: Progress bar description
+        normal_anomalies_ratio: Ratio of normal to anomaly sequences
+        seed: Random seed for sampling
+        use_error: "abs" or "se" for error computation
+
+    Returns:
+        metrics_dict: Dictionary with all computed metrics
+    """
     model.eval()
     anomaly_errors_list = []
     anomaly_masks_list = []
-    # ✅ FIX: Inizializza a None se external non è passato
+
     should_compute_normal_errors = (external_normal_errors is None)
     normal_errors_list = [] if should_compute_normal_errors else None
 
@@ -623,27 +648,54 @@ def test_anomaly_step(
     anom_running_sum = 0.0
     anom_running_count = 0
 
+    # ✅ DIAGNOSTIC counters
+    nan_count_recon = 0
+    nan_count_errors = 0
+
     normal_bar = tqdm(total=0, position=0, leave=True, desc="Normals")
-    anom_bar   = tqdm(total=0, position=1, leave=True, desc="Anomalies")
+    anom_bar = tqdm(total=0, position=1, leave=True, desc="Anomalies")
 
     model_type, last_layer = infer_model_type(model)
+
+    print(f"\n[TEST_ANOMALY] Starting - use_error: {use_error}, epsilon: {epsilon}")
 
     # ==============================
     # 1) PASS THROUGH DATALOADER
     # ==============================
-    for batch in tqdm(metric_dataloader, desc=desc, position=2):
+    for batch_idx, batch in enumerate(tqdm(metric_dataloader, desc=desc, position=2)):
         x, target, mask, *_ = batch
         x, target = x.to(device), target.to(device)
 
         is_anom = mask.view(mask.size(0), -1).sum(dim=1) > 0
         is_norm = ~is_anom
 
+        # ==================
         # Anomalies
+        # ==================
         if is_anom.any():
             x_anom, target_anom, mask_anom = x[is_anom], target[is_anom], mask[is_anom]
             recon = model(x_anom)
 
+            # ✅ CHECK: Reconstruction (anomalies)
+            if torch.isnan(recon).any() or torch.isinf(recon).any():
+                nan_count_recon += 1
+                if nan_count_recon == 1:
+                    print(f"\n⚠️  [TEST_ANOMALY] NaN/Inf in RECONSTRUCTION at batch {batch_idx}!")
+                    print(f"   - Type: Anomalies")
+                    print(f"   - NaN: {torch.isnan(recon).sum().item()}")
+                    print(f"   - Inf: {torch.isinf(recon).sum().item()}")
+
             err_anom = compute_errors(target_anom, recon, error_type=use_error).cpu()
+
+            # ✅ CHECK: Errors (anomalies)
+            if torch.isnan(err_anom).any() or torch.isinf(err_anom).any():
+                nan_count_errors += 1
+                if nan_count_errors == 1:
+                    print(f"\n⚠️  [TEST_ANOMALY] NaN/Inf in ERRORS at batch {batch_idx}!")
+                    print(f"   - Type: Anomalies")
+                    print(f"   - Error type: {use_error}")
+                    print(f"   - NaN: {torch.isnan(err_anom).sum().item()}")
+                    print(f"   - Inf: {torch.isinf(err_anom).sum().item()}")
 
             if last_layer == "Conv2d":
                 err_anom = torch.squeeze(err_anom, (1))
@@ -651,7 +703,7 @@ def test_anomaly_step(
             anomaly_errors_list.append(err_anom)
             anomaly_masks_list.append(mask_anom.cpu())
 
-            # update progress
+            # Update progress
             batch_mean = err_anom.mean().item()
             anom_running_sum += err_anom.sum().item()
             anom_running_count += err_anom.numel()
@@ -660,18 +712,40 @@ def test_anomaly_step(
                                   "global_mean": f"{global_mean:.6f}"})
             anom_bar.update(1)
 
+        # ==================
         # Normals
+        # ==================
         if is_norm.any() and should_compute_normal_errors:
             x_norm, target_norm = x[is_norm], target[is_norm]
             recon = model(x_norm)
 
+            # ✅ CHECK: Reconstruction (normals)
+            if torch.isnan(recon).any() or torch.isinf(recon).any():
+                nan_count_recon += 1
+                if nan_count_recon == 1:
+                    print(f"\n⚠️  [TEST_ANOMALY] NaN/Inf in RECONSTRUCTION at batch {batch_idx}!")
+                    print(f"   - Type: Normals")
+                    print(f"   - NaN: {torch.isnan(recon).sum().item()}")
+                    print(f"   - Inf: {torch.isinf(recon).sum().item()}")
+
             err_norm = compute_errors(target_norm, recon, error_type=use_error).cpu()
 
+            # ✅ CHECK: Errors (normals)
+            if torch.isnan(err_norm).any() or torch.isinf(err_norm).any():
+                nan_count_errors += 1
+                if nan_count_errors == 1:
+                    print(f"\n⚠️  [TEST_ANOMALY] NaN/Inf in ERRORS at batch {batch_idx}!")
+                    print(f"   - Type: Normals")
+                    print(f"   - Error type: {use_error}")
+                    print(f"   - NaN: {torch.isnan(err_norm).sum().item()}")
+                    print(f"   - Inf: {torch.isinf(err_norm).sum().item()}")
+
             if last_layer == "Conv2d":
-                err_norm = torch.squeeze(err_norm , (1))
+                err_norm = torch.squeeze(err_norm, (1))
 
             normal_errors_list.append(err_norm)
 
+            # Update progress
             batch_mean = err_norm.mean().item()
             normal_running_sum += err_norm.sum().item()
             normal_running_count += err_norm.numel()
@@ -683,22 +757,26 @@ def test_anomaly_step(
     normal_bar.close()
     anom_bar.close()
 
+    print(f"\n[TEST_ANOMALY] Forward pass complete:")
+    print(f"   - Batches with NaN/Inf reconstruction: {nan_count_recon}")
+    print(f"   - Batches with NaN/Inf errors: {nan_count_errors}")
+
     anomaly_errors = torch.cat(anomaly_errors_list, dim=0)  # [N_anom, C, L]
-    anomaly_masks  = torch.cat(anomaly_masks_list, dim=0)   # [N_anom, 1, L]
+    anomaly_masks = torch.cat(anomaly_masks_list, dim=0)  # [N_anom, 1, L]
 
     # ==============================
     # 2) NORMAL ERROR SOURCE
     # ==============================
     if should_compute_normal_errors:
-        # ✅ Calcolati dal loader
+        # From loader
         normal_errors_all = torch.cat(normal_errors_list, dim=0)
         normal_error_source = "loader"
     else:
-        # ✅ Usati quelli esterni
+        # From external
         if last_layer == "Conv2d":
             external_normal_errors = torch.squeeze(external_normal_errors, (1))
-
         normal_errors_all = external_normal_errors.cpu()
+        normal_error_source = "external"
 
     # ==============================
     # 3) SAMPLE NORMAL SEQUENCES
@@ -739,22 +817,44 @@ def test_anomaly_step(
     # ==============================
     # 5) NORMALIZATION
     # ==============================
-    normal_perm  = normal_errors.permute(0, 2, 1)  # [N, L, C]
+    normal_perm = normal_errors.permute(0, 2, 1)  # [N, L, C]
     anomaly_perm = anomaly_errors.permute(0, 2, 1)
 
     C = normal_perm.shape[2]
 
     flat_norm = normal_perm.reshape(-1, C).float()
     normalization_factor = torch.quantile(flat_norm, 0.5, dim=0)
+
+    # ✅ CHECK: Normalization factor
+    if torch.isnan(normalization_factor).any() or torch.isinf(normalization_factor).any():
+        print(f"\n⚠️  [NORMALIZATION] NaN/Inf in NORMALIZATION_FACTOR!")
+        print(f"   - NaN: {torch.isnan(normalization_factor).sum().item()}")
+        print(f"   - Inf: {torch.isinf(normalization_factor).sum().item()}")
+        print(f"   - Values: {normalization_factor}")
+
     norm = normalization_factor.view(1, 1, C) + epsilon
 
-    normal_norm  = normal_perm  / norm
+    normal_norm = normal_perm / norm
     anomaly_norm = anomaly_perm / norm
+
+    # ✅ CHECK 1: Post-normalization NaN/Inf
+    nan_normal = torch.isnan(normal_norm).sum().item()
+    inf_normal = torch.isinf(normal_norm).sum().item()
+    nan_anomaly = torch.isnan(anomaly_norm).sum().item()
+    inf_anomaly = torch.isinf(anomaly_norm).sum().item()
+
+    if nan_normal > 0 or inf_normal > 0 or nan_anomaly > 0 or inf_anomaly > 0:
+        print(f"\n⚠️  [NORMALIZATION] NaN/Inf detected after normalization!")
+        print(f"   - Normal errors:  NaN={nan_normal}, Inf={inf_normal}")
+        print(f"   - Anomaly errors: NaN={nan_anomaly}, Inf={inf_anomaly}")
+        print(
+            f"   - Normalization factor: min={normalization_factor.min().item():.6f}, max={normalization_factor.max().item():.6f}")
+        print(f"   - Epsilon: {epsilon}")
 
     masks_norm = torch.zeros((normal_norm.shape[0], anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int)
 
     all_errors = torch.cat([normal_norm, anomaly_norm], dim=0)  # [N, L, C]
-    all_masks  = torch.cat([masks_norm, anomaly_masks], dim=0)   # [N, L, 1]
+    all_masks = torch.cat([masks_norm, anomaly_masks], dim=0)  # [N, L, 1]
 
     N, T, C = all_errors.shape
 
@@ -771,16 +871,28 @@ def test_anomaly_step(
     flat_scores = val_anomaly_scores.flatten().numpy()
     flat_labels = val_labels.flatten().numpy()
 
+    # ✅ CHECK 2: Flat scores NaN/Inf (before ROC)
+    nan_scores = np.isnan(flat_scores).sum()
+    inf_scores = np.isinf(flat_scores).sum()
+    total_scores = len(flat_scores)
+
+    if nan_scores > 0 or inf_scores > 0:
+        print(f"\n⚠️  [SCORES] NaN/Inf detected in anomaly scores!")
+        print(f"   - NaN: {nan_scores} / {total_scores} ({100 * nan_scores / total_scores:.2f}%)")
+        print(f"   - Inf: {inf_scores} / {total_scores} ({100 * inf_scores / total_scores:.2f}%)")
+        print(f"   - This will corrupt ROC/AUC calculation!")
+
+    # Compute ROC curve
     fpr, tpr, thresholds = roc_curve(flat_labels, flat_scores)
     roc_auc = auc(fpr, tpr)
 
     # ==============================
-    # STIMA F1 DA TPR/FPR
+    # F1 ESTIMATION FROM TPR/FPR
     # ==============================
     n_pos = int(flat_labels.sum())
     n_neg = len(flat_labels) - n_pos
 
-    # Prendiamo TPR e FPR di Youden
+    # Use Youden's index
     ix_youden = np.argmax(tpr - fpr)
     rec_est = tpr[ix_youden]
     fpr_val = fpr[ix_youden]
@@ -788,24 +900,25 @@ def test_anomaly_step(
     prec_est = (rec_est * n_pos) / (rec_est * n_pos + fpr_val * n_neg + 1e-12)
     f1_est = 2 * (prec_est * rec_est) / (prec_est + rec_est + 1e-12)
 
-    # Vecchia stima F1 empirica basata sulle soglie (commentata)
-    # candidate_thresholds = np.quantile(flat_scores, np.linspace(0, 1, num_thresh))
-    # f1s = [f1_score(flat_labels, (flat_scores >= t).astype(int)) for t in candidate_thresholds]
-    # ix_f1 = np.argmax(f1s)
+    print(f"\n[TEST_ANOMALY] Metrics computed successfully:")
+    print(f"   - ROC AUC: {roc_auc:.4f}")
+    print(f"   - F1: {f1_est:.4f}")
+    print(f"   - TPR: {rec_est:.4f}")
+    print(f"   - FPR: {fpr_val:.4f}")
 
     # ==============================
     # 7) BUILD RETURN OBJECT
     # ==============================
     metrics_dict = {
         "metrics_results": {
-            "val_anomaly_scores": val_anomaly_scores,      # [N, T]
-            "val_labels": val_labels,                      # [N, T]
+            "val_anomaly_scores": val_anomaly_scores,  # [N, T]
+            "val_labels": val_labels,  # [N, T]
 
             "val_roc_auc": roc_auc,
             "val_fpr": fpr_val,
             "val_tpr": rec_est,
             "val_best_thresh_youden": thresholds[ix_youden],
-            "val_best_thresh_f1": None,  # non usiamo più soglie empiriche
+            "val_best_thresh_f1": None,  # deprecated
             "val_f1_score": f1_est,
             "val_precision": prec_est,
             "val_recall": rec_est,
@@ -817,6 +930,9 @@ def test_anomaly_step(
         "sampled_normal_indices": idx_main,
         "normal_error_source": normal_error_source
     }
+
+    return metrics_dict
+
 
     '''
     # Flatten per timestep

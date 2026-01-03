@@ -822,7 +822,7 @@ def get_transform(cfg):
     return transform
 
 
-def create_dataloaders(train_dataset, val_dataset, cfg):
+def create_dataloaders(cfg, train_dataset, val_dataset, train_sampler, val_sampler):
     """
     Create train and validation dataloaders from datasets.
 
@@ -840,17 +840,17 @@ def create_dataloaders(train_dataset, val_dataset, cfg):
     trainloader = DataLoader(
         train_dataset,
         batch_size=cfg.opt.batch_size,
-        shuffle=cfg.dataset.get('shuffle_train', True),
-        num_workers=cfg.opt.get('num_workers', 0),
-        pin_memory=True if cfg.resources.gpu_trial else False
+        num_workers=cfg.resources.get('cpu_trial', 0),
+        sampler=train_sampler
+        #pin_memory=True if cfg.resources.gpu_trial else False
     )
 
     valloader = DataLoader(
         val_dataset,
         batch_size=cfg.opt.batch_size,
-        shuffle=False,
-        num_workers=cfg.opt.get('num_workers', 0),
-        pin_memory=True if cfg.resources.gpu_trial else False
+        num_workers=cfg.resources.get('cpu_trial', 0),
+        sampler=val_sampler
+        #pin_memory=True if cfg.resources.gpu_trial else False
     )
 
     return trainloader, valloader

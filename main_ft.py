@@ -114,7 +114,7 @@ def main(args):
             entity=args.entity,
             log_config=True,
             api_key=args.wandb_key,
-            upload_checkpoints=True
+            upload_checkpoints=False
         )]
     else:
         callbacks = []

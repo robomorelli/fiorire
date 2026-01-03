@@ -12,6 +12,8 @@ dataloader/
 # C extensions
 *.so
 
+delete_articacts.py
+
 # Distribution / packaging
 .Python
 build/

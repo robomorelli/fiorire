@@ -85,6 +85,8 @@ def apply_scaler(df, scaler, feature_columns):
     df_scaled = df.copy()
 
     # Transform
+    if scaler is None:
+        raise Exception('Scaler is None object')
     scaled_values = scaler.transform(df[feature_columns].values)
 
     # Assign back column by column (pandas-safe)

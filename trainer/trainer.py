@@ -13,6 +13,7 @@ from utils.load_model import get_model
 from utils.load_dataset import (
     load_and_preprocess_dataframe,
     create_datasets_from_splits,  # ← UPDATED
+    create_dataloaders
 )
 from preprocessing.scaling import apply_scaler
 from trainer.utils import (
@@ -41,6 +42,7 @@ class Trainer(tune.Trainable):
 
         # ✅ 3. Get parameters for this trial
         overlap = self.cfg.dataset.get('perc_overlap', 0)
+        val_overlap = self.cfg.dataset.get('val_overlap', 0)
         seq_len = shared_config['seq_len']
         self.cfg.dataset.feats, feature_columns = shared_config['feature_columns'], shared_config['feature_columns']
         self.cfg.dataset.n_features = len(feature_columns)
@@ -58,12 +60,12 @@ class Trainer(tune.Trainable):
 
         # ✅ 5. Compute final indices with overlap
         train_indices = compute_indices_with_overlap(train_base_indices, overlap, seq_len)
-        val_indices = compute_indices_with_overlap(val_base_indices, 0, seq_len)
+        val_indices = compute_indices_with_overlap(val_base_indices, val_overlap, seq_len)
         self.train_indices, self.val_indices = train_indices, val_indices
 
         print(f"   ✓ Indices with overlap:")
         print(f"      - train_indices: {len(train_indices)}")
-        print(f"      - val_indices: {len(val_indices)} NOTE: OVERLAP IS 0 FOR VALIDATION SEQUENCES")
+        print(f"      - val_indices: {len(val_indices)} NOTE: OVERLAP IS {val_overlap} FOR VALIDATION SEQUENCES")
 
         # ✅ 6. Load DataFrame
         df = load_and_preprocess_dataframe(self.cfg)
@@ -111,17 +113,7 @@ class Trainer(tune.Trainable):
         val_dataset.indices = val_indices
 
         # ✅ 9. Create dataloaders WITH samplers
-        self.trainloader = DataLoader(
-            train_dataset,
-            batch_size=self.cfg.opt.batch_size,
-            sampler=train_sampler
-        )
-
-        self.valloader = DataLoader(
-            val_dataset,
-            batch_size=self.cfg.opt.batch_size,
-            sampler=val_sampler
-        )
+        self.trainloader, self.valloader = create_dataloaders(self.cfg, train_dataset, val_dataset, train_sampler, val_sampler)
 
         print(f"   ✓ Dataloaders created")
 
@@ -230,7 +222,7 @@ class Trainer(tune.Trainable):
                 (self.current_epoch % self.cfg.opt.detect_anomaly_epoch_freq == 0)
         )
 
-        self.val_results, indices = validate_one_epoch(
+        self.val_results, indices = validate_one_epoch(cfg=self.cfg,
             model=self.model, dataloader=self.valloader, metric_loader=self.metrics_loader,
             criterion=self.criterion, device=self.device, desc=f"Epoch {self.current_epoch} [Val]",
             evaluate_metrics=evaluate_metrics, normal_anomalous_ratio=int(self.cfg.opt.get('corruption_ratio', 1)),
