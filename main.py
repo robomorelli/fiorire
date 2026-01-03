@@ -191,7 +191,7 @@ if __name__ == "__main__":
     os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"
 
     # ✅ Initialize Ray (auto-connect to cluster or start local)
-    ray.init(address='auto', ignore_reinit_error=True)
+    ray.init(address='auto')
 
     # Run optimization
     main(args)

@@ -931,7 +931,7 @@ def test_anomaly_step(
         "normal_error_source": normal_error_source
     }
 
-    return metrics_dict
+    return metrics_dict, idx_main
 
 
     '''

@@ -15,7 +15,6 @@ from config import *
 import os
 import shutil
 from ray.tune import Callback
-from ray.air import Checkpoint
 
 class SaveBestMetricCheckpoint(Callback):
     """
