@@ -52,13 +52,15 @@ class Trainer(tune.Trainable):
         print(f"\n📂 Loading data for trial (overlap={overlap})...")
 
         # ✅ 4. Load indices and scaler from DISK (NOT ray.get()!)
-        print(f"   - Loading indices from: {shared_config['indices_path']}")
-        indices_data = np.load(shared_config['indices_path'])
+        self.indices_path = shared_config['indices_path']
+        self.scaler_path = shared_config['scaler_path']
+        print(f"   - Loading indices from: {self.indices_path}")
+        indices_data = np.load(self.indices_path)
         train_base_indices = indices_data['train_indices']
         val_base_indices = indices_data['val_indices']
 
-        print(f"   - Loading scaler from: {shared_config['scaler_path']}")
-        with open(shared_config['scaler_path'], 'rb') as f:
+        print(f"   - Loading scaler from: {self.scaler_path}")
+        with open(self.scaler_path, 'rb') as f:
             self.scaler = pickle.load(f)
 
         print(f"   ✓ Loaded from disk:")
@@ -329,8 +331,8 @@ class Trainer(tune.Trainable):
             'param_conf': self.parameters_number,
             'metric_score': self.val_results if "metric_score" in self.val_results else None,
             'data_path': self.data_path,
-            'train_indices': self.train_indices,
-            'val_indices': self.val_indices,
+            'indices_path': self.indices_path,
+            'scaler_path': self.scaler_path,
             'metric_dataset_path': self.metric_dataset_path,
             "indices": self.val_results.get("indices", None),
         }, checkpoint_path)

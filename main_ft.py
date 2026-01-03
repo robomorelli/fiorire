@@ -19,6 +19,17 @@ from config import *
 def main(args):
     """Main fine-tuning function with shared datasets."""
 
+    print("\n" + "=" * 80)
+    print("🔍 COMMAND LINE ARGUMENTS")
+    print("=" * 80)
+    print(f"   - config_file: {args.config_file}")
+    print(f"   - project_name: {args.project_name}")
+    print(f"   - n_gpus: {args.n_gpus}")
+    print(f"   - n_cpus: {args.n_cpus}")
+    print(f"   - num_samples: {args.num_samples}")
+    print(f"   - debug_mode: {args.debug_mode}")
+    print("=" * 80)
+
     # Get date
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
