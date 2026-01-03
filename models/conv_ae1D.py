@@ -20,7 +20,8 @@ class Encoder1D(nn.Module):
                  bottleneck_act=None,
                  compression_factor=2,
                  seq_length=16,
-                 flattened=True):
+                 flattened=True,
+                 compression_type='on_features'):
         super().__init__()
         self.in_channels = in_channels
         self.base_filters = base_filters
@@ -30,6 +31,7 @@ class Encoder1D(nn.Module):
         self.pool_ks = pool_ks
         self.pool_stride = pool_stride
         self.compression_factor = compression_factor
+        self.compression_type = compression_type
         self.seq_length = seq_length
         self.act = activation
         self.bottleneck_act = bottleneck_act
@@ -60,7 +62,7 @@ class Encoder1D(nn.Module):
         # Compute flattened size after bottleneck
         bottleneck_conv = nn.Conv1d(in_f, self.bottleneck_out_channels, kernel_size=1)
         self.flattened_size, self.seq_enc = self._get_final_flattened_size(bottleneck_conv=bottleneck_conv)
-        self.latent_dim = int(self.flattened_size // self.compression_factor)
+        self.latent_dim = int(self.flattened_size // self.compression_factor) if  self.compression_type == 'on_features' else int((self.h*self.w // self.compression_factor))
         self.bottleneck = bottleneck1D(bottleneck_conv=bottleneck_conv, activation=self.act,
                                        flattened=self.flattened, flattened_size=self.flattened_size, latent_dim=self.latent_dim,
                                        bottleneck_activation=self.bottleneck_act, batch_norm=True)
@@ -254,7 +256,8 @@ class CONV_AE1D(nn.Module):
         self.increasing = model_cfg.increasing
         self.dilation = model_cfg.dilation
         self.flattened = model_cfg.flattened
-        self.compression_factor = model_cfg.compression_factor
+        self.compression_factor = model_cfg.compression_factor if model_cfg.get('compression_factor_on_inputs', None) is None else model_cfg.get('compression_factor')
+        self.compression_type = 'on_inputs' if model_cfg.get('compression_factor_on_inputs', None) is not None else 'on_features'
         self.seq_length = cfg.dataset.seq_in_length
         self.pool_ks = 2
         self.pool_stride = 2
@@ -272,12 +275,14 @@ class CONV_AE1D(nn.Module):
             activation=self.act,
             flattened=self.flattened,
             compression_factor=self.compression_factor,
-            bottleneck_act = self.bottleneck_act
+            bottleneck_act = self.bottleneck_act,
+            compression_type=self.compression_type
         )
 
         self.flattened_size = self.encoder.flattened_size
         self.cfg.model.flattened_size = self.flattened_size
-        self.latent_dim = int(self.flattened_size // self.compression_factor)
+        self.latent_dim = self.encoder.latent_dim
+        #self.latent_dim = int(self.flattened_size // self.compression_factor)
 
         # Decoder
         self.decoder = Decoder1D(
