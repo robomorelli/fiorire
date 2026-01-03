@@ -131,12 +131,30 @@ def main(args):
         callbacks = []
 
     # Resources per trial
-    cfg.resources.gpu_trial = args.n_gpus
-    cfg.resources.cpu_trial = args.n_cpus
+    gpu_per_trial = args.n_gpus // args.trials_per_node
+    cpu_per_trial = args.n_cpus // args.trials_per_node
+
+    # Ensure at least some resources per trial
+    if gpu_per_trial == 0 and args.n_gpus > 0:
+        print(f"\n⚠️  WARNING: Not enough GPUs for {args.trials_per_node} trials!")
+        print(f"   - Available GPUs per node: {args.n_gpus}")
+        print(f"   - Requested trials per node: {args.trials_per_node}")
+        print(f"   - Setting gpu_per_trial to fractional: {args.n_gpus / args.trials_per_node:.2f}")
+        gpu_per_trial = args.n_gpus / args.trials_per_node  # Fractional GPU
+
+    if cpu_per_trial == 0:
+        print(f"\n⚠️  WARNING: Not enough CPUs for {args.trials_per_node} trials!")
+        print(f"   - Available CPUs per node: {args.n_cpus}")
+        print(f"   - Requested trials per node: {args.trials_per_node}")
+        cpu_per_trial = 1  # Minimum 1 CPU
+
+    cfg.resources.gpu_trial = gpu_per_trial
+    cfg.resources.cpu_trial = cpu_per_trial
+
     resources_per_trial = {
         "cpu": cfg.resources.cpu_trial,
         "gpu": cfg.resources.gpu_trial
-    } if cfg.resources.gpu_trial != 0 else {"cpu": cfg.resources.cpu_trial}
+    } if cfg.resources.gpu_trial > 0 else {"cpu": cfg.resources.cpu_trial}
 
     # Metrics
     metrics_dataset_available = cfg.opt.get('evaluate_metrics', False)

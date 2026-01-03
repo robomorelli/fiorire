@@ -18,13 +18,14 @@ cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
 NUM_NODES=${num_nodes}
 NUM_GPUS=${num_gpus}
 NUM_CPUS=${num_cpus}
+TRIALS_PER_NODE=${trials_per_node:-1}
 CONFIG_FILE=${config_file}
 NUM_SAMPLES=${num_samples}
 ENTITY=${entity}
 WANDB_KEY=${wandb_key}
 PROJECT_NAME=${project_name}
 WANDB=${wandb}
-DEBUG=${debug:-0}  # ✅ Default: 0 if not set
+DEBUG=${debug:-0}
 
 # ============================================================================
 # CRITICAL VALIDATION: CONFIG_FILE must not be empty
@@ -37,7 +38,7 @@ if [[ -z "$CONFIG_FILE" ]]; then
   echo ""
   echo "PBS variables received:"
   echo "-------------------------------------------"
-  env | grep -E "^(config_file|model_name|num_|entity|wandb|project|debug)" | sort
+  env | grep -E "^(config_file|model_name|num_|entity|wandb|project|debug|trials)" | sort
   echo "-------------------------------------------"
   echo ""
   echo "Possible causes:"
@@ -82,12 +83,13 @@ echo "="*80
 echo "  - Nodes: $NUM_NODES"
 echo "  - GPUs per node: $NUM_GPUS"
 echo "  - CPUs per node: $NUM_CPUS"
+echo "  - Trials per node: $TRIALS_PER_NODE"
 echo "  - Config file: ${CONFIG_FILE} ✅"
 echo "  - Num Samples: ${NUM_SAMPLES:-default}"
 echo "  - Entity: ${ENTITY:-default}"
 echo "  - Project: ${PROJECT_NAME:-default}"
 echo "  - W&B: ${WANDB:-default}"
-echo "  - Debug mode: ${DEBUG} 🐛"  # ✅ Show debug status
+echo "  - Debug mode: ${DEBUG} 🐛"
 echo ""
 
 # ============================================================================
@@ -238,16 +240,17 @@ ssh $MASTER_NODE "
   # Build command - CONFIG_FILE is ALWAYS passed (validated above)
   CMD=\"python main.py --address $REDIS_ADDRESS --password $REDIS_PASSWORD\"
   CMD+=\" --config_file $CONFIG_FILE\"
-  CMD+=\" --debug_mode $DEBUG\"  # ✅ ALWAYS pass debug_mode
+  CMD+=\" --debug_mode $DEBUG\"
+  CMD+=\" --n_gpus $NUM_GPUS\"
+  CMD+=\" --n_cpus $NUM_CPUS\"
+  CMD+=\" --trials_per_node $TRIALS_PER_NODE\"
 
   # Optional arguments
   [[ -n \"$NUM_SAMPLES\" ]] && CMD+=\" --num_samples $NUM_SAMPLES\"
   [[ -n \"$WANDB_KEY\" ]] && CMD+=\" --wandb_key $WANDB_KEY\"
   [[ -n \"$ENTITY\" ]] && CMD+=\" --entity $ENTITY\"
   [[ -n \"$WANDB\" ]] && CMD+=\" --wandb $WANDB\"
-  [[ -n \"$PROJECT_NAME\" ]] && CMD+=\" --project_name $PROJECT_NAME\
-  [[ -n \"$NUM_GPUS\" ]] && CMD+=\" --n_gpus $NUM_GPUS\
-  [[ -n \"$NUM_CPUS\" ]] && CMD+=\" --n_cpus $NUM_CPUS\"
+  [[ -n \"$PROJECT_NAME\" ]] && CMD+=\" --project_name $PROJECT_NAME\"
 
   echo \"\"
   echo \"Full command:\"

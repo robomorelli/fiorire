@@ -18,13 +18,14 @@ cd /davinci-1/home/morellir/artificial_intelligence/repos/fiorire
 NUM_NODES=${num_nodes}
 NUM_GPUS=${num_gpus}
 NUM_CPUS=${num_cpus}
-CONFIG_FILE=${config_file}  # ✅ FIXED: era ${model_name}
+TRIALS_PER_NODE=${trials_per_node:-1}
+CONFIG_FILE=${config_file}
 NUM_SAMPLES=${num_samples}
 ENTITY=${entity}
 WANDB_KEY=${wandb_key}
 PROJECT_NAME=${project_name}
 WANDB=${wandb}
-DEBUG=${debug:-0}  # ✅ Default: 0 if not set
+DEBUG=${debug:-0}
 
 # ============================================================================
 # CRITICAL VALIDATION: CONFIG_FILE must not be empty
@@ -37,19 +38,19 @@ if [[ -z "$CONFIG_FILE" ]]; then
   echo ""
   echo "PBS variables received:"
   echo "-------------------------------------------"
-  env | grep -E "^(config_file|model_name|num_|entity|wandb|project|debug)" | sort
+  env | grep -E "^(config_file|model_name|num_|entity|wandb|project|debug|trials)" | sort
   echo "-------------------------------------------"
   echo ""
   echo "Possible causes:"
-  echo "  1. launch_wrapper.sh didn't pass 'config_file' argument"
+  echo "  1. launch_wrapper_ft.sh didn't pass 'config_file' argument"
   echo "  2. Variable name mismatch in PBS -v list"
   echo "  3. PBS variable not exported correctly"
   echo ""
   echo "Expected variable: config_file=<value>"
   echo "Actual value: config_file='${config_file}'"
   echo ""
-  echo "Please verify launch_wrapper.sh passes:"
-  echo "  sh launch_wrapper.sh ... config_file conv_ae2D_ft"
+  echo "Please verify launch_wrapper_ft.sh passes:"
+  echo "  sh launch_wrapper_ft.sh ... config_file conv_ae2D_ft"
   echo ""
   exit 1
 fi
@@ -82,6 +83,7 @@ echo "="*80
 echo "  - Nodes: $NUM_NODES"
 echo "  - GPUs per node: $NUM_GPUS"
 echo "  - CPUs per node: $NUM_CPUS"
+echo "  - Trials per node: $TRIALS_PER_NODE"
 echo "  - Config file: ${CONFIG_FILE} ✅"
 echo "  - Num Samples: ${NUM_SAMPLES:-default}"
 echo "  - Entity: ${ENTITY:-default}"
@@ -217,7 +219,7 @@ fi
 # ============================================================================
 # Run fine-tuning
 # ============================================================================
-MODEL_CONFIG_PATH="main_ft.py"
+MODEL_CONFIG_PATH="main.py"
 
 echo ""
 echo "="*80
@@ -238,19 +240,26 @@ ssh $MASTER_NODE "
   # Build command - CONFIG_FILE is ALWAYS passed (validated above)
   CMD=\"python main.py --address $REDIS_ADDRESS --password $REDIS_PASSWORD\"
   CMD+=\" --config_file $CONFIG_FILE\"
-  CMD+=\" --debug_mode $DEBUG\"  # ✅ ALWAYS pass debug_mode
+  CMD+=\" --debug_mode $DEBUG\"
+  CMD+=\" --n_gpus $NUM_GPUS\"
+  CMD+=\" --n_cpus $NUM_CPUS\"
+  CMD+=\" --trials_per_node $TRIALS_PER_NODE\"
 
   # Optional arguments
   [[ -n \"$NUM_SAMPLES\" ]] && CMD+=\" --num_samples $NUM_SAMPLES\"
   [[ -n \"$WANDB_KEY\" ]] && CMD+=\" --wandb_key $WANDB_KEY\"
   [[ -n \"$ENTITY\" ]] && CMD+=\" --entity $ENTITY\"
   [[ -n \"$WANDB\" ]] && CMD+=\" --wandb $WANDB\"
-  [[ -n \"$PROJECT_NAME\" ]] && CMD+=\" --project_name $PROJECT_NAME\
-  [[ -n \"$NUM_GPUS\" ]] && CMD+=\" --n_gpus $NUM_GPUS\
-  [[ -n \"$NUM_CPUS\" ]] && CMD+=\" --n_cpus $NUM_CPUS\"
+  [[ -n \"$PROJECT_NAME\" ]] && CMD+=\" --project_name $PROJECT_NAME\"
 
   echo \"\"
   echo \"Full command:\"
   echo \"-------------------------------------------\"
   echo \"\$CMD\"
-  echo \"-----
+  echo \"-------------------------------------------\"
+  echo \"\"
+
+  eval \$CMD
+"
+
+# Ray will be cleaned up by the trap on exit

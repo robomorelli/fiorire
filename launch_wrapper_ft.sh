@@ -8,6 +8,7 @@
 #       num_nodes 2 \
 #       num_gpus 1 \
 #       num_cpus 16 \
+#       trials_per_node 2 \
 #       config_file conv_ae2D_ft \
 #       num_samples 100 \
 #       project_name fiorire1_2D_ft \
@@ -19,13 +20,14 @@
 NUM_NODES=${NUM_NODES:-1}
 NUM_GPUS=${NUM_GPUS:-1}
 NUM_CPUS=${NUM_CPUS:-12}
+TRIALS_PER_NODE=${TRIALS_PER_NODE:-1}
 CONFIG_FILE=""
 NUM_SAMPLES=""
 ENTITY=""
 WANDB=""
 WANDB_KEY=""
 PROJECT_NAME=""
-DEBUG="0"  # ✅ Default: 0 (non-debug mode)
+DEBUG="0"
 
 # Parse named arguments
 while [[ $# -gt 0 ]]; do
@@ -42,6 +44,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     num_cpus)
       NUM_CPUS="$value"
+      shift 2
+      ;;
+    trials_per_node)
+      TRIALS_PER_NODE="$value"
       shift 2
       ;;
     config_file)
@@ -68,7 +74,7 @@ while [[ $# -gt 0 ]]; do
       WANDB_KEY="$value"
       shift 2
       ;;
-    debug)  # ✅ New: debug mode
+    debug)
       DEBUG="$value"
       shift 2
       ;;
@@ -93,6 +99,7 @@ if [[ -z "$CONFIG_FILE" ]]; then
   echo "      num_nodes 2 \\"
   echo "      num_gpus 1 \\"
   echo "      num_cpus 16 \\"
+  echo "      trials_per_node 2 \\"
   echo "      config_file conv_ae2D_ft \\"
   echo "      num_samples 100 \\"
   echo "      project_name my_project_ft \\"
@@ -116,6 +123,9 @@ fi
 if [[ -n "$NUM_CPUS" ]]; then
   PBS_ENV_VARS+="num_cpus=${NUM_CPUS},"
 fi
+if [[ -n "$TRIALS_PER_NODE" ]]; then
+  PBS_ENV_VARS+="trials_per_node=${TRIALS_PER_NODE},"
+fi
 if [[ -n "$CONFIG_FILE" ]]; then
   PBS_ENV_VARS+="config_file=${CONFIG_FILE},"
 fi
@@ -134,7 +144,7 @@ fi
 if [[ -n "$PROJECT_NAME" ]]; then
   PBS_ENV_VARS+="project_name=${PROJECT_NAME},"
 fi
-if [[ -n "$DEBUG" ]]; then  # ✅ Pass debug
+if [[ -n "$DEBUG" ]]; then
   PBS_ENV_VARS+="debug=${DEBUG},"
 fi
 
@@ -184,6 +194,7 @@ echo "  - Config file: ${CONFIG_FILE} ✅"
 echo "  - Nodes: ${NUM_NODES}"
 echo "  - GPUs per node: ${NUM_GPUS}"
 echo "  - CPUs per node: ${NUM_CPUS}"
+echo "  - Trials per node: ${TRIALS_PER_NODE}"
 echo "  - Num Samples: ${NUM_SAMPLES:-default}"
 echo "  - Project: ${PROJECT_NAME:-default}"
 echo "  - Entity: ${ENTITY:-default}"
