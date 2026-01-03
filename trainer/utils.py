@@ -565,7 +565,7 @@ def validate_one_epoch(
         and cfg.opt.get('metric_seq_overlap', 0):
         print('USING NORMAL ERRORS FROM VAL')
     else:
-        print('Comuting normal errors from metric loader')
+        print('Computing normal errors from metric loader')
         all_errors = None
 
     # Optionally evaluate anomaly detection metrics

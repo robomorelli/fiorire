@@ -91,7 +91,7 @@ class Dataset_seq_df(Dataset):
         anomaly_labels = (
             self.df_is_anomaly.iloc[indexes_out, :].values
             if self.df_is_anomaly is not None
-            else np.full((len(indexes_out), 1), np.nan)
+            else np.full((len(indexes_out), 1), -1)
         )
 
         if self.transform is not None:
