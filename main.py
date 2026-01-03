@@ -295,6 +295,8 @@ if __name__ == "__main__":
                             help="Ray cluster password")
         parser.add_argument("--config_file", "-c", default='conv_ae2D_AOC',
                             help="Config file name")
+        parser.add_argument("--trial_per_node", default=1, type=int,
+                            help="trial per node")
         parser.add_argument("--n_gpus", default=1, type=int,
                             help="n gpus per trial")
         parser.add_argument("--n_cpus", default=12, type=int,
