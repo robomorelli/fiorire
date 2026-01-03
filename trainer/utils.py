@@ -561,9 +561,11 @@ def validate_one_epoch(
     }
 
     if cfg.opt.get('use_val_normal_errors', 0) and cfg.dataset.get('val_overlap', 0) == 0 \
-        and cfg.opt.get('anomaly_strategy', None) == "corrupt_validation" and cfg.opt.corruption_config.get('corruption_ratio', None) == 1:
+        and cfg.opt.get('anomaly_strategy', None) == "corrupt_validation" and cfg.opt.corruption_config.get('corruption_ratio', None) == 1 \
+        and cfg.opt.get('metric_seq_overlap', 0):
         print('USING NORMAL ERRORS FROM VAL')
     else:
+        print('Comuting normal errors from metric loader')
         all_errors = None
 
     # Optionally evaluate anomaly detection metrics
