@@ -169,6 +169,8 @@ def main(args):
         callbacks = []
 
     # Resources per trial
+    cfg.resources.gpu_trial = args.n_gpus
+    cfg.resources.cpu_trial = args.n_cpus
     resources_per_trial = {
         "cpu": cfg.resources.cpu_trial,
         "gpu": cfg.resources.gpu_trial
@@ -264,6 +266,10 @@ if __name__ == "__main__":
                             help="Ray cluster password")
         parser.add_argument("--config_file", "-c", default='conv_ae2D_AOC',
                             help="Config file name")
+        parser.add_argument("--n_gpus", default=1, type=int,
+                            help="n gpus per trial")
+        parser.add_argument("--n_cpus", default=12, type=int,
+                            help="n cpus per trial")
         parser.add_argument("--num_samples", default=100, type=int,
                             help="Number of trials to run")
         parser.add_argument("--wandb", default=0, type=int,
@@ -277,6 +283,7 @@ if __name__ == "__main__":
                             help="W&B API key")
         parser.add_argument("--debug_mode", default=0, type=int,
                             help="Run single trial for debugging (0/1)")
+
         parser.add_argument("--ray_memory_gb", default=10, type=int,
                             help="Ray object store memory in GB")
 

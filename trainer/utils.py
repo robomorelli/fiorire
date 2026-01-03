@@ -612,7 +612,7 @@ def test_anomaly_step(
         device="cuda",
         external_normal_errors=None,
         num_thresh=100,
-        epsilon=1e-5,
+        epsilon=1e-3,
         desc="Testing anomalies",
         normal_anomalies_ratio=1,
         seed=123,

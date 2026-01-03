@@ -245,7 +245,9 @@ ssh $MASTER_NODE "
   [[ -n \"$WANDB_KEY\" ]] && CMD+=\" --wandb_key $WANDB_KEY\"
   [[ -n \"$ENTITY\" ]] && CMD+=\" --entity $ENTITY\"
   [[ -n \"$WANDB\" ]] && CMD+=\" --wandb $WANDB\"
-  [[ -n \"$PROJECT_NAME\" ]] && CMD+=\" --project_name $PROJECT_NAME\"
+  [[ -n \"$PROJECT_NAME\" ]] && CMD+=\" --project_name $PROJECT_NAME\
+  [[ -n \"$NUM_GPUS\" ]] && CMD+=\" --n_gpus $NUM_GPUS\
+  [[ -n \"$NUM_CPUS\" ]] && CMD+=\" --n_cpus $NUM_CPUS\"
 
   echo \"\"
   echo \"Full command:\"

@@ -120,6 +120,8 @@ def main(args):
         callbacks = []
 
     # Resources per trial
+    cfg.resources.gpu_trial = args.n_gpus
+    cfg.resources.cpu_trial = args.n_cpus
     resources_per_trial = {
         "cpu": cfg.resources.cpu_trial,
         "gpu": cfg.resources.gpu_trial
@@ -196,6 +198,10 @@ if __name__ == "__main__":
     parser.add_argument("--password", default=None, help="Ray cluster password")
     parser.add_argument("--config_file", default='conv_ae2D_CMG_ft',
                         help="Fine-tuning config file")
+    parser.add_argument("--n_gpus", default=1, type=int,
+                        help="n gpus per trial")
+    parser.add_argument("--n_cpus", default=12, type=int,
+                        help="n cpus per trial")
     parser.add_argument("--num_samples", default=100, type=int,
                         help="Number of trials")
     parser.add_argument("--wandb", default=0, type=int,
