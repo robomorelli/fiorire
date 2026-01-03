@@ -492,6 +492,9 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train
 
     pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc=desc, leave=False)
     for i, (inputs, targets, is_anomaly) in pbar:
+        assert not torch.isnan(inputs).any(), "NaN in input!"
+        assert not torch.isnan(targets).any(), "NaN in target!"
+        assert not torch.isnan(is_anomaly).any(), "NaN in mask!"
         inputs, targets = inputs.to(device), targets.to(device)
         # conv ae 1d torch.Size([100, 16, 8]), torch.Size([100, 16, 8]), torch.Size([100, 1, 8])
         # conv ae 2d torch.Size([100, 1, 16, 8]), torch.Size([100, 1, 16, 8]), torch.Size([100, 1, 8])
@@ -543,6 +546,9 @@ def validate_one_epoch(
         pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc=desc, leave=False)
         for i, (inputs, targets, is_anomaly) in pbar:
             inputs, targets = inputs.to(device), targets.to(device)
+            assert not torch.isnan(inputs).any(), "NaN in input!"
+            assert not torch.isnan(targets).any(), "NaN in target!"
+            assert not torch.isnan(is_anomaly).any(), "NaN in mask!"
 
             outputs = model(inputs).to(device)
             loss = criterion(outputs, targets)
@@ -668,6 +674,10 @@ def test_anomaly_step(
         x, target, mask, *_ = batch
         x, target = x.to(device), target.to(device)
 
+        assert not torch.isnan(x).any(), "NaN in input!"
+        assert not torch.isnan(target).any(), "NaN in target!"
+        assert not torch.isnan(mask).any(), "NaN in mask!"
+
         is_anom = mask.view(mask.size(0), -1).sum(dim=1) > 0
         is_norm = ~is_anom
 
@@ -677,6 +687,8 @@ def test_anomaly_step(
         if is_anom.any():
             x_anom, target_anom, mask_anom = x[is_anom], target[is_anom], mask[is_anom]
             recon = model(x_anom)
+
+
 
             # ✅ CHECK: Reconstruction (anomalies)
             if torch.isnan(recon).any() or torch.isinf(recon).any():
@@ -839,6 +851,9 @@ def test_anomaly_step(
     normal_norm = normal_perm / norm
     anomaly_norm = anomaly_perm / norm
 
+    assert not torch.isnan(normal_norm).any() and not torch.isinf(normal_norm).any(), "NaN/Inf in normal_norm!"
+    assert not torch.isnan(anomaly_norm).any() and not torch.isinf(anomaly_norm).any(), "NaN/Inf in anomaly_norm!"
+
     # ✅ CHECK 1: Post-normalization NaN/Inf
     nan_normal = torch.isnan(normal_norm).sum().item()
     inf_normal = torch.isinf(normal_norm).sum().item()
@@ -883,6 +898,17 @@ def test_anomaly_step(
         print(f"   - NaN: {nan_scores} / {total_scores} ({100 * nan_scores / total_scores:.2f}%)")
         print(f"   - Inf: {inf_scores} / {total_scores} ({100 * inf_scores / total_scores:.2f}%)")
         print(f"   - This will corrupt ROC/AUC calculation!")
+
+    nan_scores = np.isnan(flat_labels).sum()
+    inf_scores = np.isinf(flat_labels).sum()
+    total_scores = len(flat_labels)
+
+    if nan_scores > 0 or inf_scores > 0:
+        print(f"\n⚠️  [SCORES] NaN/Inf detected in anomaly scores!")
+        print(f"   - NaN: {nan_scores} / {total_scores} ({100 * nan_scores / total_scores:.2f}%)")
+        print(f"   - Inf: {inf_scores} / {total_scores} ({100 * inf_scores / total_scores:.2f}%)")
+        print(f"   - This will corrupt ROC/AUC calculation!")
+
 
     # Compute ROC curve
     fpr, tpr, thresholds = roc_curve(flat_labels, flat_scores)

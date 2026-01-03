@@ -284,7 +284,7 @@ class Trainer(tune.Trainable):
         result["best_val_f1_score"] = self.best_f1_score
         result["best_val_fpr"] = self.best_fpr
         result["best_val_tpr"] = self.best_tpr
-        result["best_val_thresh_f1"] = self.best_thresh_f1
+        #result["best_val_thresh_f1"] = self.best_thresh_f1
 
         # Check improvement
         current_metric = result[self.metric_key]
