@@ -5,6 +5,7 @@ Main training script with Ray Tune optimization.
 import argparse
 import os
 import shutil
+import gc
 from ray.tune.schedulers import ASHAScheduler
 from ray.air.integrations.wandb import WandbLoggerCallback
 from ray.tune import CLIReporter
@@ -20,6 +21,90 @@ from trainer.utils import get_opt_metric
 from config import *
 
 
+def cleanup_ray():
+    """Cleanup Ray environment before starting."""
+    print("\n" + "=" * 80)
+    print("🧹 CLEANING UP RAY ENVIRONMENT")
+    print("=" * 80)
+
+    # Shutdown existing Ray instance
+    if ray.is_initialized():
+        print("   - Shutting down existing Ray instance...")
+        ray.shutdown()
+
+    # Force garbage collection
+    print("   - Running garbage collection...")
+    gc.collect()
+
+    # Clear Ray temporary directory (optional but helpful)
+    import tempfile
+    ray_tmp_dir = os.path.join(tempfile.gettempdir(), 'ray')
+    if os.path.exists(ray_tmp_dir):
+        try:
+            # Don't delete if other Ray instances are using it
+            print(f"   - Ray temp directory: {ray_tmp_dir}")
+        except:
+            pass
+
+    print("   ✅ Cleanup complete")
+
+
+def initialize_ray_with_memory(memory_gb=10, address='auto', password=None):
+    """Initialize Ray with increased object store memory (only for local mode)."""
+    print("\n" + "=" * 80)
+    print("🚀 INITIALIZING RAY")
+    print("=" * 80)
+
+    object_store_memory = memory_gb * 1024 ** 3
+
+    print(f"   - Address: {address}")
+    if password:
+        print(f"   - Using password: {'*' * 8}")
+
+    # ✅ Base kwargs
+    init_kwargs = {
+        'address': address,
+        'ignore_reinit_error': True,
+    }
+
+    # ✅ Aggiungi memoria SOLO se NON ti stai connettendo a cluster esistente
+    if address in [None, 'local']:
+        # Modalità locale - possiamo specificare memoria
+        print(f"   - Object store memory: {memory_gb} GB (local mode)")
+        init_kwargs['object_store_memory'] = object_store_memory
+        init_kwargs['_memory'] = object_store_memory * 2
+    elif address == 'auto':
+        # Auto mode - potrebbe essere locale o cluster
+        # Non specifichiamo memoria - Ray userà quella del cluster se esiste
+        print(f"   - Object store memory: using cluster settings (auto mode)")
+    else:
+        # Address esplicito - sicuramente cluster esistente
+        print(f"   - Object store memory: using cluster settings (cluster mode)")
+
+    # ✅ Aggiungi password se fornita
+    if password:
+        init_kwargs['_redis_password'] = password
+
+    ray.init(**init_kwargs)
+
+    print(f"   ✅ Ray initialized")
+
+    # Mostra info cluster
+    try:
+        nodes = ray.nodes()
+        resources = ray.available_resources()
+        print(f"   - Connected nodes: {len(nodes)}")
+        print(f"   - Available CPUs: {resources.get('CPU', 0):.0f}")
+        print(f"   - Available GPUs: {resources.get('GPU', 0):.0f}")
+
+        if len(nodes) > 1:
+            print(f"   ✅ Cluster mode: {len(nodes)} nodes")
+        else:
+            print(f"   ℹ️  Single node mode")
+    except Exception as e:
+        print(f"   ⚠️  Could not get cluster info: {e}")
+
+
 def main(args):
     """Main training function with shared datasets."""
 
@@ -31,22 +116,13 @@ def main(args):
     cfg_path = os.path.join(config_path, args.config_file + '.yaml')
     ray_config, cfg = extract_config(cfg_path)
 
-    # Freeze config
     print("\n" + "=" * 80)
-    print("📌 FREEZING CONFIG")
+    print("📊 PREPARING SHARED CONFIGURATION")
     print("=" * 80)
-
-    #cfg_frozen = OmegaConf.to_container(cfg, resolve=True)
-    #cfg = OmegaConf.create(cfg_frozen)
-
-    #frozen_config_path = os.path.join('/tmp', f'frozen_config_{args.project_name}_{date_str}.yaml')
-    #OmegaConf.save(cfg, frozen_config_path)
-    #print(f"✅ Config frozen and saved to: {frozen_config_path}")
 
     # Prepare shared configuration
     shared_config = prepare_shared_configuration(cfg)
     ray_config['shared_config'] = shared_config
-
 
     # Debug mode
     if args.debug_mode:
@@ -64,7 +140,7 @@ def main(args):
 
         for step in range(15):
             result = trainer_test.step()
-            print(f"\nStep {step + 1}/5:")
+            print(f"\nStep {step + 1}/15:")
             print(f"  - Epoch: {result.get('epoch', 'N/A')}")
             print(f"  - Train loss: {result.get('train_loss', 'N/A'):.6f}")
             print(f"  - Val loss: {result.get('val_loss', 'N/A'):.6f}")
@@ -131,67 +207,95 @@ def main(args):
     print(f"💾 W&B logging: {'Enabled' if args.wandb else 'Disabled'}")
     print()
 
-    analysis = tune.run(
-        trainer,
-        scheduler=scheduler,
-        resources_per_trial=resources_per_trial,
-        num_samples=int(args.num_samples),
-        local_dir=results_dir,
-        name=cfg.opt.exp_name,
-        progress_reporter=progress_reporter,
-        sync_config=sync_config,
-        config=ray_config,
-        callbacks=callbacks,
-        checkpoint_at_end=False,
-        checkpoint_freq=0,
-        keep_checkpoints_num=1,
-        trial_dirname_creator=lambda trial: trial_dirname_creator(trial, max_params=5),
-        stop={"training_iteration": cfg.opt.max_epochs},
-    )
+    try:
+        analysis = tune.run(
+            trainer,
+            scheduler=scheduler,
+            resources_per_trial=resources_per_trial,
+            num_samples=int(args.num_samples),
+            local_dir=results_dir,
+            name=cfg.opt.exp_name,
+            progress_reporter=progress_reporter,
+            sync_config=sync_config,
+            config=ray_config,
+            callbacks=callbacks,
+            checkpoint_at_end=False,
+            checkpoint_freq=0,
+            keep_checkpoints_num=1,
+            trial_dirname_creator=lambda trial: trial_dirname_creator(trial, max_params=5),
+            stop={"training_iteration": cfg.opt.max_epochs},
+        )
 
-    # Print results
-    print("\n" + "=" * 80)
-    print("✅ RAY TUNE COMPLETED")
-    print("=" * 80)
-    best_config = analysis.get_best_config(metric=metric, mode=mode)
-    print(f"🏆 Best configuration:\n{best_config}")
+        # Print results
+        print("\n" + "=" * 80)
+        print("✅ RAY TUNE COMPLETED")
+        print("=" * 80)
+        best_config = analysis.get_best_config(metric=metric, mode=mode)
+        print(f"🏆 Best configuration:\n{best_config}")
 
-    best_trial = analysis.get_best_trial(metric=metric, mode=mode)
-    print(f"\n📊 Best trial: {best_trial.trial_id}")
-    print(f"   - {metric}: {best_trial.last_result[metric]:.6f}")
-    if 'val_f1_score' in best_trial.last_result:
-        print(f"   - F1: {best_trial.last_result['val_f1_score']:.4f}")
-    if 'val_roc_auc' in best_trial.last_result:
-        print(f"   - ROC-AUC: {best_trial.last_result['val_roc_auc']:.4f}")
+        best_trial = analysis.get_best_trial(metric=metric, mode=mode)
+        print(f"\n📊 Best trial: {best_trial.trial_id}")
+        print(f"   - {metric}: {best_trial.last_result[metric]:.6f}")
+        if 'val_f1_score' in best_trial.last_result:
+            print(f"   - F1: {best_trial.last_result['val_f1_score']:.4f}")
+        if 'val_roc_auc' in best_trial.last_result:
+            print(f"   - ROC-AUC: {best_trial.last_result['val_roc_auc']:.4f}")
+
+    except Exception as e:
+        print(f"\n❌ ERROR during Ray Tune execution:")
+        print(f"   {e}")
+        raise
+
+    finally:
+        # ✅ Cleanup at the end
+        print("\n" + "=" * 80)
+        print("🧹 FINAL CLEANUP")
+        print("=" * 80)
+        gc.collect()
+        print("   ✅ Garbage collection complete")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Ray Tune hyperparameter optimization")
-    parser.add_argument("--address", default=None, help="address of master")
-    parser.add_argument("--password", default=None, help="Ray cluster password")
-    parser.add_argument("--config_file", "-c", default='conv_ae2D_AOC',
-                        help="Config file name")
-    parser.add_argument("--num_samples", default=100, type=int,
-                        help="Number of trials to run")
-    parser.add_argument("--wandb", default=0, type=int,
-                        help="Enable W&B logging (0/1)")
-    parser.add_argument("--project_name", default='conv_ae2D_AOC_scratch',
-                        help="W&B project name")
-    parser.add_argument("--entity", default='robmorelli',
-                        help="W&B entity name")
-    parser.add_argument("--wandb_key",
-                        default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
-                        help="W&B API key")
-    parser.add_argument("--debug_mode", default=1, type=int,
-                        help="Run single trial for debugging (0/1)")
+    if __name__ == "__main__":
+        parser = argparse.ArgumentParser(description="Ray Tune hyperparameter optimization")
+        parser.add_argument("--address", default=None,
+                            help="Ray head node address (default: None for local cluster)")
+        parser.add_argument("--password", default=None,
+                            help="Ray cluster password")
+        parser.add_argument("--config_file", "-c", default='conv_ae2D_AOC',
+                            help="Config file name")
+        parser.add_argument("--num_samples", default=100, type=int,
+                            help="Number of trials to run")
+        parser.add_argument("--wandb", default=0, type=int,
+                            help="Enable W&B logging (0/1)")
+        parser.add_argument("--project_name", default='conv_ae2D_AOC_scratch',
+                            help="W&B project name")
+        parser.add_argument("--entity", default='robmorelli',
+                            help="W&B entity name")
+        parser.add_argument("--wandb_key",
+                            default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
+                            help="W&B API key")
+        parser.add_argument("--debug_mode", default=0, type=int,
+                            help="Run single trial for debugging (0/1)")
+        parser.add_argument("--ray_memory_gb", default=10, type=int,
+                            help="Ray object store memory in GB")
 
-    args = parser.parse_args()
+        args = parser.parse_args()
 
-    # Environment configuration
-    os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"
+        # Environment configuration
+        os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "6"
 
-    # ✅ Initialize Ray (auto-connect to cluster or start local)
-    ray.init(address='auto')
+        # Cleanup and initialize Ray
+        cleanup_ray()
+        initialize_ray_with_memory(
+            memory_gb=args.ray_memory_gb,
+            address=args.address,
+            password=args.password
+        )
 
-    # Run optimization
-    main(args)
+        try:
+            main(args)
+        finally:
+            print("\n🛑 Shutting down Ray...")
+            ray.shutdown()
+            print("   ✅ Done")

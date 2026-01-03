@@ -445,25 +445,18 @@ _RAY_OBJECT_CACHE = {}
 
 def prepare_shared_configuration(cfg):
     """
-    Prepare shared configuration using minimal Ray Object Store usage.
-
-    STRATEGY:
-    - Share only INDICES (tiny!) via Ray Object Store
-    - Share scaler via Ray Object Store
-    - Generate and save metric dataset to disk (as tensors)
-    - Each trial loads DataFrame and applies overlap independently
-
-    Returns:
-        shared_config: Dict with Ray ObjectRefs for indices/scaler + metadata
+    Prepare shared configuration by saving indices to disk.
+    ALWAYS regenerates - deletes existing directory if present.
     """
-    import ray
     import torch
     import os
     import numpy as np
     from pathlib import Path
+    import pickle
+    import shutil
 
     print("\n" + "=" * 80)
-    print("📦 PREPARING SHARED CONFIGURATION (Indices Strategy)")
+    print("📦 PREPARING SHARED CONFIGURATION (Disk-based)")
     print("=" * 80)
 
     # Extract config parameters
@@ -471,6 +464,47 @@ def prepare_shared_configuration(cfg):
     filter_anomalies = cfg.opt.get('filter_anomalies', False)
     is_anomaly_column = cfg.dataset.get('is_anomaly_column', None)
     dataset_path = cfg.dataset.data_path
+    seq_len = cfg.dataset.seq_in_length
+
+    # Build experiment identifier
+    model_name = cfg.model.get('name', 'unknown_model')
+    dataset_name = cfg.dataset.get('name', 'dataset')
+    exp_name = cfg.opt.get('exp_name', 'experiment')
+
+    # ✅ Add filter_anomalies suffix
+    filter_anomalies_suffix = "filtered" if filter_anomalies else "unfiltered"
+
+    # Base directory for ALL indices
+    base_indices_dir = Path('./train_val_indices/')
+    base_indices_dir.mkdir(exist_ok=True)
+
+    # Experiment-specific subdirectory with filter suffix
+    exp_subdir_name = f"{model_name}_{exp_name}_{dataset_name}_seed{seed}_{filter_anomalies_suffix}"
+    exp_indices_dir = base_indices_dir / exp_subdir_name
+
+    # ✅ Delete existing directory if present
+    if exp_indices_dir.exists():
+        print(f"\n   ⚠️  Experiment directory already exists: {exp_indices_dir}")
+        print(f"   🗑️  Deleting existing directory...")
+        try:
+            shutil.rmtree(exp_indices_dir)
+            print(f"   ✓ Deleted successfully")
+        except Exception as e:
+            print(f"   ❌ ERROR deleting directory: {e}")
+            raise
+
+    # Create fresh directory
+    exp_indices_dir.mkdir(exist_ok=True)
+    print(f"   ✓ Created fresh experiment directory: {exp_indices_dir}")
+
+    # Define file paths
+    indices_filename = 'train_val_indices.npz'
+    scaler_filename = 'scaler.pkl'
+    metadata_filename = 'metadata.txt'
+
+    indices_path = exp_indices_dir / indices_filename
+    scaler_path = exp_indices_dir / scaler_filename
+    metadata_path = exp_indices_dir / metadata_filename
 
     # 1. Load data
     print("\n1️⃣ Loading dataset...")
@@ -485,16 +519,16 @@ def prepare_shared_configuration(cfg):
         create_train_val_df_indexes(
             cfg=cfg,
             df=df,
-            return_anomalies=filter_anomalies,  # True if we want original anomalies
+            return_anomalies=filter_anomalies,
             ano_col=is_anomaly_column,
             seed=seed
         )
     )
 
-    print(f"   ✓ Train base indices: {len(train_indexes)}")
-    print(f"   ✓ Val base indices: {len(val_indexes)}")
+    print(f"   ✓ Train base indices: {len(train_indexes):,}")
+    print(f"   ✓ Val base indices: {len(val_indexes):,}")
 
-    # ✅ Extract anomaly info if available
+    # Extract anomaly info if available
     anomaly_window_indices = None
     anomaly_window_labels = None
 
@@ -510,7 +544,7 @@ def prepare_shared_configuration(cfg):
     print("\n3️⃣ Fitting scaler on CLEAN train data...")
     scaler, df_scaled, scaler_params = get_scaler(
         cfg=cfg,
-        df_fit=train_df_for_scaling,  # Already filtered from anomalies
+        df_fit=train_df_for_scaling,
         df_transform=df
     )
     print(f"   ✓ Scaler fitted: {scaler.__class__.__name__}")
@@ -518,10 +552,9 @@ def prepare_shared_configuration(cfg):
 
     # 4. Generate and save metric dataset
     print("\n4️⃣ Generating metric dataset...")
-    seq_len = cfg.dataset.seq_in_length
     metric_dataset_path = None
-
     anomaly_strategy = cfg.opt.get('anomaly_strategy', 'none')
+
     if anomaly_strategy != 'none':
         print(f"   - Strategy: {anomaly_strategy}")
 
@@ -547,9 +580,9 @@ def prepare_shared_configuration(cfg):
             feature_columns=feature_columns
         )
 
-        print(f"   ✓ Clean sequences (std) extracted: {clean_sequences.shape}")
+        print(f"   ✓ Clean sequences extracted: {clean_sequences.shape}")
 
-        # ✅ Extract original anomaly sequences if strategy requires them
+        # Extract original anomaly sequences if needed
         original_anomaly_sequences = None
         original_anomaly_labels = None
 
@@ -557,7 +590,6 @@ def prepare_shared_configuration(cfg):
             if anomaly_window_indices is not None and len(anomaly_window_indices) > 0:
                 print(f"   - Extracting original anomaly sequences...")
 
-                # Apply overlap to anomaly window start indices
                 anomalous_indices_for_metric = compute_indices_with_overlap(
                     base_indices=anomaly_window_indices,
                     overlap=metric_seq_overlap,
@@ -566,7 +598,6 @@ def prepare_shared_configuration(cfg):
 
                 print(f"   ✓ Anomalous indices for metric: {len(anomalous_indices_for_metric)}")
 
-                # Extract sequences
                 original_anomaly_sequences = extract_sequences_from_indices(
                     df=df_scaled,
                     indices=anomalous_indices_for_metric,
@@ -574,7 +605,7 @@ def prepare_shared_configuration(cfg):
                     feature_columns=feature_columns,
                 )
 
-                # ✅ Extract labels directly from DataFrame
+                # Extract labels
                 if is_anomaly_column and is_anomaly_column in df.columns:
                     original_anomaly_labels = []
                     for idx in anomalous_indices_for_metric:
@@ -582,8 +613,7 @@ def prepare_shared_configuration(cfg):
                             label_seq = df[is_anomaly_column].iloc[idx:idx + seq_len].values
                             original_anomaly_labels.append(label_seq)
 
-                    original_anomaly_labels = np.array(original_anomaly_labels)  # [N, L]
-                    # Reshape to [N, 1, L]
+                    original_anomaly_labels = np.array(original_anomaly_labels)
                     original_anomaly_labels = original_anomaly_labels[:, np.newaxis, :]
 
                     print(f"   ✓ Original anomaly sequences: {original_anomaly_sequences.shape}")
@@ -597,7 +627,7 @@ def prepare_shared_configuration(cfg):
                 print(f"       Falling back to 'corrupt_validation' strategy")
                 anomaly_strategy = 'corrupt_validation'
 
-        # Pass to generation function
+        # Generate metric dataset
         metric_dataset_path = generate_and_save_metric_dataset(
             cfg=cfg,
             clean_sequences=clean_sequences,
@@ -612,45 +642,64 @@ def prepare_shared_configuration(cfg):
         )
 
         if metric_dataset_path and os.path.exists(metric_dataset_path):
-            # Verify it was saved correctly
             saved_dict = torch.load(metric_dataset_path, map_location='cpu')
             is_standardized = saved_dict['metadata'].get('is_standardized', True)
 
             print(f"   ✓ Metric dataset saved: {metric_dataset_path}")
             print(f"   ✓ Standardized: {is_standardized}")
             print(f"   ✓ Sequences: {len(saved_dict['dataset'])}")
-
-            if not is_standardized:
-                print(f"   ⚠️  WARNING: Metric dataset is NOT standardized!")
         else:
             print(f"   ⚠️  Metric dataset generation failed or disabled")
     else:
         print(f"   - Anomaly strategy is 'none' - skipping metric dataset")
 
-    # 5. Put SMALL objects in Ray Object Store
-    print("\n5️⃣ Storing indices and scaler in Ray Object Store...")
+    # ✅ 5. Save indices and scaler to disk
+    print("\n5️⃣ Saving indices and scaler to disk...")
 
-    # Calculate memory usage
-    indices_size = (train_indexes.nbytes + val_indexes.nbytes) / 1024  # KB
-    print(f"   - Indices size: ~{indices_size:.2f} KB (tiny!)")
+    # Save indices (compressed NPZ)
+    np.savez_compressed(
+        indices_path,
+        train_indices=train_indexes,
+        val_indices=val_indexes
+    )
 
-    # Put in Ray (only small objects!)
-    train_indices_ref = ray.put(train_indexes)
-    val_indices_ref = ray.put(val_indexes)
-    scaler_ref = ray.put(scaler)
+    indices_size = os.path.getsize(indices_path) / (1024 * 1024)  # MB
+    print(f"   ✓ Indices saved: {indices_path}")
+    print(f"   ✓ File size: {indices_size:.2f} MB")
+    print(f"   ✓ Train indices: {len(train_indexes):,}")
+    print(f"   ✓ Val indices: {len(val_indexes):,}")
 
-    print(f"   ✓ train_indices ({len(train_indexes)} items) → Ray ObjectRef")
-    print(f"   ✓ val_indices ({len(val_indexes)} items) → Ray ObjectRef")
-    print(f"   ✓ scaler → Ray ObjectRef")
+    # Save scaler
+    with open(scaler_path, 'wb') as f:
+        pickle.dump(scaler, f)
 
-    # 6. Build shared config (lightweight!)
+    scaler_size = os.path.getsize(scaler_path) / 1024  # KB
+    print(f"   ✓ Scaler saved: {scaler_path}")
+    print(f"   ✓ File size: {scaler_size:.2f} KB")
+
+    # Save metadata for reference
+    with open(metadata_path, 'w') as f:
+        f.write(f"Experiment: {exp_name}\n")
+        f.write(f"Model: {model_name}\n")
+        f.write(f"Dataset: {dataset_name}\n")
+        f.write(f"Seed: {seed}\n")
+        f.write(f"Filter anomalies: {filter_anomalies}\n")
+        f.write(f"Train indices: {len(train_indexes):,}\n")
+        f.write(f"Val indices: {len(val_indexes):,}\n")
+        f.write(f"Scaler: {scaler.__class__.__name__}\n")
+        f.write(f"Scaler params: {scaler_params}\n")
+        f.write(f"Feature columns: {', '.join(feature_columns)}\n")
+
+    print(f"   ✓ Metadata saved: {metadata_path}")
+
+    # ✅ 6. Build shared config
     shared_config = {
-        # Ray ObjectRefs (tiny pointers!)
-        'train_indices': train_indices_ref,
-        'val_indices': val_indices_ref,
-        'scaler': scaler_ref,
+        # Paths to experiment-specific directory
+        'indices_path': str(indices_path),
+        'scaler_path': str(scaler_path),
+        'experiment_dir': str(exp_indices_dir),
 
-        # Paths (strings)
+        # Dataset path
         'dataset_path': str(dataset_path),
         'metric_loader_path': metric_dataset_path,
 
@@ -662,22 +711,23 @@ def prepare_shared_configuration(cfg):
         # Statistics
         'train_size': int(len(train_indexes)),
         'val_size': int(len(val_indexes)),
+
+        # Experiment identifier
+        'exp_identifier': exp_subdir_name,
     }
 
     print("\n" + "=" * 80)
     print("✅ SHARED CONFIGURATION READY")
     print("=" * 80)
-    print(f"   Strategy: Indices + DataFrame (each trial loads independently)")
-    print(f"   - Train base indices: {shared_config['train_size']}")
-    print(f"   - Val base indices: {shared_config['val_size']}")
-    print(f"   - Dataset path: {shared_config['dataset_path']}")
+    print(f"   Strategy: Always regenerate (deleted old if existed)")
+    print(f"   - Experiment directory: {exp_indices_dir}")
+    print(f"   - Indices: {len(train_indexes):,} train, {len(val_indexes):,} val")
     print(f"   - Scaler: {scaler.__class__.__name__}")
     if metric_dataset_path:
         print(f"   - Metric dataset: {metric_dataset_path}")
-    else:
-        print(f"   - Metric dataset: None")
-    print(f"   - Ray Object Store usage: ~{indices_size:.2f} KB (minimal!)")
-    print(f"   - Overlap: Will be applied per-trial in Trainer")
+    print(f"   - File sizes: {indices_size:.2f} MB + {scaler_size:.2f} KB")
+    print(f"   ⚠️  All trials will read from: {exp_indices_dir}")
+    print(f"   ⚠️  Files will be KEPT after execution")
     print("=" * 80)
 
     return shared_config

@@ -28,7 +28,9 @@ class Trainer(tune.Trainable):
     """Generic trainer that works with all model types."""
 
     def setup(self, config):
-        """Setup trial with DataFrame + indices."""
+        """Setup trial with DataFrame + indices loaded from disk."""
+        import numpy as np
+        import pickle
 
         # ✅ 1. Load config and shared_config
         self.cfg, shared_config = model_setup(
@@ -49,14 +51,20 @@ class Trainer(tune.Trainable):
 
         print(f"\n📂 Loading data for trial (overlap={overlap})...")
 
-        # ✅ 4. Get indices and scaler from Ray
-        train_base_indices = ray.get(shared_config['train_indices'])
-        val_base_indices = ray.get(shared_config['val_indices'])
-        self.scaler = ray.get(shared_config['scaler'])
+        # ✅ 4. Load indices and scaler from DISK (NOT ray.get()!)
+        print(f"   - Loading indices from: {shared_config['indices_path']}")
+        indices_data = np.load(shared_config['indices_path'])
+        train_base_indices = indices_data['train_indices']
+        val_base_indices = indices_data['val_indices']
 
-        print(f"   ✓ Retrieved from Ray:")
-        print(f"      - train_base_indices: {len(train_base_indices)}")
-        print(f"      - val_base_indices: {len(val_base_indices)}")
+        print(f"   - Loading scaler from: {shared_config['scaler_path']}")
+        with open(shared_config['scaler_path'], 'rb') as f:
+            self.scaler = pickle.load(f)
+
+        print(f"   ✓ Loaded from disk:")
+        print(f"      - train_base_indices: {len(train_base_indices):,}")
+        print(f"      - val_base_indices: {len(val_base_indices):,}")
+        print(f"      - scaler: {self.scaler.__class__.__name__}")
 
         # ✅ 5. Compute final indices with overlap
         train_indices = compute_indices_with_overlap(train_base_indices, overlap, seq_len)
@@ -64,8 +72,8 @@ class Trainer(tune.Trainable):
         self.train_indices, self.val_indices = train_indices, val_indices
 
         print(f"   ✓ Indices with overlap:")
-        print(f"      - train_indices: {len(train_indices)}")
-        print(f"      - val_indices: {len(val_indices)} NOTE: OVERLAP IS {val_overlap} FOR VALIDATION SEQUENCES")
+        print(f"      - train_indices: {len(train_indices):,}")
+        print(f"      - val_indices: {len(val_indices):,} (overlap={val_overlap})")
 
         # ✅ 6. Load DataFrame
         df = load_and_preprocess_dataframe(self.cfg)

@@ -15,7 +15,7 @@ class Encoder(nn.Module):
                  pool_ks: Union[int, Tuple[int, int]] = 2,
                  pool_stride: Union[int, Tuple[int, int]] = 2, activation=nn.ReLU(),
                  compression_factor=2,
-                 img_heigth=16, img_width=16, flattened=True,  bottleneck_act=nn.Tanh()):
+                 img_heigth=16, img_width=16, flattened=True,  bottleneck_act=nn.Tanh(), compression_type='on_features'):
         super(Encoder, self).__init__()
 
         self.in_channels = in_channels
@@ -27,13 +27,14 @@ class Encoder(nn.Module):
         self.pool_ks = pool_ks
         self.pool_stride = pool_stride
         self.compression_factor = compression_factor
+        self.compression_type = compression_type
         self.h = img_heigth
         self.w = img_width
+        self.flattened_inputs = self.h*self.w
         self.act = activation
         self.flattened = flattened
         self.bottleneck_act = bottleneck_act
         self.act_str = {'relu':'relu', 'lrelu':'leaky_relu', 'elu':'relu'}[{v: k for k, v in activation_dict.items()}.get(activation, 'relu').lower()]
-
 
         out_f = None
         encoder_layers = []
@@ -63,7 +64,8 @@ class Encoder(nn.Module):
         self.last_layers_channels = out_f * 2
         bottleneck_conv = nn.Conv2d(in_f, self.last_layers_channels, kernel_size=kernel_size, padding=padding, dilation=dilation)
         self.flattened_size, self.h_enc, self.w_enc = self._get_final_flattened_size(bottleneck_conv)
-        self.latent_dim = int(self.flattened_size // self.compression_factor)
+
+        self.latent_dim = int(self.flattened_size // self.compression_factor) if  self.compression_type == 'on_features' else int((self.h*self.w // self.compression_factor))
 
         self.bottleneck = bottleneck2D(bottleneck_conv=bottleneck_conv,
                                        flattened=self.flattened, flattened_size= self.flattened_size,
@@ -246,7 +248,8 @@ class CONV_AE2D(nn.Module):
         self.bottleneck_act = activation_dict.get(model_cfg.get("bottleneck_activation", None), None)
         self.pool = model_cfg.pool
         self.flattened = model_cfg.flattened
-        self.compression_factor = model_cfg.compression_factor
+        self.compression_factor = model_cfg.compression_factor if model_cfg.get('compression_factor_on_inputs', None) is None else model_cfg.get('compression_factor')
+        self.compression_type = 'on_inputs' if model_cfg.get('compression_factor_on_inputs', None) is not None else 'on_features'
         self.increasing = model_cfg.increasing
         self.dilation = model_cfg.dilation
         if self.cfg.opt.get("fine_tuning",0) and self.cfg.opt.get("opt.fine_tuning_mode") == "adaptive_layer":
@@ -313,10 +316,10 @@ class CONV_AE2D(nn.Module):
                                compression_factor = self.compression_factor,
                                img_heigth=self.h, img_width=self.w, activation=self.act,
                                padding=self.padding, flattened=self.flattened,
-                               dilation=self.dilation, bottleneck_act=self.bottleneck_act)
+                               dilation=self.dilation, bottleneck_act=self.bottleneck_act, compression_type=self.compression_type)
         self.flattened_size = self.encoder.flattened_size
+        self.latent_dim = self.encoder.latent_dim
         self.cfg.model.flattened_size = self.flattened_size
-        self.latent_dim = int(self.encoder.flattened_size // self.compression_factor)
         self.decoder = Decoder(in_channels=self.in_channels, first_deconv_channels=self.encoder.last_layers_channels,
                                base_filters= self.base_filters, kernel_size=self.pool_ks, num_layers=self.num_layers,
                                stride=self.pool_stride,
