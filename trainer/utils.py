@@ -221,19 +221,77 @@ def compute_indices_with_overlap(base_indices, overlap, seq_len):
 
 
 def get_optimizazion_objects(cfg, model, opt_metric_dict):
+    """
+    Get optimizer, scheduler, criterion, and early stopping.
+
+    Handles separate learning rates for bottleneck layers and supports
+    both single-LR and dual-LR configurations. Robustly handles numeric
+    parameters that may arrive as strings from Ray Tune.
+
+    Args:
+        cfg: Configuration object
+        model: Neural network model
+        opt_metric_dict: Dictionary containing optimization metric info
+
+    Returns:
+        tuple: (optimizer, scheduler, criterion, early_stopping)
+    """
 
     # ============================================================
-    # DEFAULT AUTOMATICO PER IL LR DEL BOTTLECK
+    # HELPER: Robust numeric conversion
     # ============================================================
-    bottleneck_lr = getattr(cfg.opt, "bottleneck_lr", 0)
+    def to_float(value, default=0.0, param_name="parameter"):
+        """
+        Convert parameter to float, handle string/None cases.
+
+        Ray Tune may serialize numeric parameters as strings during
+        distribution to workers. This helper ensures robust conversion.
+
+        Args:
+            value: Value to convert (can be str, int, float, None)
+            default: Default value if conversion fails
+            param_name: Parameter name for logging
+
+        Returns:
+            float: Converted value
+        """
+        if value is None or value == "":
+            return default
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            print(f"⚠️  Warning: Invalid {param_name} value '{value}' (type: {type(value).__name__}), using {default}")
+            return default
+
+    # ============================================================
+    # CONVERT ALL NUMERIC PARAMETERS
+    # ============================================================
+    lr = to_float(cfg.opt.lr, default=0.001, param_name="lr")
+    bottleneck_lr = to_float(
+        getattr(cfg.opt, "bottleneck_lr", 0),
+        default=0.0,
+        param_name="bottleneck_lr"
+    )
+    lr_patience = int(to_float(
+        cfg.opt.lr_patience,
+        default=10,
+        param_name="lr_patience"
+    ))
+    es_patience = int(to_float(
+        cfg.opt.es_patience,
+        default=15,
+        param_name="es_patience"
+    )) if hasattr(cfg.opt, 'es_patience') else None
 
     print("\n=================== OPTIMIZER SETUP ===================")
-    print(f"Main LR:          {cfg.opt.lr}")
+    print(f"Main LR:          {lr}")
     print(f"Bottleneck LR:    {bottleneck_lr}  (0 → same LR as main)")
+    print(f"LR Patience:      {lr_patience}")
+    print(f"ES Patience:      {es_patience}")
     print("--------------------------------------------------------")
 
     # ============================================================
-    # IDENTIFICA I PARAMETRI DEL BOTTLENECK
+    # IDENTIFY BOTTLENECK PARAMETERS
     # ============================================================
     bottleneck_params = []
     main_params = []
@@ -246,26 +304,26 @@ def get_optimizazion_objects(cfg, model, opt_metric_dict):
             main_params.append(param)
 
     # ============================================================
-    # GESTIONE WARNING: NESSUN BOTTLECK TROVATO
+    # HANDLE WARNING: NO BOTTLENECK FOUND
     # ============================================================
     if bottleneck_lr > 0 and len(bottleneck_params) == 0:
         print("\n!!! WARNING: bottleneck_lr > 0 but NO bottleneck layers found in model !!!")
         print("    → Falling back to SINGLE LR for all parameters\n")
-        bottleneck_lr = 0  # forza single LR
+        bottleneck_lr = 0  # Force single LR
 
     # ============================================================
-    # CASO 1: SINGLE LR (bottleneck_lr == 0)
+    # CASE 1: SINGLE LR (bottleneck_lr == 0)
     # ============================================================
     if bottleneck_lr == 0:
         print(">>> [MODE] USING SINGLE LR FOR ALL MODEL PARAMETERS\n")
 
-        optimizer = torch.optim.Adam(model.parameters(), lr=cfg.opt.lr)
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode=opt_metric_dict["mode"],
             factor=0.8,
-            patience=cfg.opt.lr_patience,
+            patience=lr_patience,
             threshold=0.0001,
             threshold_mode='rel',
             cooldown=0,
@@ -277,16 +335,16 @@ def get_optimizazion_objects(cfg, model, opt_metric_dict):
         min_delta = 1e-6 if opt_metric_dict["mode"] == "min" else 3e-3
 
         early_stopping = EarlyStopping(
-            patience=cfg.opt.es_patience,
+            patience=es_patience,
             min_delta=min_delta,
             opt_metric_dict=opt_metric_dict
-        ) if cfg.opt.es_patience else None
+        ) if es_patience else None
 
         print("========================================================\n")
         return optimizer, scheduler, criterion, early_stopping
 
     # ============================================================
-    # CASO 2: LR DIVERSO PER BOTTLECNEK
+    # CASE 2: SEPARATE LR FOR BOTTLENECK
     # ============================================================
     print("\n>>> [MODE] USING SEPARATE LR FOR BOTTLENECK")
     print(f"Total bottleneck params: {len(bottleneck_params)}")
@@ -294,7 +352,7 @@ def get_optimizazion_objects(cfg, model, opt_metric_dict):
     print("--------------------------------------------------------")
 
     optimizer = torch.optim.Adam([
-        {"params": main_params,       "lr": cfg.opt.lr},
+        {"params": main_params, "lr": lr},
         {"params": bottleneck_params, "lr": bottleneck_lr},
     ])
 
@@ -302,7 +360,7 @@ def get_optimizazion_objects(cfg, model, opt_metric_dict):
         optimizer,
         mode=opt_metric_dict["mode"],
         factor=0.8,
-        patience=cfg.opt.lr_patience,
+        patience=lr_patience,
         threshold=0.0001,
         threshold_mode='rel',
         cooldown=0,
@@ -314,10 +372,10 @@ def get_optimizazion_objects(cfg, model, opt_metric_dict):
     min_delta = 1e-6 if opt_metric_dict["mode"] == "min" else 3e-3
 
     early_stopping = EarlyStopping(
-        patience=cfg.opt.es_patience,
+        patience=es_patience,
         min_delta=min_delta,
         opt_metric_dict=opt_metric_dict
-    ) if cfg.opt.es_patience else None
+    ) if es_patience else None
 
     print("========================================================\n")
     return optimizer, scheduler, criterion, early_stopping
