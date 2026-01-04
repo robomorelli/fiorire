@@ -179,6 +179,10 @@ class Trainer(tune.Trainable):
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
         self.model = get_model(self.cfg).to(self.device)
         self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        try:
+            self.latent_dim = self.model.latent_dim
+        except:
+            self.latent_dim = None
         self.parameters_number = self.cfg.model.parameter_count
         self.data_path = self.cfg.dataset.data_path
 
@@ -242,7 +246,7 @@ class Trainer(tune.Trainable):
         # Build result
         result = {
             "epoch": self.current_epoch, "train_loss": train_loss,
-            "parameters_number": self.parameters_number, "data_path": self.data_path
+            "parameters_number": self.parameters_number, "data_path": self.data_path, "latent_dim": self.latent_dim,
         }
 
         current_val_loss = self.val_results["val_loss"]
