@@ -1351,12 +1351,25 @@ def adjust_model_for_finetuning(
     print(f"🔍 Pre-training: feats={pre_feats}, seq={pre_seq_len}")
     print(f"🔍 Fine-tuning: feats={fine_feats}, seq={fine_seq_len}")
 
-    def update_latent(model, old_flattened, new_flattened, device='cuda:0'):
+    def update_latent(model, new_flattened, new_latent_dim):
         """
-        update latent space dimension creating new layer with kaiming normal initialization.
+        Update latent space dimension by replacing linear layers.
+        Creates new layers with Kaiming normal initialization.
+
+        Args:
+            model: Autoencoder model with encoder/decoder (already on device)
+            new_flattened: New flattened size after conv layers
+            new_latent_dim: New latent dimension
+
+        Returns:
+            model: Updated model (on same device)
+
+        Raises:
+            RuntimeError: If required layers are not found or update fails
         """
 
         def init_kaiming_linear(layer, mode='fan_in'):
+            """Initialize linear layer with Kaiming normal."""
             nn.init.kaiming_normal_(layer.weight, mode=mode, nonlinearity='relu')
             if layer.bias is not None:
                 nn.init.zeros_(layer.bias)
@@ -1364,19 +1377,31 @@ def adjust_model_for_finetuning(
         encoder = model.encoder
         decoder = model.decoder
 
-        compression_factor = encoder.compression_factor
+        # ✅ AUTO-DETECT device from model
+        try:
+            device = next(model.parameters()).device
+            print(f"\n🔧 Updating Latent Space:")
+            print(f"   - Detected device:  {device}")
+        except StopIteration:
+            # Model has no parameters (shouldn't happen)
+            device = torch.device('cpu')
+            print(f"\n⚠️  WARNING: Could not detect device, using CPU")
 
-        new_latent_dim = int(new_flattened // compression_factor)
-
-        print(f"Updating latent: old_flattened={old_flattened} → new_flattened={new_flattened}")
-        print(f"New latent dim = {new_latent_dim}")
+        print(f"   - New flatten size: {new_flattened}")
+        print(f"   - New latent dim:   {new_latent_dim}")
+        print(f"   - Compression:      {new_flattened / new_latent_dim:.1f}:1")
 
         # ---------------------------
         # ENCODER: to_latent
         # ---------------------------
+        encoder_updated = False
+
         for name, module in encoder.named_modules():
             if isinstance(module, nn.Linear) and "to_latent" in name.lower():
+                old_in_features = module.in_features
+                old_out_features = module.out_features
 
+                # ✅ Create new layer on SAME device as model
                 new_layer = nn.Linear(new_flattened, new_latent_dim).to(device)
                 init_kaiming_linear(new_layer)
 
@@ -1388,20 +1413,37 @@ def adjust_model_for_finetuning(
 
                 setattr(parent, parts[-1], new_layer)
 
-                print(f"✅ Replaced encoder.{name} with Linear({new_flattened} → {new_latent_dim})")
+                print(f"   ✅ Encoder: {name}")
+                print(f"      Old: Linear({old_in_features} → {old_out_features})")
+                print(f"      New: Linear({new_flattened} → {new_latent_dim})")
 
+                encoder_updated = True
+
+        if not encoder_updated:
+            raise RuntimeError(
+                f"❌ ERROR: No 'to_latent' layer found in encoder!\n"
+                f"   Available Linear layers: {[n for n, m in encoder.named_modules() if isinstance(m, nn.Linear)]}"
+            )
+
+        # Update encoder attributes
         encoder.flattened_size = new_flattened
         encoder.latent_dim = new_latent_dim
 
         # ---------------------------
         # DECODER: latent_to_flatten
         # ---------------------------
+        decoder_updated = False
+
         for name, module in decoder.named_modules():
             if isinstance(module, nn.Linear) and "latent_to_flatten" in name.lower():
+                old_in_features = module.in_features
+                old_out_features = module.out_features
 
+                # ✅ Create new layer on SAME device as model
                 new_layer = nn.Linear(new_latent_dim, new_flattened).to(device)
                 init_kaiming_linear(new_layer)
 
+                # Navigate to parent and replace
                 parts = name.split('.')
                 parent = decoder
                 for p in parts[:-1]:
@@ -1409,12 +1451,24 @@ def adjust_model_for_finetuning(
 
                 setattr(parent, parts[-1], new_layer)
 
-                print(f"✅ Replaced decoder.{name} with Linear({new_latent_dim} → {new_flattened})")
+                print(f"   ✅ Decoder: {name}")
+                print(f"      Old: Linear({old_in_features} → {old_out_features})")
+                print(f"      New: Linear({new_latent_dim} → {new_flattened})")
 
+                decoder_updated = True
+
+        if not decoder_updated:
+            raise RuntimeError(
+                f"❌ ERROR: No 'latent_to_flatten' layer found in decoder!\n"
+                f"   Available Linear layers: {[n for n, m in decoder.named_modules() if isinstance(m, nn.Linear)]}"
+            )
+
+        # Update decoder attributes
         decoder.flattened_size = new_flattened
         decoder.latent_dim = new_latent_dim
 
-        print("✔ Latent space update complete\n")
+        print(f"\n✔  Latent space update complete!")
+
         return model
 
     # -------------------------------
@@ -1625,37 +1679,189 @@ def adjust_model_for_finetuning(
                 ).to(device)
                 print(f"🔧 Added Conv2D OUTPUT adapter: {pre_feats},{pre_seq_len} → {fine_feats},{fine_seq_len}")
 
+
             elif mode == "latent_space":
-                # Recupera dimensione flatten vecchia e nuova
+
+                print("\n⚙️ Fine-tuning mode: 'latent_space' (update latent linear layers)")
+
+                # ============================================================
+
+                # RETRIEVE OLD AND NEW DIMENSIONS
+
+                # ============================================================
+
+                old_latent_dim = checkpoint.get('cfg', {}).get('model', {}).get("latent_dim")
+
                 old_flattened_feats = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size")
+
+                # New dimensions from fine-tuning model
+
                 new_flattened_feats = getattr(getattr(model, "encoder", None), "flattened_size")
-                old_flattened_inputs = pre_feats*pre_seq_len
-                new_flattened_inputs = fine_feats*fine_seq_len
+
+                # Input dimensions
+
+                old_input_size = pre_feats * pre_seq_len
+
+                new_input_size = fine_feats * fine_seq_len
+
+                # Compression settings
 
                 compression_factor = getattr(getattr(model, "encoder", None), "compression_factor")
-                compression_type = getattr(getattr(model, "encoder", None), "compression_type", None)    # None for backcompatibility
+
+                compression_type = getattr(getattr(model, "encoder", None), "compression_type", None)
+
                 compression_type = 'on_features' if compression_type is None else compression_type
 
+                print(f"📊 Dimension Analysis:")
+
+                print(
+                    f"   - Pre-training:  input={old_input_size}, flatten={old_flattened_feats}, latent={old_latent_dim}")
+
+                print(f"   - Fine-tuning:   input={new_input_size}, flatten={new_flattened_feats}")
+
+                print(f"   - Compression:   type={compression_type}, factor={compression_factor}")
+
+                # ============================================================
+
+                # DETECT CHANGES
+
+                # ============================================================
+
+                input_changed = (old_input_size != new_input_size)
+
+                flatten_changed = (old_flattened_feats != new_flattened_feats)
+
+                # ============================================================
+
+                # CALCULATE NEW LATENT DIM BASED ON COMPRESSION TYPE
+
+                # ============================================================
+
                 if compression_type == 'on_features':
-                    old_flattened = old_flattened_feats
-                    new_flattened = new_flattened_feats
+
+                    # Latent calculated from flatten size
+
+                    new_latent_dim = int(new_flattened_feats // compression_factor)
+
+                    if flatten_changed:
+
+                        print(f"   → Flatten changed: {old_flattened_feats} → {new_flattened_feats}")
+
+                        print(f"   → New latent (from flatten): {new_latent_dim}")
+
+                        if input_changed:
+                            print(f"   → (Input also changed: {old_input_size} → {new_input_size})")
+
+                    else:
+
+                        new_latent_dim = old_latent_dim
+
+                        print(f"   ✓ Flatten unchanged → latent unchanged: {old_latent_dim}")
+
+
                 elif compression_type == 'on_inputs':
-                    old_flattened = old_flattened_inputs
-                    new_flattened = new_flattened_inputs
+
+                    # Latent calculated from input size
+
+                    new_latent_dim = int(new_input_size // compression_factor)
+
+                    if input_changed:
+                        print(f"   → Input changed: {old_input_size} → {new_input_size}")
+
+                        print(f"   → New latent (from input): {new_latent_dim}")
+
+                    if flatten_changed:
+
+                        print(f"   → Flatten changed: {old_flattened_feats} → {new_flattened_feats}")
+
+                        if not input_changed:
+                            print(f"   → (Architecture changed, but input size same)")
+
+                            print(f"   → Latent remains: {new_latent_dim} (calculated from input)")
+
+                    if not input_changed and not flatten_changed:
+                        new_latent_dim = old_latent_dim
+
+                        print(f"   ✓ Input and flatten unchanged → latent unchanged: {old_latent_dim}")
+
+
                 else:
+
                     raise ValueError(f"Unknown compression type: {compression_type}")
 
-                new_latent_dim = int(new_flattened // compression_factor)
+                # ============================================================
 
-                print(f"  - old_flattened: {old_flattened}")
-                print(f"  - new_flattened: {new_flattened}")
-                print(f"  - new_latent_dim (computed): {new_latent_dim}")
+                # CRITICAL: Update needed if FLATTEN changed
 
-                if old_flattened != new_flattened:
-                    print(f"🔧 Flattened size changed: {old_flattened} → {new_flattened}. Updating latent space...")
-                    model = update_latent(model, old_flattened, new_flattened, device=device)
+                # ============================================================
+
+                # Regardless of how latent_dim is calculated, if flatten_size changes,
+
+                # we MUST update the Linear layers because they depend on flatten_size!
+
+                update_needed = flatten_changed
+
+                if update_needed:
+                    print(f"\n🔧 Update required: flatten size changed")
+
+                    print(f"   - Linear layers must be resized to match new flatten size")
+
+                # ============================================================
+
+                # VALIDATION (only if updating)
+
+                # ============================================================
+
+                if update_needed:
+
+                    # Sanity checks
+
+                    min_latent = 16
+
+                    max_latent = new_input_size * 0.8
+
+                    if new_latent_dim < min_latent:
+                        print(f"\n⚠️  WARNING: Latent dim {new_latent_dim} is very small (< {min_latent})")
+
+                        print(f"   → Risk of underfitting")
+
+                    if new_latent_dim > max_latent:
+                        print(f"\n⚠️  WARNING: Latent dim {new_latent_dim} > 80% of input")
+
+                        print(f"   → Weak bottleneck")
+
+                    # Check flatten/latent ratio
+
+                    flatten_latent_ratio = new_flattened_feats / new_latent_dim
+
+                    if flatten_latent_ratio > 100:
+                        print(f"\n⚠️  WARNING: Very high flatten/latent ratio: {flatten_latent_ratio:.0f}:1")
+
+                        print(f"   → Linear layer compression: {new_flattened_feats} → {new_latent_dim}")
+
+                # ============================================================
+
+                # UPDATE LATENT SPACE IF NEEDED
+
+                # ============================================================
+
+                if update_needed:
+
+                    print(f"\n🔧 Updating latent space:")
+
+                    print(f"   - Old: Linear({old_flattened_feats} → {old_latent_dim})")
+
+                    print(f"   - New: Linear({new_flattened_feats} → {new_latent_dim})")
+
+                    model = update_latent(model, new_flattened_feats, new_latent_dim, device=device)
+
+                    print(f"   ✅ Latent space updated successfully!")
+
                 else:
-                    print("✅ Flattened size unchanged — latent space update not needed")
+
+                    print(f"\n✅ No latent space update needed")
+
+                    print(f"   - Dimensions unchanged: flatten={new_flattened_feats}, latent={old_latent_dim}")
 
             elif mode == "hard_latent_space":
                 # Recupera dimensione flatten vecchia e nuova
