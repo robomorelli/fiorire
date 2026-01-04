@@ -248,7 +248,7 @@ class CONV_AE2D(nn.Module):
         self.bottleneck_act = activation_dict.get(model_cfg.get("bottleneck_activation", None), None)
         self.pool = model_cfg.pool
         self.flattened = model_cfg.flattened
-        self.compression_factor = model_cfg.compression_factor if model_cfg.get('compression_factor_on_inputs', None) is None else model_cfg.get('compression_factor')
+        self.compression_factor = model_cfg.compression_factor if model_cfg.get('compression_factor_on_inputs', None) is None else model_cfg.get('compression_factor_on_inputs', None)
         self.compression_type = 'on_inputs' if model_cfg.get('compression_factor_on_inputs', None) is not None else 'on_features'
         self.increasing = model_cfg.increasing
         self.dilation = model_cfg.dilation
