@@ -1680,6 +1680,7 @@ def adjust_model_for_finetuning(
                 print(f"🔧 Added Conv2D OUTPUT adapter: {pre_feats},{pre_seq_len} → {fine_feats},{fine_seq_len}")
 
 
+
             elif mode == "latent_space":
 
                 print("\n⚙️ Fine-tuning mode: 'latent_space' (update latent linear layers)")
@@ -1749,9 +1750,6 @@ def adjust_model_for_finetuning(
 
                         print(f"   → New latent (from flatten): {new_latent_dim}")
 
-                        if input_changed:
-                            print(f"   → (Input also changed: {old_input_size} → {new_input_size})")
-
                     else:
 
                         new_latent_dim = old_latent_dim
@@ -1766,23 +1764,19 @@ def adjust_model_for_finetuning(
                     new_latent_dim = int(new_input_size // compression_factor)
 
                     if input_changed:
+
                         print(f"   → Input changed: {old_input_size} → {new_input_size}")
 
                         print(f"   → New latent (from input): {new_latent_dim}")
 
-                    if flatten_changed:
+                    else:
 
-                        print(f"   → Flatten changed: {old_flattened_feats} → {new_flattened_feats}")
-
-                        if not input_changed:
-                            print(f"   → (Architecture changed, but input size same)")
-
-                            print(f"   → Latent remains: {new_latent_dim} (calculated from input)")
-
-                    if not input_changed and not flatten_changed:
                         new_latent_dim = old_latent_dim
 
-                        print(f"   ✓ Input and flatten unchanged → latent unchanged: {old_latent_dim}")
+                        print(f"   ✓ Input unchanged → latent unchanged: {old_latent_dim}")
+
+                    if flatten_changed:
+                        print(f"   → Flatten also changed: {old_flattened_feats} → {new_flattened_feats}")
 
 
                 else:
@@ -1791,24 +1785,34 @@ def adjust_model_for_finetuning(
 
                 # ============================================================
 
-                # CRITICAL: Update needed if FLATTEN changed
+                # CRITICAL FIX: Update needed if EITHER dimension changed
 
                 # ============================================================
 
-                # Regardless of how latent_dim is calculated, if flatten_size changes,
+                # Linear layer is: Linear(flatten → latent)
 
-                # we MUST update the Linear layers because they depend on flatten_size!
+                # Update if EITHER flatten OR latent dimension changed!
 
-                update_needed = flatten_changed
+                latent_changed = (new_latent_dim != old_latent_dim)
+
+                update_needed = flatten_changed or latent_changed
 
                 if update_needed:
-                    print(f"\n🔧 Update required: flatten size changed")
 
-                    print(f"   - Linear layers must be resized to match new flatten size")
+                    print(f"\n🔧 Update required:")
+
+                    if flatten_changed:
+                        print(f"   - Flatten changed: {old_flattened_feats} → {new_flattened_feats}")
+
+                    if latent_changed:
+                        print(f"   - Latent changed: {old_latent_dim} → {new_latent_dim}")
+
+                    print(
+                        f"   - Linear layer: ({old_flattened_feats} → {old_latent_dim}) to ({new_flattened_feats} → {new_latent_dim})")
 
                 # ============================================================
 
-                # VALIDATION (only if updating)
+                # VALIDATION
 
                 # ============================================================
 
@@ -1823,21 +1827,8 @@ def adjust_model_for_finetuning(
                     if new_latent_dim < min_latent:
                         print(f"\n⚠️  WARNING: Latent dim {new_latent_dim} is very small (< {min_latent})")
 
-                        print(f"   → Risk of underfitting")
-
                     if new_latent_dim > max_latent:
                         print(f"\n⚠️  WARNING: Latent dim {new_latent_dim} > 80% of input")
-
-                        print(f"   → Weak bottleneck")
-
-                    # Check flatten/latent ratio
-
-                    flatten_latent_ratio = new_flattened_feats / new_latent_dim
-
-                    if flatten_latent_ratio > 100:
-                        print(f"\n⚠️  WARNING: Very high flatten/latent ratio: {flatten_latent_ratio:.0f}:1")
-
-                        print(f"   → Linear layer compression: {new_flattened_feats} → {new_latent_dim}")
 
                 # ============================================================
 
@@ -1853,7 +1844,7 @@ def adjust_model_for_finetuning(
 
                     print(f"   - New: Linear({new_flattened_feats} → {new_latent_dim})")
 
-                    model = update_latent(model, new_flattened_feats, new_latent_dim, device=device)
+                    model = update_latent(model, new_flattened_feats, new_latent_dim)
 
                     print(f"   ✅ Latent space updated successfully!")
 
