@@ -12,8 +12,92 @@ from ray.tune import CLIReporter
 from trainer.utils import get_opt_metric
 from omegaconf import OmegaConf
 import os
+import gc
 
 from config import *
+
+def cleanup_ray():
+    """Cleanup Ray environment before starting."""
+    print("\n" + "=" * 80)
+    print("🧹 CLEANING UP RAY ENVIRONMENT")
+    print("=" * 80)
+
+    # Shutdown existing Ray instance
+    if ray.is_initialized():
+        print("   - Shutting down existing Ray instance...")
+        ray.shutdown()
+
+    # Force garbage collection
+    print("   - Running garbage collection...")
+    gc.collect()
+
+    # Clear Ray temporary directory (optional but helpful)
+    import tempfile
+    ray_tmp_dir = os.path.join(tempfile.gettempdir(), 'ray')
+    if os.path.exists(ray_tmp_dir):
+        try:
+            # Don't delete if other Ray instances are using it
+            print(f"   - Ray temp directory: {ray_tmp_dir}")
+        except:
+            pass
+
+    print("   ✅ Cleanup complete")
+
+
+def initialize_ray_with_memory(memory_gb=10, address='auto', password=None):
+    """Initialize Ray with increased object store memory (only for local mode)."""
+    print("\n" + "=" * 80)
+    print("🚀 INITIALIZING RAY")
+    print("=" * 80)
+
+    object_store_memory = memory_gb * 1024 ** 3
+
+    print(f"   - Address: {address}")
+    if password:
+        print(f"   - Using password: {'*' * 8}")
+
+    # ✅ Base kwargs
+    init_kwargs = {
+        'address': address,
+        'ignore_reinit_error': True,
+    }
+
+    # ✅ Aggiungi memoria SOLO se NON ti stai connettendo a cluster esistente
+    if address in [None, 'local']:
+        # Modalità locale - possiamo specificare memoria
+        print(f"   - Object store memory: {memory_gb} GB (local mode)")
+        init_kwargs['object_store_memory'] = object_store_memory
+        init_kwargs['_memory'] = object_store_memory * 2
+    elif address == 'auto':
+        # Auto mode - potrebbe essere locale o cluster
+        # Non specifichiamo memoria - Ray userà quella del cluster se esiste
+        print(f"   - Object store memory: using cluster settings (auto mode)")
+    else:
+        # Address esplicito - sicuramente cluster esistente
+        print(f"   - Object store memory: using cluster settings (cluster mode)")
+
+    # ✅ Aggiungi password se fornita
+    if password:
+        init_kwargs['_redis_password'] = password
+
+    ray.init(**init_kwargs)
+
+    print(f"   ✅ Ray initialized")
+
+    # Mostra info cluster
+    try:
+        nodes = ray.nodes()
+        resources = ray.available_resources()
+        print(f"   - Connected nodes: {len(nodes)}")
+        print(f"   - Available CPUs: {resources.get('CPU', 0):.0f}")
+        print(f"   - Available GPUs: {resources.get('GPU', 0):.0f}")
+
+        if len(nodes) > 1:
+            print(f"   ✅ Cluster mode: {len(nodes)} nodes")
+        else:
+            print(f"   ℹ️  Single node mode")
+    except Exception as e:
+        print(f"   ⚠️  Could not get cluster info: {e}")
 
 
 def main(args):
@@ -223,9 +307,9 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fine-tuning with Ray Tune")
-    parser.add_argument("--address", default='10.141.1.28:6379', help="Ray cluster address")
+    parser.add_argument("--address", default=None, help="Ray cluster address")
     parser.add_argument("--password", default=None, help="Ray cluster password")
-    parser.add_argument("--config_file", default='conv_ae2D_CMG_ft',
+    parser.add_argument("--config_file", default='conv_ae2D_AOC_ft',
                         help="Fine-tuning config file")
     parser.add_argument("--trials_per_node", default=1, type=int,
                         help="trial per node")
@@ -237,7 +321,7 @@ if __name__ == "__main__":
                         help="Number of trials")
     parser.add_argument("--wandb", default=0, type=int,
                         help="Enable W&B logging (0/1)")
-    parser.add_argument("--project_name", default='conv2D_CMG_ft',
+    parser.add_argument("--project_name", default='conv2D_AOC_ft',
                         help="W&B project name")
     parser.add_argument("--entity", default='robmorelli',
                         help="W&B entity")
@@ -245,14 +329,28 @@ if __name__ == "__main__":
                         help="W&B API key")
     parser.add_argument("--debug_mode", default=1, type=int,
                         help="Run single trial for debugging (0/1)")
+    parser.add_argument("--ray_memory_gb", default=10, type=int,
+                        help="Ray object store memory in GB")
 
     args = parser.parse_args()
 
     # Environment configuration
-    os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"
+    os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "6"
 
-    # ✅ Initialize Ray
-    ray.init(address='auto', ignore_reinit_error=True)
+    # Cleanup and initialize Ray
+    cleanup_ray()
+    initialize_ray_with_memory(
+        memory_gb=args.ray_memory_gb,
+        address=args.address,
+        password=args.password
+    )
+
+    try:
+        main(args)
+    finally:
+        print("\n🛑 Shutting down Ray...")
+        ray.shutdown()
+        print("   ✅ Done")
 
     # Run fine-tuning
     main(args)

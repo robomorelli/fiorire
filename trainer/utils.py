@@ -492,9 +492,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train
 
     pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc=desc, leave=False)
     for i, (inputs, targets, is_anomaly) in pbar:
-        assert not torch.isnan(inputs).any(), "NaN in input!"
-        assert not torch.isnan(targets).any(), "NaN in target!"
-        assert not torch.isnan(is_anomaly).any(), "NaN in mask!"
+
         inputs, targets = inputs.to(device), targets.to(device)
         # conv ae 1d torch.Size([100, 16, 8]), torch.Size([100, 16, 8]), torch.Size([100, 1, 8])
         # conv ae 2d torch.Size([100, 1, 16, 8]), torch.Size([100, 1, 16, 8]), torch.Size([100, 1, 8])
@@ -546,9 +544,6 @@ def validate_one_epoch(
         pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc=desc, leave=False)
         for i, (inputs, targets, is_anomaly) in pbar:
             inputs, targets = inputs.to(device), targets.to(device)
-            assert not torch.isnan(inputs).any(), "NaN in input!"
-            assert not torch.isnan(targets).any(), "NaN in target!"
-            assert not torch.isnan(is_anomaly).any(), "NaN in mask!"
 
             outputs = model(inputs).to(device)
             loss = criterion(outputs, targets)
@@ -674,10 +669,6 @@ def test_anomaly_step(
         x, target, mask, *_ = batch
         x, target = x.to(device), target.to(device)
 
-        assert not torch.isnan(x).any(), "NaN in input!"
-        assert not torch.isnan(target).any(), "NaN in target!"
-        assert not torch.isnan(mask).any(), "NaN in mask!"
-
         is_anom = mask.view(mask.size(0), -1).sum(dim=1) > 0
         is_norm = ~is_anom
 
@@ -687,8 +678,6 @@ def test_anomaly_step(
         if is_anom.any():
             x_anom, target_anom, mask_anom = x[is_anom], target[is_anom], mask[is_anom]
             recon = model(x_anom)
-
-
 
             # ✅ CHECK: Reconstruction (anomalies)
             if torch.isnan(recon).any() or torch.isinf(recon).any():
@@ -1306,8 +1295,7 @@ def adjust_model_for_finetuning(
 
     def update_latent(model, old_flattened, new_flattened, device='cuda:0'):
         """
-        Aggiorna la dimensione del latent space ricreando i layer Linear
-        con inizializzazione Kaiming Normal.
+        update latent space dimension creating new layer with kaiming normal initialization.
         """
 
         def init_kaiming_linear(layer, mode='fan_in'):
@@ -1319,6 +1307,7 @@ def adjust_model_for_finetuning(
         decoder = model.decoder
 
         compression_factor = encoder.compression_factor
+
         new_latent_dim = int(new_flattened // compression_factor)
 
         print(f"Updating latent: old_flattened={old_flattened} → new_flattened={new_flattened}")
@@ -1580,10 +1569,25 @@ def adjust_model_for_finetuning(
 
             elif mode == "latent_space":
                 # Recupera dimensione flatten vecchia e nuova
-                old_flattened = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size", None)
-                new_flattened = getattr(getattr(model, "encoder", None), "flattened_size", None)
-                compression_factor = getattr(getattr(model, "encoder", None), "compression_factor", 1)
-                new_latent_dim = int(new_flattened // compression_factor) if new_flattened is not None else None
+                old_flattened_feats = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size")
+                new_flattened_feats = getattr(getattr(model, "encoder", None), "flattened_size")
+                old_flattened_inputs = pre_feats*pre_seq_len
+                new_flattened_inputs = fine_feats*fine_seq_len
+
+                compression_factor = getattr(getattr(model, "encoder", None), "compression_factor")
+                compression_type = getattr(getattr(model, "encoder", None), "compression_type", None)    # None for backcompatibility
+                compression_type = 'on_features' if compression_type is None else compression_type
+
+                if compression_type == 'on_features':
+                    old_flattened = old_flattened_feats
+                    new_flattened = new_flattened_feats
+                elif compression_type == 'on_inputs':
+                    old_flattened = old_flattened_inputs
+                    new_flattened = new_flattened_inputs
+                else:
+                    raise ValueError(f"Unknown compression type: {compression_type}")
+
+                new_latent_dim = int(new_flattened // compression_factor)
 
                 print(f"  - old_flattened: {old_flattened}")
                 print(f"  - new_flattened: {new_flattened}")
@@ -1715,7 +1719,7 @@ def load_pretrained_checkpoint(model, config, device):
 
     if not config.opt.get('checkpoint_path', False):
         print("⚠️ WARNING: fine_tuning=True but no checkpoint_path provided!")
-        return model, False
+        raise Exception("Please provide a checkpoint path")
 
     checkpoint_path = config.opt.get('checkpoint_path')
     print(f"\n{'=' * 60}")

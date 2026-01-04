@@ -320,6 +320,7 @@ class CONV_AE2D(nn.Module):
         self.flattened_size = self.encoder.flattened_size
         self.latent_dim = self.encoder.latent_dim
         self.cfg.model.flattened_size = self.flattened_size
+        self.cfg.model.latent_dim = self.latent_dim
         self.decoder = Decoder(in_channels=self.in_channels, first_deconv_channels=self.encoder.last_layers_channels,
                                base_filters= self.base_filters, kernel_size=self.pool_ks, num_layers=self.num_layers,
                                stride=self.pool_stride,
