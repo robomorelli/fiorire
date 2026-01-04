@@ -887,7 +887,7 @@ def create_dataloaders(cfg, train_dataset, val_dataset, train_sampler, val_sampl
     """
     from torch.utils.data import DataLoader
 
-    print(f' USING N {cfg.resources.gpu_trial} Workers per trial')
+    print(f' USING N {cfg.resources.cpu_trial} Workers per trial')
 
     trainloader = DataLoader(
         train_dataset,

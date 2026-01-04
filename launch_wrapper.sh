@@ -176,7 +176,7 @@ cat > "$PBS_JOB" <<EOF
 #PBS -v $PBS_ENV_VARS
 
 module load proxy/proxy_20
-bash /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/launch_hpo.sh
+bash /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/launch_hpo_ft.sh
 EOF
 
 # ============================================================================
