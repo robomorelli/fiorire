@@ -62,7 +62,8 @@ class Encoder1D(nn.Module):
         # Compute flattened size after bottleneck
         bottleneck_conv = nn.Conv1d(in_f, self.bottleneck_out_channels, kernel_size=1)
         self.flattened_size, self.seq_enc = self._get_final_flattened_size(bottleneck_conv=bottleneck_conv)
-        self.latent_dim = int(self.flattened_size // self.compression_factor) if  self.compression_type == 'on_features' else int((self.h*self.w // self.compression_factor))
+        self.latent_dim = int(self.flattened_size // self.compression_factor) if  self.compression_type == 'on_features' \
+            else int((self.in_channels*self.seq_length // self.compression_factor))
         self.bottleneck = bottleneck1D(bottleneck_conv=bottleneck_conv, activation=self.act,
                                        flattened=self.flattened, flattened_size=self.flattened_size, latent_dim=self.latent_dim,
                                        bottleneck_activation=self.bottleneck_act, batch_norm=True)
