@@ -252,15 +252,14 @@ class CONV_AE2D(nn.Module):
         self.compression_type = 'on_inputs' if model_cfg.get('compression_factor_on_inputs', None) is not None else 'on_features'
         self.increasing = model_cfg.increasing
         self.dilation = model_cfg.dilation
-        if self.cfg.opt.get("fine_tuning",0) and self.cfg.opt.get("opt.fine_tuning_mode") == "adaptive_layer":
+        if self.cfg.opt.get("fine_tuning",0) and self.cfg.opt.get("fine_tuning_mode") in ["adaptive_layer","linear_proj"]:
             # Chage the output size according to the pre-trained model to enable putput adaptation layer
             self.h = len(torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.feats)
             self.w = torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.seq_in_length
         else:
             self.h = cfg.dataset.n_features  # or model_cfg.heigth if set there
             self.w = cfg.dataset.seq_in_length
-        self.h = cfg.dataset.n_features  # or model_cfg.heigth if set there
-        self.w = cfg.dataset.seq_in_length
+
         self.halve_time = model_cfg.halve_time  # if True, halve only the time dimension when pooling
         self.halve_features = model_cfg.halve_features  # if True, halve only the feature dimension when pooling
         self.stride = model_cfg.stride if not model_cfg.pool else 1
@@ -338,6 +337,9 @@ class CONV_AE2D(nn.Module):
 
     def forward(self, x):
         if hasattr(self, "input_adapter") and self.input_adapter is not None:
+            #B, C, H_in, W = x.shape
+            #x = x.permute(0, 3, 1, 2).contiguous()  # [B, W, C, H_in]
+            #x = x.view(B * W, C * H_in)
             x = self.input_adapter(x)
         enc = self.encoder(x)
         out = self.decoder(enc)

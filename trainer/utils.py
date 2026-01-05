@@ -220,166 +220,6 @@ def compute_indices_with_overlap(base_indices, overlap, seq_len):
         return np.array([], dtype=np.int64)
 
 
-def get_optimizazion_objects(cfg, model, opt_metric_dict):
-    """
-    Get optimizer, scheduler, criterion, and early stopping.
-
-    Handles separate learning rates for bottleneck layers and supports
-    both single-LR and dual-LR configurations. Robustly handles numeric
-    parameters that may arrive as strings from Ray Tune.
-
-    Args:
-        cfg: Configuration object
-        model: Neural network model
-        opt_metric_dict: Dictionary containing optimization metric info
-
-    Returns:
-        tuple: (optimizer, scheduler, criterion, early_stopping)
-    """
-
-    # ============================================================
-    # HELPER: Robust numeric conversion
-    # ============================================================
-    def to_float(value, default=0.0, param_name="parameter"):
-        """
-        Convert parameter to float, handle string/None cases.
-
-        Ray Tune may serialize numeric parameters as strings during
-        distribution to workers. This helper ensures robust conversion.
-
-        Args:
-            value: Value to convert (can be str, int, float, None)
-            default: Default value if conversion fails
-            param_name: Parameter name for logging
-
-        Returns:
-            float: Converted value
-        """
-        if value is None or value == "":
-            return default
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            print(f"⚠️  Warning: Invalid {param_name} value '{value}' (type: {type(value).__name__}), using {default}")
-            return default
-
-    # ============================================================
-    # CONVERT ALL NUMERIC PARAMETERS
-    # ============================================================
-    lr = to_float(cfg.opt.lr, default=0.001, param_name="lr")
-    bottleneck_lr = to_float(
-        getattr(cfg.opt, "bottleneck_lr", 0),
-        default=0.0,
-        param_name="bottleneck_lr"
-    )
-    lr_patience = int(to_float(
-        cfg.opt.lr_patience,
-        default=10,
-        param_name="lr_patience"
-    ))
-    es_patience = int(to_float(
-        cfg.opt.es_patience,
-        default=15,
-        param_name="es_patience"
-    )) if hasattr(cfg.opt, 'es_patience') else None
-
-    print("\n=================== OPTIMIZER SETUP ===================")
-    print(f"Main LR:          {lr}")
-    print(f"Bottleneck LR:    {bottleneck_lr}  (0 → same LR as main)")
-    print(f"LR Patience:      {lr_patience}")
-    print(f"ES Patience:      {es_patience}")
-    print("--------------------------------------------------------")
-
-    # ============================================================
-    # IDENTIFY BOTTLENECK PARAMETERS
-    # ============================================================
-    bottleneck_params = []
-    main_params = []
-
-    for name, param in model.named_parameters():
-        if "bottleneck" in name.lower():
-            bottleneck_params.append(param)
-            print(f"   → Bottleneck param found: {name}")
-        else:
-            main_params.append(param)
-
-    # ============================================================
-    # HANDLE WARNING: NO BOTTLENECK FOUND
-    # ============================================================
-    if bottleneck_lr > 0 and len(bottleneck_params) == 0:
-        print("\n!!! WARNING: bottleneck_lr > 0 but NO bottleneck layers found in model !!!")
-        print("    → Falling back to SINGLE LR for all parameters\n")
-        bottleneck_lr = 0  # Force single LR
-
-    # ============================================================
-    # CASE 1: SINGLE LR (bottleneck_lr == 0)
-    # ============================================================
-    if bottleneck_lr == 0:
-        print(">>> [MODE] USING SINGLE LR FOR ALL MODEL PARAMETERS\n")
-
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode=opt_metric_dict["mode"],
-            factor=0.8,
-            patience=lr_patience,
-            threshold=0.0001,
-            threshold_mode='rel',
-            cooldown=0,
-            min_lr=9e-8,
-            verbose=True
-        )
-
-        criterion = nn.MSELoss()
-        min_delta = 1e-6 if opt_metric_dict["mode"] == "min" else 3e-3
-
-        early_stopping = EarlyStopping(
-            patience=es_patience,
-            min_delta=min_delta,
-            opt_metric_dict=opt_metric_dict
-        ) if es_patience else None
-
-        print("========================================================\n")
-        return optimizer, scheduler, criterion, early_stopping
-
-    # ============================================================
-    # CASE 2: SEPARATE LR FOR BOTTLENECK
-    # ============================================================
-    print("\n>>> [MODE] USING SEPARATE LR FOR BOTTLENECK")
-    print(f"Total bottleneck params: {len(bottleneck_params)}")
-    print(f"Total main params:       {len(main_params)}")
-    print("--------------------------------------------------------")
-
-    optimizer = torch.optim.Adam([
-        {"params": main_params, "lr": lr},
-        {"params": bottleneck_params, "lr": bottleneck_lr},
-    ])
-
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode=opt_metric_dict["mode"],
-        factor=0.8,
-        patience=lr_patience,
-        threshold=0.0001,
-        threshold_mode='rel',
-        cooldown=0,
-        min_lr=9e-8,
-        verbose=True
-    )
-
-    criterion = nn.MSELoss()
-    min_delta = 1e-6 if opt_metric_dict["mode"] == "min" else 3e-3
-
-    early_stopping = EarlyStopping(
-        patience=es_patience,
-        min_delta=min_delta,
-        opt_metric_dict=opt_metric_dict
-    ) if es_patience else None
-
-    print("========================================================\n")
-    return optimizer, scheduler, criterion, early_stopping
-
 
 def infer_metric_mode(metric_name: str) -> str:
     name = metric_name.lower()
@@ -1697,6 +1537,56 @@ def adjust_model_for_finetuning(
 
                 print(f"\n✅ Adapters created successfully!")
 
+            elif mode == "linear_proj":
+                print("\n⚙️ Fine-tuning mode: 'linear_proj' (feature projection)")
+                print("   Strategy: Linear/Non-linear projection N → 16")
+
+
+                # Get adapter configuration
+                adapter_config = fine_tuning_cfg.opt.get('adapter', {})
+                use_nonlinear = adapter_config.get('use_nonlinear', False)
+                hidden_dim = adapter_config.get('hidden_dim', 32)
+
+                print(f"   Configuration:")
+                print(f"      - Type: {'Non-linear' if use_nonlinear else 'Linear'}")
+                if use_nonlinear:
+                    print(f"      - Hidden dim: {hidden_dim}")
+
+                # INPUT adapter: fine_feats → pre_feats
+                adapter_in = create_projection_adapter(
+                    pre_feats=pre_feats,
+                    pre_seq_len=pre_seq_len,
+                    fine_feats=fine_feats,
+                    fine_seq_len=fine_seq_len,
+                    cfg=fine_tuning_cfg,
+                    adapter_type='input',
+                    use_nonlinear=use_nonlinear,
+                    hidden_dim=hidden_dim
+                )
+
+                model.input_adapter = adapter_in.to(device)
+
+                # OUTPUT adapter: pre_feats → fine_feats
+                adapter_out = create_projection_adapter(
+                    pre_feats=pre_feats,
+                    pre_seq_len=pre_seq_len,
+                    fine_feats=fine_feats,
+                    fine_seq_len=fine_seq_len,
+                    cfg=fine_tuning_cfg,
+                    adapter_type='output',
+                    use_nonlinear=use_nonlinear,
+                    hidden_dim=hidden_dim
+                )
+
+                model.output_adapter = adapter_out.to(device)
+
+                print(f"\n   ✅ Projection adapters created!")
+
+                # Apply freeze strategy
+                if freeze_layers:
+                    freeze_layers_with_logging(model, freeze_layers,
+                                               fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode'))
+
 
 
             elif mode == "latent_space":
@@ -2462,3 +2352,515 @@ class LightweightFeatureAdapter2D(nn.Module):
         x = F.interpolate(x, size=target_size, mode='bilinear', align_corners=False)
         x = self.transform(x)
         return x
+
+
+# =============================================================================
+# ADAPTER 1: Feature Projection (Linear/Non-linear)
+# =============================================================================
+
+class FeatureProjectionAdapter(nn.Module):
+    """
+    Linear/Non-linear projection adapter for feature dimension transformation.
+
+    All parameters have 'adapter' in their names for proper LR assignment.
+
+    Args:
+        n_in: Input number of features
+        n_out: Output number of features
+        use_nonlinear: If True, use non-linear projection (default: False)
+        hidden_dim: Hidden dimension for non-linear (default: 32)
+        activation: Activation function (default: GELU)
+    """
+
+    def __init__(
+            self,
+            n_in,
+            n_out,
+            use_nonlinear=False,
+            hidden_dim=32,
+            activation=None
+    ):
+        super().__init__()
+
+        self.n_in = n_in
+        self.n_out = n_out
+        self.use_nonlinear = use_nonlinear
+
+        if activation is None:
+            activation = nn.GELU()
+
+        if not use_nonlinear:
+            # ✅ Nome include "adapter"
+            self.adapter_projection = nn.Linear(n_in, n_out)
+        else:
+            # ✅ Tutti i nomi includono "adapter"
+            self.adapter_projection = nn.Sequential(
+                nn.Linear(n_in, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                activation,
+                nn.Linear(hidden_dim, n_out)
+            )
+
+        self._init_weights()
+
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"\n   🔧 FeatureProjectionAdapter initialized:")
+        print(f"      Features: {n_in} → {n_out}")
+        print(f"      Type: {'Non-linear (hidden={})'.format(hidden_dim) if use_nonlinear else 'Linear'}")
+        print(f"      Parameters: {total_params:,}")
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        """
+        Args:
+            x: [B, C, H_in, W]
+        Returns:
+            [B, C, H_out, W]
+        """
+        B, C, H_in, W = x.shape
+        #assert H_in == self.n_in, f"Expected {self.n_in} input features, got {H_in}"
+
+        # Reshape: treat each timestep independently
+        x = x.permute(0, 3, 1, 2).contiguous()
+        x = x.view(B * W, C * H_in)
+
+        # Apply projection
+        x_proj = self.adapter_projection(x)
+
+        # Reshape back
+        x_proj = x_proj.view(B, W, C, self.n_out)
+        x_proj = x_proj.permute(0, 2, 3, 1).contiguous()
+
+        return x_proj
+
+
+# =============================================================================
+# ADAPTER 2: Conv2D Feature Mapper (with context)
+# =============================================================================
+
+class Conv2DFeatureAdapter(nn.Module):
+    """
+    Conv2D-based feature adapter with spatial context.
+
+    All parameters have 'adapter' in their names for proper LR assignment.
+
+    Args:
+        h_in: Input features
+        h_out: Output features
+        channels: Number of channels (default: 1)
+        hidden_dim: Hidden channels (default: 64)
+        kernel_size: Kernel size along features (default: 5)
+        num_layers: Number of conv layers (default: 3)
+        activation: Activation function
+        use_residual: Use residual connection (default: True)
+    """
+
+    def __init__(
+            self,
+            h_in,
+            h_out,
+            channels=1,
+            hidden_dim=64,
+            kernel_size=5,
+            num_layers=3,
+            activation=None,
+            use_residual=True
+    ):
+        super().__init__()
+
+        self.h_in = h_in
+        self.h_out = h_out
+        self.channels = channels
+        self.use_residual = use_residual
+
+        if activation is None:
+            activation = nn.GELU()
+
+        kernel_h = min(kernel_size, h_in, h_out)
+        padding_h = kernel_h // 2
+
+        layers = []
+
+        # First layer
+        layers.extend([
+            nn.Conv2d(
+                channels, hidden_dim,
+                kernel_size=(kernel_h, 1),
+                padding=(padding_h, 0),
+                bias=True
+            ),
+            nn.BatchNorm2d(hidden_dim),
+            activation
+        ])
+
+        # Middle layers
+        for _ in range(num_layers - 2):
+            layers.extend([
+                nn.Conv2d(
+                    hidden_dim, hidden_dim,
+                    kernel_size=(3, 1),
+                    padding=(1, 0),
+                    bias=True
+                ),
+                nn.BatchNorm2d(hidden_dim),
+                activation
+            ])
+
+        # Final layer
+        layers.append(
+            nn.Conv2d(hidden_dim, channels, kernel_size=1, bias=True)
+        )
+
+        # ✅ Nome include "adapter"
+        self.adapter_transform = nn.Sequential(*layers)
+
+        self._init_weights()
+
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"\n   🔧 Conv2DFeatureAdapter initialized:")
+        print(f"      Features: {h_in} → {h_out}")
+        print(f"      Hidden channels: {hidden_dim}")
+        print(f"      Kernel size: ({kernel_h}, 1)")
+        print(f"      Num layers: {num_layers}")
+        print(f"      Residual: {use_residual}")
+        print(f"      Parameters: {total_params:,}")
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        """
+        Args:
+            x: [B, C, H_in, W]
+        Returns:
+            [B, C, H_out, W]
+        """
+        B, C, H, W = x.shape
+
+        # Apply Conv2D transformation
+        x_mapped = self.adapter_transform(x)
+
+        # Resize if needed
+        if x_mapped.shape[2] != self.h_out:
+            x_mapped = F.interpolate(
+                x_mapped,
+                size=(self.h_out, W),
+                mode='bilinear',
+                align_corners=False
+            )
+
+        # Residual
+        if self.use_residual:
+            x_interp = F.interpolate(
+                x,
+                size=(self.h_out, W),
+                mode='bilinear',
+                align_corners=False
+            )
+            x_mapped = x_mapped + x_interp
+
+        return x_mapped
+
+
+# =============================================================================
+# Factory Functions
+# =============================================================================
+
+def create_projection_adapter(
+        pre_feats,
+        pre_seq_len,
+        fine_feats,
+        fine_seq_len,
+        cfg,
+        adapter_type='input',
+        use_nonlinear=False,
+        hidden_dim=32
+):
+    """Create linear/non-linear projection adapter."""
+    from config import activation_dict
+
+    activation_name = cfg.model.get('activation', 'GELU')
+    activation = activation_dict.get(activation_name, nn.GELU())
+
+    if adapter_type == 'input':
+        n_in, n_out = fine_feats, pre_feats
+        print(f"\n🔧 Creating INPUT projection adapter:")
+        print(f"   [{fine_feats}×{fine_seq_len}] → [{pre_feats}×{pre_seq_len}]")
+    elif adapter_type == 'output':
+        n_in, n_out = pre_feats, fine_feats
+        print(f"\n🔧 Creating OUTPUT projection adapter:")
+        print(f"   [{pre_feats}×{pre_seq_len}] → [{fine_feats}×{fine_seq_len}]")
+    else:
+        raise ValueError(f"adapter_type must be 'input' or 'output'")
+
+    adapter = FeatureProjectionAdapter(
+        n_in=n_in,
+        n_out=n_out,
+        use_nonlinear=use_nonlinear,
+        hidden_dim=hidden_dim,
+        activation=activation
+    )
+
+    return adapter
+
+
+def create_conv2d_adapter(
+        pre_feats,
+        pre_seq_len,
+        fine_feats,
+        fine_seq_len,
+        cfg,
+        adapter_type='input',
+        hidden_dim=64,
+        kernel_size=5,
+        num_layers=3,
+        use_residual=True
+):
+    """Create Conv2D-based feature adapter."""
+    from config import activation_dict
+
+    activation_name = cfg.model.get('activation', 'GELU')
+    activation = activation_dict.get(activation_name, nn.GELU())
+
+    if adapter_type == 'input':
+        h_in, h_out = fine_feats, pre_feats
+        print(f"\n🔧 Creating INPUT Conv2D adapter:")
+        print(f"   [{fine_feats}×{fine_seq_len}] → [{pre_feats}×{pre_seq_len}]")
+    elif adapter_type == 'output':
+        h_in, h_out = pre_feats, fine_feats
+        print(f"\n🔧 Creating OUTPUT Conv2D adapter:")
+        print(f"   [{pre_feats}×{pre_seq_len}] → [{fine_feats}×{fine_seq_len}]")
+    else:
+        raise ValueError(f"adapter_type must be 'input' or 'output'")
+
+    adapter = Conv2DFeatureAdapter(
+        h_in=h_in,
+        h_out=h_out,
+        channels=1,
+        hidden_dim=hidden_dim,
+        kernel_size=kernel_size,
+        num_layers=num_layers,
+        activation=activation,
+        use_residual=use_residual
+    )
+
+    return adapter
+
+# trainer/utils.py
+
+def get_optimizazion_objects(cfg, model, opt_metric_dict):
+    """
+    Get optimizer, scheduler, criterion, and early stopping.
+
+    Handles MULTIPLE learning rates:
+    - lr: Main learning rate (backbone)
+    - bottleneck_lr: Learning rate for bottleneck layers (0 = use main lr)
+    - adapter_lr: Learning rate for adapters (0 = use main lr)
+
+    Args:
+        cfg: Configuration object
+        model: Neural network model
+        opt_metric_dict: Dictionary containing optimization metric info
+
+    Returns:
+        tuple: (optimizer, scheduler, criterion, early_stopping)
+    """
+
+    # ============================================================
+    # HELPER: Robust numeric conversion
+    # ============================================================
+    def to_float(value, default=0.0, param_name="parameter"):
+        """Convert parameter to float, handle string/None cases."""
+        if value is None or value == "":
+            return default
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            print(f"⚠️  Warning: Invalid {param_name} value '{value}', using {default}")
+            return default
+
+    # ============================================================
+    # CONVERT ALL NUMERIC PARAMETERS
+    # ============================================================
+    lr = to_float(cfg.opt.lr, default=0.001, param_name="lr")
+
+    bottleneck_lr = to_float(
+        getattr(cfg.opt, "bottleneck_lr", 0),
+        default=0.0,
+        param_name="bottleneck_lr"
+    )
+
+    adapter_lr = to_float(
+        getattr(cfg.opt, "adapter_lr", 0),
+        default=0.0,
+        param_name="adapter_lr"
+    )
+
+    lr_patience = int(to_float(
+        cfg.opt.lr_patience,
+        default=10,
+        param_name="lr_patience"
+    ))
+
+    es_patience = int(to_float(
+        cfg.opt.es_patience,
+        default=15,
+        param_name="es_patience"
+    )) if hasattr(cfg.opt, 'es_patience') else None
+
+    print("\n=================== OPTIMIZER SETUP ===================")
+    print(f"Main LR:          {lr}")
+    print(f"Bottleneck LR:    {bottleneck_lr}  (0 → use main LR)")
+    print(f"Adapter LR:       {adapter_lr}  (0 → use main LR)")
+    print(f"LR Patience:      {lr_patience}")
+    print(f"ES Patience:      {es_patience}")
+    print("--------------------------------------------------------")
+
+    # ============================================================
+    # IDENTIFY PARAMETER GROUPS
+    # ============================================================
+    adapter_params = []
+    bottleneck_params = []
+    main_params = []
+
+    for name, param in model.named_parameters():
+        # Check for adapter first (highest priority)
+        if "adapter" in name.lower():
+            adapter_params.append(param)
+            print(f"   → Adapter param found: {name}")
+
+        # Check for bottleneck
+        elif "bottleneck" in name.lower():
+            bottleneck_params.append(param)
+            print(f"   → Bottleneck param found: {name}")
+
+        # Everything else is main
+        else:
+            main_params.append(param)
+
+    # ============================================================
+    # STATISTICS
+    # ============================================================
+    print("\n📊 Parameter Groups:")
+    print(f"   - Adapter params:    {len(adapter_params):4d}")
+    print(f"   - Bottleneck params: {len(bottleneck_params):4d}")
+    print(f"   - Main params:       {len(main_params):4d}")
+    print(f"   - Total:             {len(adapter_params) + len(bottleneck_params) + len(main_params):4d}")
+
+    # ============================================================
+    # BUILD PARAMETER GROUPS FOR OPTIMIZER
+    # ============================================================
+    param_groups = []
+
+    # ✅ MAIN PARAMS: Always add (may include adapter/bottleneck if their lr=0)
+    if len(main_params) > 0:
+        param_groups.append({"params": main_params, "lr": lr, "name": "main"})
+        print(f"\n✓ Main params: LR = {lr}")
+
+    # ✅ BOTTLENECK PARAMS
+    if len(bottleneck_params) > 0:
+        if bottleneck_lr > 0:
+            # Separate LR for bottleneck
+            param_groups.append({
+                "params": bottleneck_params,
+                "lr": bottleneck_lr,
+                "name": "bottleneck"
+            })
+            print(f"✓ Bottleneck params: LR = {bottleneck_lr}  (separate)")
+        else:
+            # Use main LR (add to main group)
+            if len(param_groups) > 0 and param_groups[0]["name"] == "main":
+                param_groups[0]["params"].extend(bottleneck_params)
+                print(f"✓ Bottleneck params: LR = {lr}  (same as main)")
+            else:
+                param_groups.append({
+                    "params": bottleneck_params,
+                    "lr": lr,
+                    "name": "bottleneck_with_main"
+                })
+                print(f"✓ Bottleneck params: LR = {lr}  (same as main)")
+
+    # ✅ ADAPTER PARAMS
+    if len(adapter_params) > 0:
+        if adapter_lr > 0:
+            # Separate LR for adapter
+            param_groups.append({
+                "params": adapter_params,
+                "lr": adapter_lr,
+                "name": "adapter"
+            })
+            print(f"✓ Adapter params: LR = {adapter_lr}  🔥 (separate, HIGH for random init!)")
+        else:
+            # Use main LR (add to main group)
+            if len(param_groups) > 0 and param_groups[0]["name"] == "main":
+                param_groups[0]["params"].extend(adapter_params)
+                print(f"✓ Adapter params: LR = {lr}  (same as main)")
+            else:
+                param_groups.append({
+                    "params": adapter_params,
+                    "lr": lr,
+                    "name": "adapter_with_main"
+                })
+                print(f"✓ Adapter params: LR = {lr}  (same as main)")
+
+    # ============================================================
+    # WARNINGS & RECOMMENDATIONS
+    # ============================================================
+    if len(adapter_params) > 0:
+        if adapter_lr == 0:
+            print(f"\n⚠️  Adapter found but adapter_lr=0 → using MAIN lr={lr}")
+            print(f"   ⚠️  Adapters are RANDOM INIT and may converge SLOWLY with low LR!")
+            print(f"   💡 Recommendation: Set adapter_lr={lr * 100:.4f} (100x main lr)")
+        elif adapter_lr < lr * 5:
+            print(f"\n⚠️  adapter_lr={adapter_lr} is only {adapter_lr / lr:.1f}x main lr")
+            print(f"   💡 Recommendation: adapter_lr should be 10-100x for random init adapters")
+
+    if len(bottleneck_params) > 0 and bottleneck_lr == 0:
+        print(f"\n✓ Bottleneck found, using main lr={lr} (bottleneck_lr=0)")
+
+    # ============================================================
+    # CREATE OPTIMIZER
+    # ============================================================
+    print(f"\n>>> Creating optimizer with {len(param_groups)} parameter group(s)")
+
+    optimizer = torch.optim.Adam(param_groups)
+
+    # ============================================================
+    # SCHEDULER, CRITERION, EARLY STOPPING
+    # ============================================================
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode=opt_metric_dict["mode"],
+        factor=0.8,
+        patience=lr_patience,
+        threshold=0.0001,
+        threshold_mode='rel',
+        cooldown=0,
+        min_lr=9e-8,
+        verbose=True
+    )
+
+    criterion = nn.MSELoss()
+    min_delta = 1e-6 if opt_metric_dict["mode"] == "min" else 3e-3
+
+    early_stopping = EarlyStopping(
+        patience=es_patience,
+        min_delta=min_delta,
+        opt_metric_dict=opt_metric_dict
+    ) if es_patience else None
+
+    print("========================================================\n")
+    return optimizer, scheduler, criterion, early_stopping
