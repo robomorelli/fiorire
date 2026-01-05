@@ -12,6 +12,7 @@ import re
 from scipy import interpolate
 from omegaconf import ListConfig
 from torch.utils.data import SubsetRandomSampler
+import json
 
 from utils.metric_dataset_generator import generate_and_save_metric_dataset
 from preprocessing.scaling import *
@@ -497,60 +498,6 @@ def extract_sequences_with_labels(
 _RAY_OBJECT_CACHE = {}
 
 
-def parse_metadata_file(metadata_path):
-    """
-    Parse metadata.txt file and extract all information.
-
-    Returns:
-        dict with all metadata
-    """
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
-
-    metadata = {}
-
-    with open(metadata_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if ':' not in line:
-                continue
-
-            key, value = line.split(':', 1)
-            key = key.strip()
-            value = value.strip()
-
-            # Parse based on key
-            if key == 'Experiment':
-                metadata['exp_name'] = value
-            elif key == 'Model':
-                metadata['model_name'] = value
-            elif key == 'Dataset':
-                metadata['dataset_name'] = value
-            elif key == 'Seed':
-                metadata['seed'] = int(value)
-            elif key == 'Filter anomalies':
-                metadata['filter_anomalies'] = value.lower() == 'true'
-            elif key == 'Train indices':
-                metadata['train_size'] = int(value.replace(',', ''))
-            elif key == 'Val indices':
-                metadata['val_size'] = int(value.replace(',', ''))
-            elif key == 'Scaler':
-                metadata['scaler_type'] = value
-            elif key == 'Scaler params':
-                # Try to eval as dict
-                try:
-                    metadata['scaler_params'] = eval(value)
-                except:
-                    metadata['scaler_params'] = value
-            elif key == 'Feature columns':
-                # Parse comma-separated list
-                metadata['feature_columns'] = [f.strip() for f in value.split(',')]
-            elif key == 'Sequence length':
-                metadata['seq_len'] = int(value)
-
-    return metadata
-
-
 # ============================================================
 # MODIFIED: prepare_shared_configuration
 # ============================================================
@@ -558,27 +505,9 @@ def parse_metadata_file(metadata_path):
 def parse_metadata_file(metadata_path):
     """
     Parse metadata.txt file and extract all information.
-
-    Args:
-        metadata_path: Path to metadata.txt
-
-    Returns:
-        dict with parsed metadata
-
-    Example metadata.txt:
-        Experiment: AOC
-        Model: conv_ae2D
-        Dataset: fiorire1
-        Seed: 42
-        Filter anomalies: True
-        Sequence length: 16
-        Train indices: 50,000
-        Val indices: 10,000
-        Scaler: StandardScaler
-        Scaler params: {'mean': [...], 'std': [...]}
-        Feature columns: temp1, volt1, curr1, ...
     """
     from pathlib import Path
+    import json
 
     metadata_path = Path(metadata_path)
 
@@ -627,12 +556,17 @@ def parse_metadata_file(metadata_path):
                 metadata['scaler_type'] = value
 
             elif key == 'Scaler params':
-                # Try to eval as dict (safe because we wrote it)
+                # ✅ Use JSON instead of eval (safer and handles multi-line)
                 try:
-                    metadata['scaler_params'] = eval(value)
-                except Exception as e:
-                    print(f"   ⚠️  Could not parse scaler params: {e}")
-                    metadata['scaler_params'] = value
+                    metadata['scaler_params'] = json.loads(value)
+                except json.JSONDecodeError as e:
+                    print(f"   ⚠️  Could not parse scaler params as JSON: {e}")
+                    # Try eval as fallback (for old format)
+                    try:
+                        metadata['scaler_params'] = eval(value)
+                    except Exception as e2:
+                        print(f"   ⚠️  Could not parse scaler params with eval: {e2}")
+                        metadata['scaler_params'] = {'raw': value}
 
             elif key == 'Feature columns':
                 # Parse comma-separated list
@@ -646,7 +580,6 @@ def parse_metadata_file(metadata_path):
         raise ValueError(f"Required fields missing from metadata: {missing}")
 
     return metadata
-
 
 def prepare_shared_configuration(cfg):
     """
@@ -1094,9 +1027,11 @@ def prepare_shared_configuration(cfg):
         f.write(f"Train indices: {len(train_indexes):,}\n")
         f.write(f"Val indices: {len(val_indexes):,}\n")
         f.write(f"Scaler: {scaler.__class__.__name__}\n")
-        f.write(f"Scaler params: {scaler_params}\n")
-        f.write(f"Feature columns: {', '.join(feature_columns)}\n")
 
+        # ✅ Use JSON for scaler_params (single line, no indent issues)
+        f.write(f"Scaler params: {json.dumps(scaler_params)}\n")
+
+        f.write(f"Feature columns: {', '.join(feature_columns)}\n")
     print(f"   ✓ Metadata saved: {metadata_path}")
 
     # 6. Build shared config
