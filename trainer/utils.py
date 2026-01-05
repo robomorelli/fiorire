@@ -1661,23 +1661,41 @@ def adjust_model_for_finetuning(
             if mode == "adaptive_layer":
                 print("⚙️ Fine-tuning mode: 'adaptive_layer' (learnable resizer)")
 
-                # INPUT adapter: fine → pre
-                adapter_in = AdaptiveLearnableResizer2D(h_in=fine_feats, h_out=pre_feats, channels=1)
-                model.input_adapter = nn.Sequential(
-                    adapter_in,
-                    nn.BatchNorm2d(1),
-                    activation_dict[fine_tuning_cfg.model.activation]
-                ).to(device)
-                print(f"🔧 Added Conv2D INPUT adapter: {fine_feats},{fine_seq_len} → {pre_feats},{pre_seq_len}")
+                # ============================================================
+                # INPUT ADAPTER: fine → pre (19×16 → 16×16)
+                # ============================================================
+                adapter_in = create_feature_adapter(
+                    pre_feats=pre_feats,  # 16
+                    pre_seq_len=pre_seq_len,  # 16
+                    fine_feats=fine_feats,  # 19
+                    fine_seq_len=fine_seq_len,  # 16
+                    cfg=fine_tuning_cfg,  # ✅ Auto-ricava activation!
+                    adapter_type='input',
+                    hidden_dim=32,  # Capacity
+                    use_residual=True,  # Residual connection
+                    num_layers=2  # Depth
+                )
 
-                # OUTPUT adapter: pre → fine
-                adapter_out = AdaptiveLearnableResizer2D(h_in=pre_feats, h_out=fine_feats, channels=1)
-                model.output_adapter = nn.Sequential(
-                    adapter_out,
-                    nn.BatchNorm2d(1),
-                    activation_dict[fine_tuning_cfg.model.activation]
-                ).to(device)
-                print(f"🔧 Added Conv2D OUTPUT adapter: {pre_feats},{pre_seq_len} → {fine_feats},{fine_seq_len}")
+                model.input_adapter = adapter_in.to(device)
+
+                # ============================================================
+                # OUTPUT ADAPTER: pre → fine (16×16 → 19×16)
+                # ============================================================
+                adapter_out = create_feature_adapter(
+                    pre_feats=pre_feats,  # 16
+                    pre_seq_len=pre_seq_len,  # 16
+                    fine_feats=fine_feats,  # 19
+                    fine_seq_len=fine_seq_len,  # 16
+                    cfg=fine_tuning_cfg,  # ✅ Auto-ricava activation!
+                    adapter_type='output',
+                    hidden_dim=32,
+                    use_residual=True,
+                    num_layers=2
+                )
+
+                model.output_adapter = adapter_out.to(device)
+
+                print(f"\n✅ Adapters created successfully!")
 
 
 
@@ -2139,61 +2157,308 @@ class AdaptiveLearnableResizer2D(nn.Module):
         # deterministic resize
         x = F.interpolate(x, size=(self.h_out, x.shape[-1]), mode='bilinear', align_corners=False)
         # learnable conv
-        x = self.conv1x1(x)
+        #x = self.conv1x1(x)
         return x
-''' 
-class AdaptiveLearnableResizer2D(nn.Module):
+# models/utils/adapters.py
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from config import activation_dict
+
+
+class FeatureAdapter2D(nn.Module):
     """
-    Learnable resizer that adapts the spatial height (H_in → H_out)
-    using Conv2D or ConvTranspose2D.
-    Automatically computes padding / output_padding to reach the target size.
+    Learnable adapter for changing feature dimensions in Conv2D time series.
+
+    Automatically handles:
+    - Feature dimension change (height)
+    - Optional temporal dimension change (width)
+    - Configurable activation function
+    - Hidden channels for capacity
+    - Spatial context awareness
+    - Optional residual connection
+
+    Args:
+        h_in: Input height (number of features in fine-tuning)
+        h_out: Output height (number of features in pre-training)
+        w_in: Input width (sequence length in fine-tuning), optional
+        w_out: Output width (sequence length in pre-training), optional
+        channels: Number of input/output channels (default: 1)
+        hidden_dim: Hidden dimension for capacity (default: 32)
+        activation: Activation function (nn.Module)
+        use_residual: Add residual connection (default: True)
+        kernel_size_h: Kernel size along feature dimension (default: 3)
+        num_layers: Number of transformation layers (default: 2)
+
+    Example:
+        >>> # INPUT adapter: 19×16 → 16×16
+        >>> adapter_in = FeatureAdapter2D(
+        ...     h_in=19, h_out=16, w_in=16, w_out=16,
+        ...     channels=1, hidden_dim=32,
+        ...     activation=nn.ELU()
+        ... )
+        >>> x = torch.randn(4, 1, 19, 16)
+        >>> y = adapter_in(x)
+        >>> print(y.shape)  # torch.Size([4, 1, 16, 16])
     """
-    def __init__(self, h_in, h_out, kernel_size=3, channels=1):
+
+    def __init__(
+        self,
+        h_in,
+        h_out,
+        w_in=None,
+        w_out=None,
+        channels=1,
+        hidden_dim=32,
+        activation=None,
+        use_residual=True,
+        kernel_size_h=3,
+        num_layers=2
+    ):
         super().__init__()
+
         self.h_in = h_in
         self.h_out = h_out
-        self.kernel_size = kernel_size
+        self.w_in = w_in
+        self.w_out = w_out
         self.channels = channels
+        self.hidden_dim = hidden_dim
+        self.use_residual = use_residual
 
-        if h_in > h_out:
-            # ✅ Downsample with Conv2d
-            stride = math.ceil(h_in / h_out)
-            padding = math.ceil(((h_out - 1) * stride - h_in + kernel_size) / 2)
-            self.layer = nn.Conv2d(
-                in_channels=channels,
-                out_channels=channels,
-                kernel_size=(kernel_size, 1),
-                stride=(stride, 1),
-                padding=(padding, 0)
-            )
-            self.mode = f"conv_down (stride={stride}, pad={padding})"
+        # Default activation if not provided
+        if activation is None:
+            activation = nn.ELU()
+        self.activation = activation
 
-        elif h_in < h_out:
-            # ✅ Upsample with ConvTranspose2d
-            stride = math.floor(h_out / h_in)
-            padding = kernel_size // 2
+        # Compute padding for 'same' convolution
+        padding_h = kernel_size_h // 2
 
-            H_calc = (h_in - 1) * stride - 2 * padding + kernel_size
-            output_padding = max(0, h_out - H_calc)
+        # Build transformation layers
+        layers = []
 
-            self.layer = nn.ConvTranspose2d(
-                in_channels=channels,
-                out_channels=channels,
-                kernel_size=(kernel_size, 1),
-                stride=(stride, 1),
-                padding=(padding, 0),
-                output_padding=(output_padding, 0)
-            )
-            self.mode = f"conv_transpose_up (stride={stride}, pad={padding}, out_pad={output_padding})"
+        # First layer: expand channels + spatial context
+        layers.extend([
+            nn.Conv2d(
+                channels, hidden_dim,
+                kernel_size=(kernel_size_h, 1),
+                padding=(padding_h, 0),
+                bias=True
+            ),
+            nn.BatchNorm2d(hidden_dim),
+            activation
+        ])
 
-        else:
-            self.layer = nn.Identity()
-            self.mode = "identity"
+        # Middle layers: context refinement
+        for _ in range(num_layers - 1):
+            layers.extend([
+                nn.Conv2d(
+                    hidden_dim, hidden_dim,
+                    kernel_size=(3, 1),
+                    padding=(1, 0),
+                    bias=True
+                ),
+                nn.BatchNorm2d(hidden_dim),
+                activation
+            ])
 
-        # Init pesi (solo se layer learnable)
-        if isinstance(self.layer, (nn.Conv2d, nn.ConvTranspose2d)):
-            nn.init.kaiming_normal_(self.layer.weight, nonlinearity='relu')
+        # Final layer: project back to channels
+        layers.append(
+            nn.Conv2d(hidden_dim, channels, kernel_size=1, bias=True)
+        )
+
+        self.transform = nn.Sequential(*layers)
+
+        self._init_weights()
+
+        # Print configuration
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"\n   🔧 FeatureAdapter2D initialized:")
+        print(f"      Input:  [{channels}, {h_in}, {w_in if w_in else 'W'}]")
+        print(f"      Output: [{channels}, {h_out}, {w_out if w_out else 'W'}]")
+        print(f"      Hidden dim: {hidden_dim}")
+        print(f"      Layers: {num_layers}")
+        print(f"      Residual: {use_residual}")
+        print(f"      Params: {total_params:,}")
+
+    def _init_weights(self):
+        """Initialize weights with Kaiming normal."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
 
     def forward(self, x):
-        return self.layer(x)
-'''
+        """
+        Forward pass with interpolation + learned transformation.
+
+        Args:
+            x: Input tensor [B, C, H_in, W_in]
+
+        Returns:
+            Output tensor [B, C, H_out, W_out]
+        """
+        # Determine target size
+        if self.w_out is not None:
+            target_size = (self.h_out, self.w_out)
+        else:
+            target_size = (self.h_out, x.shape[-1])
+
+        # Interpolate to target dimensions
+        x_interp = F.interpolate(
+            x, size=target_size,
+            mode='bilinear',
+            align_corners=False
+        )
+
+        # Apply learnable transformation
+        x_transformed = self.transform(x_interp)
+
+        # Add residual connection if enabled
+        if self.use_residual:
+            output = x_interp + x_transformed
+        else:
+            output = x_transformed
+
+        return output
+
+
+# =============================================================================
+# FACTORY FUNCTION - Easy Creation from Config
+# =============================================================================
+
+def create_feature_adapter(
+    pre_feats,
+    pre_seq_len,
+    fine_feats,
+    fine_seq_len,
+    cfg,
+    adapter_type='input',
+    hidden_dim=32,
+    use_residual=True,
+    num_layers=2
+):
+    """
+    Factory function to create adapter from config.
+
+    Args:
+        pre_feats: Number of features in pre-training model
+        pre_seq_len: Sequence length in pre-training model
+        fine_feats: Number of features in fine-tuning data
+        fine_seq_len: Sequence length in fine-tuning data
+        cfg: Config object with model.activation
+        adapter_type: 'input' or 'output'
+        hidden_dim: Hidden dimension (default: 32)
+        use_residual: Use residual connection (default: True)
+        num_layers: Number of transformation layers (default: 2)
+
+    Returns:
+        FeatureAdapter2D instance
+
+    Example:
+        >>> # INPUT adapter: fine → pre (19×16 → 16×16)
+        >>> adapter_in = create_feature_adapter(
+        ...     pre_feats=16, pre_seq_len=16,
+        ...     fine_feats=19, fine_seq_len=16,
+        ...     cfg=cfg, adapter_type='input'
+        ... )
+
+        >>> # OUTPUT adapter: pre → fine (16×16 → 19×16)
+        >>> adapter_out = create_feature_adapter(
+        ...     pre_feats=16, pre_seq_len=16,
+        ...     fine_feats=19, fine_seq_len=16,
+        ...     cfg=cfg, adapter_type='output'
+        ... )
+    """
+
+    # Get activation from config
+    activation_name = cfg.model.get('activation', 'ELU')
+    activation = activation_dict.get(activation_name, nn.ELU())
+
+    # Determine input/output dimensions based on adapter type
+    if adapter_type == 'input':
+        # INPUT: fine-tuning → pre-training
+        h_in = fine_feats
+        h_out = pre_feats
+        w_in = fine_seq_len
+        w_out = pre_seq_len
+        print(f"\n🔧 Creating INPUT adapter:")
+        print(f"   Fine-tuning [{fine_feats}×{fine_seq_len}] → Pre-training [{pre_feats}×{pre_seq_len}]")
+
+    elif adapter_type == 'output':
+        # OUTPUT: pre-training → fine-tuning
+        h_in = pre_feats
+        h_out = fine_feats
+        w_in = pre_seq_len
+        w_out = fine_seq_len
+        print(f"\n🔧 Creating OUTPUT adapter:")
+        print(f"   Pre-training [{pre_feats}×{pre_seq_len}] → Fine-tuning [{fine_feats}×{fine_seq_len}]")
+
+    else:
+        raise ValueError(f"adapter_type must be 'input' or 'output', got '{adapter_type}'")
+
+    # Create adapter
+    adapter = FeatureAdapter2D(
+        h_in=h_in,
+        h_out=h_out,
+        w_in=w_in if w_in != w_out else None,  # Only specify if different
+        w_out=w_out if w_in != w_out else None,
+        channels=1,
+        hidden_dim=hidden_dim,
+        activation=activation,
+        use_residual=use_residual,
+        num_layers=num_layers
+    )
+
+    return adapter
+
+
+# =============================================================================
+# LIGHTWEIGHT VERSION - If you want minimal parameters
+# =============================================================================
+
+class LightweightFeatureAdapter2D(nn.Module):
+    """
+    Lightweight version with fewer parameters.
+    Good for quick experiments or limited GPU memory.
+    """
+
+    def __init__(self, h_in, h_out, w_in=None, w_out=None,
+                 channels=1, hidden_dim=16, activation=None):
+        super().__init__()
+
+        self.h_out = h_out
+        self.w_out = w_out
+
+        if activation is None:
+            activation = nn.ELU()
+
+        # Single transformation layer
+        self.transform = nn.Sequential(
+            nn.Conv2d(channels, hidden_dim, kernel_size=(3, 1), padding=(1, 0)),
+            nn.BatchNorm2d(hidden_dim),
+            activation,
+            nn.Conv2d(hidden_dim, channels, kernel_size=1)
+        )
+
+        self._init_weights()
+
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"\n   🔧 LightweightFeatureAdapter2D: {total_params:,} params")
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        target_size = (self.h_out, self.w_out if self.w_out else x.shape[-1])
+        x = F.interpolate(x, size=target_size, mode='bilinear', align_corners=False)
+        x = self.transform(x)
+        return x
