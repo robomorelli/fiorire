@@ -2639,7 +2639,52 @@ class LightweightFeatureAdapter2D(nn.Module):
 # =============================================================================
 # ADAPTER 1: Feature Projection (Linear/Non-linear)
 # =============================================================================
+
 class FeatureProjectionAdapter1D(nn.Module):
+    """
+    LIKE Conv2D adapter: Interpolate first, then refine
+    """
+
+    def forward(self, x):
+        """
+        Args:
+            x: [B, n_in, L]
+        Returns:
+            [B, n_out, L]
+        """
+        B, C, L = x.shape
+
+        # 1. INTERPOLATE to target dimension (baseline)
+        # [B, n_in, L] → [B, n_out, L]
+        x_interp = F.interpolate(
+            x.unsqueeze(1),  # [B, 1, n_in, L]
+            size=(self.n_out, L),
+            mode='bilinear',
+            align_corners=False
+        ).squeeze(1)  # [B, n_out, L]
+
+        # 2. TRANSFORM (refine baseline)
+        # Permute for Linear: [B, n_out, L] → [B, L, n_out]
+        x_temp = x_interp.permute(0, 2, 1)
+
+        # Apply transformation (can operate on n_out now)
+        x_temp = self.adapter_linear(x_temp)  # [B, L, n_out]
+
+        if self.use_batchnorm:
+            x_temp = x_temp.permute(0, 2, 1)
+            x_temp = self.adapter_bn(x_temp)
+            x_temp = x_temp.permute(0, 2, 1)
+
+        x_transformed = x_temp.permute(0, 2, 1)  # [B, n_out, L]
+
+        # 3. RESIDUAL (combine)
+        output = x_interp + x_transformed
+        #        └─n_out─┘   └─n_out──┘  ✅ SAME dimension!
+
+        return output
+
+
+class FeatureProjectionAdapter1D_bkp(nn.Module):
     """
     Feature projection adapter for Conv1D with BatchNorm.
     Projects features along the channel dimension while preserving sequence length.
