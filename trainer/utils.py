@@ -1981,6 +1981,7 @@ def adjust_model_for_finetuning(
 
                 # ✅ If mode changed due to AUTOMATIC fallback, inform user
                 if effective_mode != mode:
+                    mode = effective_mode
                     print(f"\n" + "=" * 80)
                     print(f"🔄 AUTOMATIC MODE FALLBACK")
                     print(f"=" * 80)
@@ -2020,7 +2021,7 @@ def adjust_model_for_finetuning(
                     fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode')
                 )
 
-        return model
+        return model, mode
 
     else:
         raise ValueError(f"Unsupported conv_type '{conv_type}' (expected 'conv_ae1d' or 'conv_ae2d')")
@@ -2103,9 +2104,10 @@ def load_pretrained_checkpoint(model, config, device):
         loaded: Boolean indicating if weights were loaded successfully
     """
     # Check if fine-tuning is enabled and checkpoint path is provided
+    mode = None
     if not config.opt.get('fine_tuning', False):
         print("ℹ️ Training from scratch (no fine-tuning)")
-        return model, False
+        return model, False, mode
 
     if not config.opt.get('checkpoint_path', False):
         print("⚠️ WARNING: fine_tuning=True but no checkpoint_path provided!")
@@ -2138,7 +2140,7 @@ def load_pretrained_checkpoint(model, config, device):
             print(f"⚠️ Dimension mismatch detected between pre-training and fine-tuning datasets!")
             strict = False
 
-            model = adjust_model_for_finetuning(
+            model, mode = adjust_model_for_finetuning(
                 config,
                 model,
                 checkpoint=checkpoint,
@@ -2209,7 +2211,7 @@ def load_pretrained_checkpoint(model, config, device):
 
         print('Model to fine tune', model)
 
-        return model, True
+        return model, True, mode
 
     except Exception as e:
         print(f"❌ Error loading checkpoint: {e}")

@@ -41,6 +41,7 @@ class Trainer(tune.Trainable):
 
         # ✅ 2. Update input/output dimensions - CRITICAL!
         self.cfg, _, _ = update_input_output(self.cfg)
+        self.effective_mode = None
 
         # ✅ 3. Get parameters for this trial
         overlap = self.cfg.dataset.get('perc_overlap', 0)
@@ -187,9 +188,11 @@ class Trainer(tune.Trainable):
         self.data_path = self.cfg.dataset.data_path
 
         # ✅ 14. Load pretrained if fine-tuning
-        self.model, self.pretrained_loaded = load_pretrained_checkpoint(
+        self.model, self.pretrained_loaded, self.effective_mode = load_pretrained_checkpoint(
             model=self.model, config=self.cfg, device=self.device
         )
+
+        config['opt.fine_tuning_mode'] = self.effective_mode
 
         # ✅ 15. Optimizer, scheduler, criterion
         self.optimizer, self.scheduler, self.criterion, self.early_stopping = \
@@ -247,6 +250,7 @@ class Trainer(tune.Trainable):
         result = {
             "epoch": self.current_epoch, "train_loss": train_loss,
             "parameters_number": self.parameters_number, "data_path": self.data_path, "latent_dim": self.latent_dim,
+            'effective_mode': self.effective_mode
         }
 
         current_val_loss = self.val_results["val_loss"]
