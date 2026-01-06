@@ -197,7 +197,7 @@ class Trainer(tune.Trainable):
 
         # ✅ 16. Initialize tracking variables
         self.current_epoch = 0
-        self.max_epochs = self.cfg.opt.get('max_epochs', 200)
+        self.max_epochs = self.cfg.opt.get('epochs', 200)
 
         # Initialize best metrics
         if self.mode == 'min':
