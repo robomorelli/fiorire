@@ -1314,7 +1314,7 @@ def check_existing_file(cfg, dataset_path, seq_len):
     if (metric_dataset_path and os.path.exists(metric_dataset_path) and
             train_val_indices_path and os.path.exists(train_val_indices_path)):
 
-        print(f"\n   ✅ REUSING existing files (fine-tuning mode)")
+        print(f"\n   ✅ REUSING existing files")
 
         # ========================================================
         # FIND FILES IN DIRECTORY
