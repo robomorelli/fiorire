@@ -1181,10 +1181,10 @@ def adjust_model_for_finetuning(
     Adjust the model for fine-tuning when input dimensions change.
 
     Supports multiple fine-tuning strategies:
-    - adaptive_layer: Learnable Conv2D adapters
+    - adaptive_layer: Learnable Conv2D adapters with spatial context
     - linear_proj: Linear/non-linear feature projection
-    - latent_space: Reinitialize latent layers
-    - soft_latent_space: Keep original latent dimensions for weight restoration later
+    - latent_space: Reinitialize latent layers (random init)
+    - soft_latent_space: Preserve latent dimensions for weight restoration (pre-trained)
 
     Args:
         fine_tuning_cfg: Fine-tuning configuration
@@ -1245,7 +1245,7 @@ def adjust_model_for_finetuning(
 
         print(f"   - New flatten size: {new_flattened}")
         print(f"   - New latent dim:   {new_latent_dim}")
-        print(f"   - Compression:      {new_flattened / new_latent_dim:.1f}:1")
+        print(f"   - Compression On Feaures (not on Inputs!!!):      {new_flattened / new_latent_dim:.1f}:1")
 
         # Update encoder: to_latent
         encoder_updated = False
@@ -1305,12 +1305,21 @@ def adjust_model_for_finetuning(
         print(f"\n✔  Latent space update complete!")
         return model
 
-    def validate_freeze_policy(mode, freeze_layers):
+    def validate_freeze_policy(mode, freeze_layers, is_fallback=False):
         """
-        Validate that freeze policy is compatible with fine-tuning mode.
+        Validate and inform about freeze policy compatibility with fine-tuning mode.
 
-        Raises:
-            ValueError: If incompatible configuration detected
+        This function only issues WARNINGS, never blocks execution.
+        The actual freeze protection is handled by freeze_layers_with_logging.
+
+        Key distinction:
+        - latent_space: Random init latent → Will be PROTECTED automatically
+        - soft_latent_space: Pre-trained latent → Can be frozen safely
+
+        Args:
+            mode: Fine-tuning mode
+            freeze_layers: Freeze specification
+            is_fallback: If True, indicates automatic fallback occurred
         """
 
         if freeze_layers is None or freeze_layers == '0':
@@ -1325,41 +1334,80 @@ def adjust_model_for_finetuning(
         else:
             freeze_list = list(freeze_layers)
 
-        # Check for conflicts
-        conflicts = []
+        warnings = []
 
-        # Latent-based modes need trainable latent layers
-        if mode in ['latent_space', 'soft_latent_space']:
+        # =========================================================================
+        # Inform about mode-specific behavior
+        # =========================================================================
+
+        if mode == 'latent_space':
+            # latent_space = RANDOM INIT → Will be protected automatically
             if any(freeze in freeze_list for freeze in
                    ['encoder-bottleneck', 'encoder_bottleneck', 'bottleneck', 'all']):
-                conflicts.append(
-                    f"Mode '{mode}' requires TRAINABLE latent layers, "
-                    f"but freeze_layers='{freeze_layers}' would freeze them"
+
+                if is_fallback:
+                    warnings.append(
+                        f"⚠️  AUTOMATIC FALLBACK to 'latent_space' mode:\n"
+                        f"   → Latent layers have RANDOM INIT → Will be PROTECTED automatically\n"
+                        f"   → freeze_layers='{freeze_layers}' will freeze backbone only\n"
+                        f"   → Latent layers will remain TRAINABLE (mode has precedence)\n"
+                        f"   → This is the expected behavior"
+                    )
+                else:
+                    warnings.append(
+                        f"ℹ️  Mode 'latent_space' with freeze_layers='{freeze_layers}':\n"
+                        f"   → Latent layers have RANDOM INIT → Will be PROTECTED automatically\n"
+                        f"   → Requested freeze will apply to backbone layers only\n"
+                        f"   → Latent layers will remain TRAINABLE (mode protection has precedence)\n"
+                        f"   → This is the expected behavior - no action needed"
+                    )
+
+        elif mode == 'soft_latent_space':
+            # soft_latent_space = PRE-TRAINED WEIGHTS → Can freeze bottleneck
+            if any(freeze in freeze_list for freeze in ['encoder-bottleneck', 'encoder_bottleneck', 'bottleneck']):
+                warnings.append(
+                    f"✅ Mode 'soft_latent_space' with freeze bottleneck:\n"
+                    f"   → Latent weights will be RESTORED from checkpoint\n"
+                    f"   → Bottleneck will be FROZEN (pre-trained weights preserved)\n"
+                    f"   → This is a VALID configuration for transfer learning"
                 )
 
-        # Adapter-based modes need trainable adapters (always protected anyway)
+            if 'all' in freeze_list:
+                warnings.append(
+                    f"ℹ️  Mode 'soft_latent_space' with freeze_layers='all':\n"
+                    f"   → This will freeze the ENTIRE model including latent layers\n"
+                    f"   → Only adapters (if present) will be trainable\n"
+                    f"   → Make sure this is intentional"
+                )
+
+        # Adapter-based modes: adapters always protected
         if mode in ['adaptive_layer', 'linear_proj', 'conv2d_adapter']:
             if 'all' in freeze_list:
-                # Adapters are always protected, but warn user
-                print(f"⚠️  WARNING: freeze_layers='all' specified with mode '{mode}'")
-                print(f"   Adapters will remain TRAINABLE (always protected)")
+                warnings.append(
+                    f"ℹ️  Mode '{mode}' with freeze_layers='all':\n"
+                    f"   → Adapters will remain TRAINABLE (always protected)\n"
+                    f"   → Backbone will be frozen"
+                )
 
-        # Raise if critical conflicts found
-        if conflicts:
-            error_msg = "\n❌ INCOMPATIBLE FREEZE POLICY:\n"
-            for conflict in conflicts:
-                error_msg += f"   - {conflict}\n"
-            error_msg += "\n💡 Suggestions:\n"
-            error_msg += "   - Use freeze_layers='encoder-decoder' to freeze backbone only\n"
-            error_msg += "   - Or set freeze_layers='0' for no freezing\n"
-            raise ValueError(error_msg)
-
-        print(f"✅ Freeze policy validated for mode '{mode}'")
+        # Display warnings (informative only)
+        if warnings:
+            print("\n" + "=" * 80)
+            print("📋 FREEZE POLICY INFORMATION:")
+            print("=" * 80)
+            for warning in warnings:
+                print(f"\n{warning}")
+            print("\n" + "=" * 80)
+        else:
+            print(f"✅ Freeze policy: '{freeze_layers}' with mode '{mode}'")
 
     def freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=None):
         """
         Freeze model layers selectively based on freeze_layers specification.
         Uses get_module_type() for robust classification.
+
+        Special handling for latent layers:
+        - latent_space mode: Latent layers are PROTECTED (random init, must train)
+        - soft_latent_space mode: Latent layers CAN be frozen (pre-trained weights)
 
         Args:
             model: Model to freeze
@@ -1383,13 +1431,18 @@ def adjust_model_for_finetuning(
             print("\nℹ️  Freeze layers = '0' → no freezing applied")
             freeze_layers = []
 
-        # Identify protected layers
+        # =====================================================================
+        # Identify protected layers based on mode
+        # =====================================================================
         always_protected = ["adapter", "adaptive"]
         mode_protected = []
 
-        is_latent_strategy = fine_tuning_mode in ["latent_space", "soft_latent_space"]
+        # CRITICAL: Only latent_space (random init) protects latent layers
+        # soft_latent_space (pre-trained) allows freezing latent layers
+        is_random_init_latent = (fine_tuning_mode == "latent_space")
+        is_pretrained_latent = (fine_tuning_mode == "soft_latent_space")
 
-        if is_latent_strategy:
+        if is_random_init_latent:
             mode_protected = [
                 "to_latent",
                 "latent_to_flatten",
@@ -1397,21 +1450,20 @@ def adjust_model_for_finetuning(
                 "encoder_layer",
                 "reshape"
             ]
-            print(f"\n⚙️  Fine-tuning mode = '{fine_tuning_mode}' → Latent LINEAR layers MUST be trainable")
-            print(f"   Protected keywords: {mode_protected}")
+            print(f"\n⚙️  Fine-tuning mode = 'latent_space'")
+            print(f"   → Latent layers have RANDOM INIT → MUST be trainable")
+            print(f"   → Protected keywords: {mode_protected}")
+
+        elif is_pretrained_latent:
+            print(f"\n⚙️  Fine-tuning mode = 'soft_latent_space'")
+            print(f"   → Latent layers have PRE-TRAINED weights → CAN be frozen")
+            print(f"   → No special protection for latent layers")
 
         def is_always_protected(name):
             return any(k in name.lower() for k in always_protected)
 
         def is_mode_protected(name):
             return any(k in name.lower() for k in mode_protected)
-
-        # Validate conflicting configuration
-        if is_latent_strategy and ("encoder-bottleneck" in freeze_layers or "encoder_bottleneck" in freeze_layers):
-            print("\n⚠️  WARNING: Potentially conflicting configuration!")
-            print(f"   - fine_tuning_mode='{fine_tuning_mode}' requires latent layers TRAINABLE")
-            print(f"   - freeze_layers contains 'encoder-bottleneck'")
-            print(f"   → Resolution: Latent layers will remain TRAINABLE (mode takes precedence)")
 
         def freeze_module(name, module):
             for p in module.parameters(recurse=True):
@@ -1423,7 +1475,9 @@ def adjust_model_for_finetuning(
             for p in module.parameters(recurse=True):
                 p.requires_grad = True
 
+        # =====================================================================
         # Apply freeze logic
+        # =====================================================================
         for name, module in model.named_modules():
             if not name:  # Skip root
                 continue
@@ -1435,9 +1489,9 @@ def adjust_model_for_finetuning(
                 keep_module(name, module, "(always protected)")
                 continue
 
-            # Check 2: Mode protected (latent if latent_strategy)
+            # Check 2: Mode protected (only for latent_space with random init)
             if is_mode_protected(name):
-                keep_module(name, module, f"(protected by mode={fine_tuning_mode})")
+                keep_module(name, module, f"(protected by mode={fine_tuning_mode} - random init)")
                 continue
 
             # Check 3: Freeze 'all'
@@ -1447,7 +1501,7 @@ def adjust_model_for_finetuning(
 
             # Check 4: Freeze 'encoder-bottleneck'
             if "encoder-bottleneck" in freeze_layers or "encoder_bottleneck" in freeze_layers:
-                if module_type in ["encoder", "bottleneck_conv", "bottleneck"]:
+                if module_type in ["encoder", "bottleneck_conv", "bottleneck", "latent"]:
                     freeze_module(name, module)
                     continue
                 else:
@@ -1472,7 +1526,7 @@ def adjust_model_for_finetuning(
                 freeze_module(name, module)
                 continue
 
-            if "bottleneck" in freeze_layers and module_type in ["bottleneck_conv", "bottleneck"]:
+            if "bottleneck" in freeze_layers and module_type in ["bottleneck_conv", "bottleneck", "latent"]:
                 freeze_module(name, module)
                 continue
 
@@ -1615,7 +1669,7 @@ def adjust_model_for_finetuning(
     def apply_latent_space_mode(model, checkpoint, pre_feats, fine_feats, pre_seq_len, fine_seq_len):
         """
         Apply latent_space fine-tuning mode.
-        Reinitializes latent layers when dimensions change.
+        Reinitializes latent layers ONLY if dimensions don't match required size.
 
         Args:
             model: Model to modify
@@ -1627,79 +1681,84 @@ def adjust_model_for_finetuning(
             Modified model
         """
 
-        print("⚙️  Fine-tuning mode: 'latent_space' (reinitialize latent layers)")
+        print("⚙️  Fine-tuning mode: 'latent_space' (reinitialize latent if needed)")
 
-        # Retrieve dimensions
+        # Retrieve checkpoint dimensions
         old_latent_dim = checkpoint.get('cfg', {}).get('model', {}).get("latent_dim")
         old_flattened_feats = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size")
-        new_flattened_feats = getattr(model.encoder, "flattened_size")
-
         old_input_size = pre_feats * pre_seq_len
+
+        # Retrieve current model dimensions
+        current_flattened = getattr(model.encoder, "flattened_size")
+        current_latent = getattr(model.encoder, "latent_dim")
         new_input_size = fine_feats * fine_seq_len
 
         compression_factor = getattr(model.encoder, "compression_factor")
         compression_type = getattr(model.encoder, "compression_type", 'on_features')
 
         print(f"📊 Dimension Analysis:")
-        print(f"   - Pre-training:  input={old_input_size}, flatten={old_flattened_feats}, latent={old_latent_dim}")
-        print(f"   - Fine-tuning:   input={new_input_size}, flatten={new_flattened_feats}")
-        print(f"   - Compression:   type={compression_type}, factor={compression_factor}")
+        print(f"   - Checkpoint:     input={old_input_size}, flatten={old_flattened_feats}, latent={old_latent_dim}")
+        print(f"   - Current model:  input={new_input_size}, flatten={current_flattened}, latent={current_latent}")
+        print(f"   - Compression:    type={compression_type}, factor={compression_factor}")
 
-        # Detect changes
-        input_changed = (old_input_size != new_input_size)
-        flatten_changed = (old_flattened_feats != new_flattened_feats)
+        # =========================================================================
+        # Calculate REQUIRED latent dimension based on compression strategy
+        # =========================================================================
 
-        # Calculate new latent dimension
         if compression_type == 'on_features':
-            new_latent_dim = int(new_flattened_feats // compression_factor)
-            if flatten_changed:
-                print(f"   → Flatten changed: {old_flattened_feats} → {new_flattened_feats}")
-                print(f"   → New latent (from flatten): {new_latent_dim}")
-            else:
-                new_latent_dim = old_latent_dim
-                print(f"   ✓ Flatten unchanged → latent unchanged: {old_latent_dim}")
+            # Latent based on flattened size
+            required_latent = int(current_flattened // compression_factor)
+            print(f"   - Required latent (from flatten): {required_latent}")
 
         elif compression_type == 'on_inputs':
-            new_latent_dim = int(new_input_size // compression_factor)
-            if input_changed:
-                print(f"   → Input changed: {old_input_size} → {new_input_size}")
-                print(f"   → New latent (from input): {new_latent_dim}")
-            else:
-                new_latent_dim = old_latent_dim
-                print(f"   ✓ Input unchanged → latent unchanged: {old_latent_dim}")
-
-            if flatten_changed:
-                print(f"   → Flatten also changed: {old_flattened_feats} → {new_flattened_feats}")
+            # Latent based on input size
+            required_latent = int(new_input_size // compression_factor)
+            print(f"   - Required latent (from input): {required_latent}")
 
         else:
             raise ValueError(f"Unknown compression type: {compression_type}")
 
-        # Determine if update needed
-        latent_changed = (new_latent_dim != old_latent_dim)
-        update_needed = flatten_changed or latent_changed
+        # =========================================================================
+        # Determine if update is needed
+        # =========================================================================
 
-        if update_needed:
-            print(f"\n🔧 Update required:")
-            if flatten_changed:
-                print(f"   - Flatten changed: {old_flattened_feats} → {new_flattened_feats}")
-            if latent_changed:
-                print(f"   - Latent changed: {old_latent_dim} → {new_latent_dim}")
+        # Check if current latent matches required latent
+        latent_mismatch = (current_latent != required_latent)
+        flatten_mismatch = (current_flattened != old_flattened_feats)
+
+        print(f"\n🔍 Compatibility Check:")
+        print(
+            f"   - Flatten: checkpoint={old_flattened_feats}, current={current_flattened} → {'CHANGED' if flatten_mismatch else 'UNCHANGED'}")
+        print(
+            f"   - Latent:  current={current_latent}, required={required_latent} → {'MISMATCH' if latent_mismatch else 'MATCH'}")
+
+        if latent_mismatch:
+            # Latent dimensions don't match → MUST update
+            print(f"\n🔧 Latent Update REQUIRED:")
+            print(f"   → Current latent ({current_latent}) ≠ Required latent ({required_latent})")
+            print(f"   → Reinitializing latent layers with correct dimensions...")
 
             # Validation
             min_latent = 16
             max_latent = new_input_size * 0.8
-            if new_latent_dim < min_latent:
-                print(f"\n⚠️  WARNING: Latent dim {new_latent_dim} is very small (< {min_latent})")
-            if new_latent_dim > max_latent:
-                print(f"\n⚠️  WARNING: Latent dim {new_latent_dim} > 80% of input")
+            if required_latent < min_latent:
+                print(f"\n⚠️  WARNING: Latent dim {required_latent} is very small (< {min_latent})")
+            if required_latent > max_latent:
+                print(f"\n⚠️  WARNING: Latent dim {required_latent} > 80% of input")
 
-            # Update latent space
-            model = update_latent(model, new_flattened_feats, new_latent_dim)
-            print(f"   ✅ Latent space updated successfully!")
+            # Update latent space with required dimensions
+            model = update_latent(model, current_flattened, required_latent)
+            print(f"   ✅ Latent space updated: {current_latent} → {required_latent}")
 
         else:
-            print(f"\n✅ No latent space update needed")
-            print(f"   - Dimensions unchanged: flatten={new_flattened_feats}, latent={old_latent_dim}")
+            # Latent dimensions already match → NO update needed
+            print(f"\n✅ Latent dimensions already CORRECT:")
+            print(f"   → Current latent ({current_latent}) = Required latent ({required_latent})")
+            print(f"   → No reinitialization needed!")
+
+            if flatten_mismatch:
+                print(f"\n   ℹ️  Note: Flatten changed ({old_flattened_feats} → {current_flattened})")
+                print(f"      But latent is already correctly sized for new flatten")
 
         return model
 
@@ -1708,10 +1767,10 @@ def adjust_model_for_finetuning(
         Apply soft_latent_space fine-tuning mode.
 
         Strategy:
-        - If flatten unchanged: Keep original latent dimensions (weights will be restored later)
+        - If flatten unchanged: Keep original latent dimensions (weights restored later)
         - If flatten changed: Fall back to latent_space mode (reinitialize)
 
-        This ensures model has correct dimensions for weight restoration in load_pretrained_checkpoint.
+        CRITICAL: Returns the ACTUAL mode used (may differ from requested if fallback occurs)
 
         Args:
             model: Model to modify
@@ -1720,7 +1779,9 @@ def adjust_model_for_finetuning(
             pre_seq_len, fine_seq_len: Sequence lengths
 
         Returns:
-            Modified model
+            tuple: (model, effective_mode)
+                - model: Modified model
+                - effective_mode: 'soft_latent_space' or 'latent_space' (if fallback)
         """
 
         print("⚙️  Fine-tuning mode: 'soft_latent_space' (preserve latent dimensions if possible)")
@@ -1738,8 +1799,8 @@ def adjust_model_for_finetuning(
         flatten_unchanged = (old_flattened == new_flattened)
 
         if flatten_unchanged:
-            # SOFT mode: Ensure model keeps original latent dimensions
-            print(f"\n✅ Flatten UNCHANGED → Keeping original latent dimensions")
+            # TRUE SOFT MODE: Dimensions preserved
+            print(f"\n✅ Flatten UNCHANGED → TRUE soft_latent_space mode")
             print(f"   Model latent layers will match checkpoint dimensions")
             print(f"   → Latent weights can be restored in load_pretrained_checkpoint")
 
@@ -1758,17 +1819,27 @@ def adjust_model_for_finetuning(
 
             print(f"\n   ✅ SOFT latent space mode: dimensions preserved for weight restoration")
 
+            # Return TRUE soft mode
+            return model, 'soft_latent_space'
+
         else:
-            # Fallback to latent_space mode
+            # FALLBACK TO LATENT_SPACE: Cannot preserve dimensions
             print(f"\n⚠️  Flatten CHANGED: {old_flattened} → {new_flattened}")
-            print(f"   Cannot preserve latent dimensions → Falling back to 'latent_space' mode")
+            print(f"   ❌ Cannot preserve latent dimensions")
+            print(f"   🔄 FALLING BACK to 'latent_space' mode (random init)")
+            print(f"\n" + "=" * 80)
+            print(f"⚠️  CRITICAL: Effective mode changed to 'latent_space'")
+            print(f"   → Latent layers will be RANDOMLY INITIALIZED")
+            print(f"   → Freeze policy will be RE-VALIDATED for 'latent_space'")
+            print(f"=" * 80)
 
             # Call latent_space mode
             model = apply_latent_space_mode(
                 model, checkpoint, pre_feats, fine_feats, pre_seq_len, fine_seq_len
             )
 
-        return model
+            # Return EFFECTIVE mode (latent_space, not soft!)
+            return model, 'latent_space'
 
     # =========================================================================
     # MAIN LOGIC
@@ -1779,12 +1850,10 @@ def adjust_model_for_finetuning(
     if freeze_layers:
         print(f"🧊 Requested freeze layers: {freeze_layers}")
 
+    # -------------------------------------------------------------------------
     # Handle Conv1D
+    # -------------------------------------------------------------------------
     if conv_type.lower() == "conv_ae1d":
-
-        if fine_tuning_cfg.opt.fine_tuning_mode != "adaptive_layer":
-            raise Exception(' Not implemented error')
-
         if features_changed:
             print(f"🔧 Creating Conv1D adapters with refinement layers")
 
@@ -1811,7 +1880,7 @@ def adjust_model_for_finetuning(
                 nn.Conv1d(fine_feats, hidden_dim, kernel_size=1),
                 nn.BatchNorm1d(hidden_dim),
                 activation,
-                # Refinement layer
+                # Refinement layer with context
                 nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
                 nn.BatchNorm1d(hidden_dim),
                 activation,
@@ -1832,7 +1901,7 @@ def adjust_model_for_finetuning(
                 nn.Conv1d(pre_feats, hidden_dim, kernel_size=1),
                 nn.BatchNorm1d(hidden_dim),
                 activation,
-                # Refinement layer
+                # Refinement layer with context
                 nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
                 nn.BatchNorm1d(hidden_dim),
                 activation,
@@ -1863,6 +1932,9 @@ def adjust_model_for_finetuning(
 
         return model
 
+    # -------------------------------------------------------------------------
+    # Handle Conv2D
+    # -------------------------------------------------------------------------
     # Handle Conv2D
     elif conv_type.lower() == "conv_ae2d":
 
@@ -1874,10 +1946,14 @@ def adjust_model_for_finetuning(
             if mode is None:
                 raise ValueError("fine_tuning_mode must be specified when dimensions change!")
 
-            # Validate freeze policy compatibility
-            validate_freeze_policy(mode, freeze_layers)
+            # Inform about freeze policy (informative only, never blocks)
+            validate_freeze_policy(mode, freeze_layers, is_fallback=False)
 
-            # Apply appropriate mode
+            # =================================================================
+            # Apply appropriate mode and get EFFECTIVE mode
+            # =================================================================
+            effective_mode = mode  # Default: effective = requested
+
             if mode == "adaptive_layer":
                 model = apply_adaptive_layer_mode(
                     model, fine_tuning_cfg, pre_feats, fine_feats,
@@ -1897,19 +1973,42 @@ def adjust_model_for_finetuning(
                 )
 
             elif mode == "soft_latent_space":
-                model = apply_soft_latent_space_mode(
+                # CRITICAL: soft_latent_space may fall back to latent_space
+                model, effective_mode = apply_soft_latent_space_mode(
                     model, checkpoint, pre_feats, fine_feats,
                     pre_seq_len, fine_seq_len
                 )
 
+                # ✅ If mode changed due to AUTOMATIC fallback, inform user
+                if effective_mode != mode:
+                    print(f"\n" + "=" * 80)
+                    print(f"🔄 AUTOMATIC MODE FALLBACK")
+                    print(f"=" * 80)
+                    print(f"   Requested:  soft_latent_space")
+                    print(f"   Effective:  latent_space (due to flatten change)")
+                    print(f"   Freeze:     {freeze_layers}")
+                    print(f"\n⚙️  AUTOMATIC PROTECTION:")
+                    print(f"   → Latent layers will be PROTECTED automatically")
+                    print(f"   → Freeze will apply to backbone only")
+                    print(f"   → Latent space remains TRAINABLE (mode has precedence)")
+                    print(f"\n✅ Proceeding with automatic protection...")
+                    print(f"=" * 80 + "\n")
+
+                    # Inform about freeze policy with fallback context
+                    validate_freeze_policy(effective_mode, freeze_layers, is_fallback=True)
+
             else:
                 raise ValueError(f"Unsupported fine_tuning_mode: '{mode}'")
 
-            # Apply freeze policy
+            # =================================================================
+            # Apply freeze policy with EFFECTIVE mode
+            # Protection is handled automatically by freeze_layers_with_logging
+            # =================================================================
             if freeze_layers:
+                print(f"\n🧊 Applying freeze policy with mode: '{effective_mode}'")
                 freeze_layers_with_logging(
                     model, freeze_layers,
-                    fine_tuning_mode=mode
+                    fine_tuning_mode=effective_mode
                 )
 
         else:
