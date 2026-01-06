@@ -3208,6 +3208,27 @@ def get_optimizazion_objects(cfg, model, opt_metric_dict):
         tuple: (optimizer, scheduler, criterion, early_stopping)
     """
 
+    def print_all_convs(model):
+        print("=== Encoder Convs ===")
+        for name, module in model.encoder.named_modules():
+            if isinstance(module, torch.nn.Conv2d):
+                print(f"{name}: {module} | weight shape: {tuple(module.weight.shape)}")
+
+        print("\n=== Bottleneck Convs ===")
+        if hasattr(model.encoder, "bottleneck"):
+            for name, module in model.encoder.bottleneck.named_modules():
+                if isinstance(module, torch.nn.Conv2d):
+                    print(f"{name}: {module} | weight shape: {tuple(module.weight.shape)}")
+
+        print("\n=== Decoder Convs ===")
+        for name, module in model.decoder.named_modules():
+            if isinstance(module, (torch.nn.Conv2d, torch.nn.ConvTranspose2d)):
+                conv_type = "ConvTranspose2d" if isinstance(module, torch.nn.ConvTranspose2d) else "Conv2d"
+                print(f"{name}: {conv_type} | weight shape: {tuple(module.weight.shape)}")
+
+    # Esempio di uso
+    print_all_convs(model)
+
     # ============================================================
     # HELPER: Robust numeric conversion
     # ============================================================
@@ -3278,6 +3299,7 @@ def get_optimizazion_objects(cfg, model, opt_metric_dict):
 
         # Everything else is main
         else:
+            print(f"   → Main param found: {name}")
             main_params.append(param)
 
     # ============================================================

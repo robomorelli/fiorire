@@ -198,6 +198,31 @@ def deconv_block1D(
 
     return nn.Sequential(*layers)
 
+def conv_block_2(in_f, out_f,
+                     kernel_size=3, padding=1, dilation=1,
+                     activation=nn.ReLU(), batch_norm=True,
+                     pool=True, pool_ks=2, pool_stride=2, pool_pad=0,
+                     *args, **kwargs):
+    if isinstance(pool_ks, int):
+        pool_ks = (pool_ks, pool_ks)
+    if isinstance(pool_stride, int):
+        pool_stride = (pool_stride, pool_stride)
+    if isinstance(pool_pad, int):
+        pool_pad = (pool_pad, pool_pad)
+    if isinstance(padding, int):
+        padding = (padding, padding)
+
+    layers = OrderedDict()
+    layers['conv'] = nn.Conv2d(in_f, out_f, kernel_size=kernel_size,
+                               padding=padding, dilation=dilation, *args, **kwargs)
+    if batch_norm:
+        layers['batch_norm'] = nn.BatchNorm2d(out_f)
+    if activation is not None:
+        layers['activation'] = activation
+    if pool:
+        layers['pool'] = nn.MaxPool2d(kernel_size=pool_ks, stride=pool_stride, padding=pool_pad)
+
+    return nn.Sequential(layers)
 
 
 

@@ -179,12 +179,16 @@ class Trainer(tune.Trainable):
         # ✅ 13. Device and model
         self.device = torch.device("cuda" if torch.cuda.is_available() and self.cfg.resources.gpu_trial else "cpu")
         self.model = get_model(self.cfg).to(self.device)
+        print("=== NAMED MODULES ===")
+
         self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+
         try:
             self.latent_dim = self.model.latent_dim
         except:
             self.latent_dim = None
         self.parameters_number = self.cfg.model.parameter_count
+        print('Parameters count', self.parameters_number)
         self.data_path = self.cfg.dataset.data_path
 
         # ✅ 14. Load pretrained if fine-tuning
