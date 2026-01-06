@@ -309,7 +309,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fine-tuning with Ray Tune")
     parser.add_argument("--address", default=None, help="Ray cluster address")
     parser.add_argument("--password", default=None, help="Ray cluster password")
-    parser.add_argument("--config_file", default='conv_ae2D_MGM_ft',
+    parser.add_argument("--config_file", default='conv_ae1D_MGM_ft',
                         help="Fine-tuning config file")
     parser.add_argument("--trials_per_node", default=1, type=int,
                         help="trial per node")
@@ -321,13 +321,13 @@ if __name__ == "__main__":
                         help="Number of trials")
     parser.add_argument("--wandb", default=0, type=int,
                         help="Enable W&B logging (0/1)")
-    parser.add_argument("--project_name", default='conv2D_MGM_ft',
+    parser.add_argument("--project_name", default='conv1D_MGM_ft',
                         help="W&B project name")
     parser.add_argument("--entity", default='robmorelli',
                         help="W&B entity")
     parser.add_argument("--wandb_key", default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
                         help="W&B API key")
-    parser.add_argument("--debug_mode", default=1
+    parser.add_argument("--debug_mode", default=0
                         , type=int,
                         help="Run single trial for debugging (0/1)")
     parser.add_argument("--ray_memory_gb", default=10, type=int,

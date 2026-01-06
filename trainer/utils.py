@@ -1178,11 +1178,27 @@ def adjust_model_for_finetuning(
         device='cuda:0'
 ):
     """
-    Adjust the model for fine-tuning when input dimensions change,
-    optionally freeze layers, and patch forward to handle adapters.
+    Adjust the model for fine-tuning when input dimensions change.
 
-    Conv1D and Conv2D supported. Adapters map input/output between
-    fine-tuning and pre-training shapes.
+    Supports multiple fine-tuning strategies:
+    - adaptive_layer: Learnable Conv2D adapters
+    - linear_proj: Linear/non-linear feature projection
+    - latent_space: Reinitialize latent layers
+    - soft_latent_space: Keep original latent dimensions for weight restoration later
+
+    Args:
+        fine_tuning_cfg: Fine-tuning configuration
+        model: Model to adjust
+        checkpoint: Pre-trained checkpoint
+        pre_feats: Pre-training features
+        fine_feats: Fine-tuning features
+        pre_seq_len: Pre-training sequence length
+        fine_seq_len: Fine-tuning sequence length
+        conv_type: 'conv_ae1d' or 'conv_ae2d'
+        device: Device to use
+
+    Returns:
+        Adjusted model
     """
 
     features_changed = pre_feats != fine_feats
@@ -1191,21 +1207,22 @@ def adjust_model_for_finetuning(
     print(f"🔍 Pre-training: feats={pre_feats}, seq={pre_seq_len}")
     print(f"🔍 Fine-tuning: feats={fine_feats}, seq={fine_seq_len}")
 
+    # =========================================================================
+    # HELPER FUNCTIONS
+    # =========================================================================
+
     def update_latent(model, new_flattened, new_latent_dim):
         """
         Update latent space dimension by replacing linear layers.
         Creates new layers with Kaiming normal initialization.
 
         Args:
-            model: Autoencoder model with encoder/decoder (already on device)
+            model: Autoencoder model (already on device)
             new_flattened: New flattened size after conv layers
             new_latent_dim: New latent dimension
 
         Returns:
             model: Updated model (on same device)
-
-        Raises:
-            RuntimeError: If required layers are not found or update fails
         """
 
         def init_kaiming_linear(layer, mode='fan_in'):
@@ -1217,13 +1234,12 @@ def adjust_model_for_finetuning(
         encoder = model.encoder
         decoder = model.decoder
 
-        # ✅ AUTO-DETECT device from model
+        # Auto-detect device
         try:
             device = next(model.parameters()).device
             print(f"\n🔧 Updating Latent Space:")
             print(f"   - Detected device:  {device}")
         except StopIteration:
-            # Model has no parameters (shouldn't happen)
             device = torch.device('cpu')
             print(f"\n⚠️  WARNING: Could not detect device, using CPU")
 
@@ -1231,17 +1247,13 @@ def adjust_model_for_finetuning(
         print(f"   - New latent dim:   {new_latent_dim}")
         print(f"   - Compression:      {new_flattened / new_latent_dim:.1f}:1")
 
-        # ---------------------------
-        # ENCODER: to_latent
-        # ---------------------------
+        # Update encoder: to_latent
         encoder_updated = False
-
         for name, module in encoder.named_modules():
             if isinstance(module, nn.Linear) and "to_latent" in name.lower():
                 old_in_features = module.in_features
                 old_out_features = module.out_features
 
-                # ✅ Create new layer on SAME device as model
                 new_layer = nn.Linear(new_flattened, new_latent_dim).to(device)
                 init_kaiming_linear(new_layer)
 
@@ -1250,75 +1262,111 @@ def adjust_model_for_finetuning(
                 parent = encoder
                 for p in parts[:-1]:
                     parent = getattr(parent, p)
-
                 setattr(parent, parts[-1], new_layer)
 
                 print(f"   ✅ Encoder: {name}")
                 print(f"      Old: Linear({old_in_features} → {old_out_features})")
                 print(f"      New: Linear({new_flattened} → {new_latent_dim})")
-
                 encoder_updated = True
 
         if not encoder_updated:
-            raise RuntimeError(
-                f"❌ ERROR: No 'to_latent' layer found in encoder!\n"
-                f"   Available Linear layers: {[n for n, m in encoder.named_modules() if isinstance(m, nn.Linear)]}"
-            )
+            raise RuntimeError("❌ ERROR: No 'to_latent' layer found in encoder!")
 
-        # Update encoder attributes
         encoder.flattened_size = new_flattened
         encoder.latent_dim = new_latent_dim
 
-        # ---------------------------
-        # DECODER: latent_to_flatten
-        # ---------------------------
+        # Update decoder: latent_to_flatten
         decoder_updated = False
-
         for name, module in decoder.named_modules():
             if isinstance(module, nn.Linear) and "latent_to_flatten" in name.lower():
                 old_in_features = module.in_features
                 old_out_features = module.out_features
 
-                # ✅ Create new layer on SAME device as model
                 new_layer = nn.Linear(new_latent_dim, new_flattened).to(device)
                 init_kaiming_linear(new_layer)
 
-                # Navigate to parent and replace
                 parts = name.split('.')
                 parent = decoder
                 for p in parts[:-1]:
                     parent = getattr(parent, p)
-
                 setattr(parent, parts[-1], new_layer)
 
                 print(f"   ✅ Decoder: {name}")
                 print(f"      Old: Linear({old_in_features} → {old_out_features})")
                 print(f"      New: Linear({new_latent_dim} → {new_flattened})")
-
                 decoder_updated = True
 
         if not decoder_updated:
-            raise RuntimeError(
-                f"❌ ERROR: No 'latent_to_flatten' layer found in decoder!\n"
-                f"   Available Linear layers: {[n for n, m in decoder.named_modules() if isinstance(m, nn.Linear)]}"
-            )
+            raise RuntimeError("❌ ERROR: No 'latent_to_flatten' layer found in decoder!")
 
-        # Update decoder attributes
         decoder.flattened_size = new_flattened
         decoder.latent_dim = new_latent_dim
 
         print(f"\n✔  Latent space update complete!")
-
         return model
 
-    # -------------------------------
-    # 0️⃣ Freeze Layers Function
-    # -------------------------------
+    def validate_freeze_policy(mode, freeze_layers):
+        """
+        Validate that freeze policy is compatible with fine-tuning mode.
+
+        Raises:
+            ValueError: If incompatible configuration detected
+        """
+
+        if freeze_layers is None or freeze_layers == '0':
+            return  # No freezing, all modes compatible
+
+        if isinstance(freeze_layers, int):
+            freeze_layers = str(freeze_layers)
+
+        # Convert to list
+        if isinstance(freeze_layers, str):
+            freeze_list = [freeze_layers]
+        else:
+            freeze_list = list(freeze_layers)
+
+        # Check for conflicts
+        conflicts = []
+
+        # Latent-based modes need trainable latent layers
+        if mode in ['latent_space', 'soft_latent_space']:
+            if any(freeze in freeze_list for freeze in
+                   ['encoder-bottleneck', 'encoder_bottleneck', 'bottleneck', 'all']):
+                conflicts.append(
+                    f"Mode '{mode}' requires TRAINABLE latent layers, "
+                    f"but freeze_layers='{freeze_layers}' would freeze them"
+                )
+
+        # Adapter-based modes need trainable adapters (always protected anyway)
+        if mode in ['adaptive_layer', 'linear_proj', 'conv2d_adapter']:
+            if 'all' in freeze_list:
+                # Adapters are always protected, but warn user
+                print(f"⚠️  WARNING: freeze_layers='all' specified with mode '{mode}'")
+                print(f"   Adapters will remain TRAINABLE (always protected)")
+
+        # Raise if critical conflicts found
+        if conflicts:
+            error_msg = "\n❌ INCOMPATIBLE FREEZE POLICY:\n"
+            for conflict in conflicts:
+                error_msg += f"   - {conflict}\n"
+            error_msg += "\n💡 Suggestions:\n"
+            error_msg += "   - Use freeze_layers='encoder-decoder' to freeze backbone only\n"
+            error_msg += "   - Or set freeze_layers='0' for no freezing\n"
+            raise ValueError(error_msg)
+
+        print(f"✅ Freeze policy validated for mode '{mode}'")
+
     def freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=None):
         """
-        Congela selettivamente i layer del modello secondo freeze_layers.
-        Usa get_module_type() per classificazione robusta.
+        Freeze model layers selectively based on freeze_layers specification.
+        Uses get_module_type() for robust classification.
+
+        Args:
+            model: Model to freeze
+            freeze_layers: Freeze specification
+            fine_tuning_mode: Fine-tuning mode for special handling
         """
+
         print("\n" + "=" * 80)
         print("🧊 FREEZE-LAYERS: STARTING PROCEDURE")
         print("=" * 80)
@@ -1330,18 +1378,16 @@ def adjust_model_for_finetuning(
         elif isinstance(freeze_layers, str):
             freeze_layers = [freeze_layers]
 
-        # Caso speciale: '0' → nessun freeze
+        # Special case: '0' means no freezing
         if "0" in freeze_layers:
-            print("\nℹ️ Freeze layers = '0' → no freezing applied")
+            print("\nℹ️  Freeze layers = '0' → no freezing applied")
             freeze_layers = []
 
-        # =====================================================
-        # Identifica layer protetti
-        # =====================================================
+        # Identify protected layers
         always_protected = ["adapter", "adaptive"]
         mode_protected = []
 
-        is_latent_strategy = fine_tuning_mode in ["latent_space", "hard_latent_space"]
+        is_latent_strategy = fine_tuning_mode in ["latent_space", "soft_latent_space"]
 
         if is_latent_strategy:
             mode_protected = [
@@ -1351,7 +1397,7 @@ def adjust_model_for_finetuning(
                 "encoder_layer",
                 "reshape"
             ]
-            print(f"\n⚙️ Fine-tuning mode = '{fine_tuning_mode}' → Latent LINEAR layers MUST be trainable")
+            print(f"\n⚙️  Fine-tuning mode = '{fine_tuning_mode}' → Latent LINEAR layers MUST be trainable")
             print(f"   Protected keywords: {mode_protected}")
 
         def is_always_protected(name):
@@ -1360,15 +1406,12 @@ def adjust_model_for_finetuning(
         def is_mode_protected(name):
             return any(k in name.lower() for k in mode_protected)
 
-        # =====================================================
-        # Validazione configurazione conflittuale
-        # =====================================================
+        # Validate conflicting configuration
         if is_latent_strategy and ("encoder-bottleneck" in freeze_layers or "encoder_bottleneck" in freeze_layers):
-            print("\n⚠️ WARNING: Conflicting configuration detected!")
-            print(f"  - fine_tuning_mode='{fine_tuning_mode}' requires latent layers TRAINABLE")
-            print(f"  - freeze_layers contains 'encoder-bottleneck' which tries to freeze them")
-            print(f"  → Resolution: Latent layers will remain TRAINABLE (mode takes precedence)")
-            print()
+            print("\n⚠️  WARNING: Potentially conflicting configuration!")
+            print(f"   - fine_tuning_mode='{fine_tuning_mode}' requires latent layers TRAINABLE")
+            print(f"   - freeze_layers contains 'encoder-bottleneck'")
+            print(f"   → Resolution: Latent layers will remain TRAINABLE (mode takes precedence)")
 
         def freeze_module(name, module):
             for p in module.parameters(recurse=True):
@@ -1380,21 +1423,19 @@ def adjust_model_for_finetuning(
             for p in module.parameters(recurse=True):
                 p.requires_grad = True
 
-        # =====================================================
-        # Apply Freeze Logic
-        # =====================================================
+        # Apply freeze logic
         for name, module in model.named_modules():
             if not name:  # Skip root
                 continue
 
             module_type = get_module_type(name)
 
-            # Check 1: SEMPRE protetti (adapter, adaptive)
+            # Check 1: Always protected (adapter, adaptive)
             if is_always_protected(name):
                 keep_module(name, module, "(always protected)")
                 continue
 
-            # Check 2: Protetti da MODALITÀ (latent se latent_strategy)
+            # Check 2: Mode protected (latent if latent_strategy)
             if is_mode_protected(name):
                 keep_module(name, module, f"(protected by mode={fine_tuning_mode})")
                 continue
@@ -1422,7 +1463,7 @@ def adjust_model_for_finetuning(
                     keep_module(name, module, "(not in encoder-decoder)")
                     continue
 
-            # Check 6: Freeze singoli componenti
+            # Check 6: Freeze individual components
             if "encoder" in freeze_layers and module_type == "encoder":
                 freeze_module(name, module)
                 continue
@@ -1435,7 +1476,7 @@ def adjust_model_for_finetuning(
                 freeze_module(name, module)
                 continue
 
-            # Check 7: Freeze numeric (primi N layer)
+            # Check 7: Freeze numeric (first N layers)
             if any(item.isdigit() for item in freeze_layers):
                 numeric_layers = [int(item) for item in freeze_layers if item.isdigit()]
                 max_n = max(numeric_layers)
@@ -1450,348 +1491,435 @@ def adjust_model_for_finetuning(
 
         print("\n✅ FREEZE COMPLETE\n" + "=" * 80 + "\n")
 
+    # =========================================================================
+    # FINE-TUNING MODE IMPLEMENTATIONS
+    # =========================================================================
+
+    def apply_adaptive_layer_mode(model, cfg, pre_feats, fine_feats, pre_seq_len, fine_seq_len, device):
+        """
+        Apply adaptive_layer fine-tuning mode.
+        Creates learnable Conv2D adapters for input/output transformation.
+
+        Args:
+            model: Model to modify
+            cfg: Configuration
+            pre_feats, fine_feats: Feature dimensions
+            pre_seq_len, fine_seq_len: Sequence lengths
+            device: Device
+
+        Returns:
+            Modified model
+        """
+
+        print("⚙️  Fine-tuning mode: 'adaptive_layer' (learnable Conv2D adapters)")
+
+        # Get adapter configuration
+        adapter_config = cfg.opt.get('adapter', {})
+        hidden_dim = adapter_config.get('hidden_dim', 32)
+        use_residual = adapter_config.get('use_residual', True)
+        num_layers = adapter_config.get('num_layers', 2)
+
+        print(f"   Configuration:")
+        print(f"      - Hidden dim: {hidden_dim}")
+        print(f"      - Residual: {use_residual}")
+        print(f"      - Num layers: {num_layers}")
+
+        # Create INPUT adapter
+        adapter_in = create_feature_adapter(
+            pre_feats=pre_feats,
+            pre_seq_len=pre_seq_len,
+            fine_feats=fine_feats,
+            fine_seq_len=fine_seq_len,
+            cfg=cfg,
+            adapter_type='input',
+            hidden_dim=hidden_dim,
+            use_residual=use_residual,
+            num_layers=num_layers
+        )
+        model.input_adapter = adapter_in.to(device)
+
+        # Create OUTPUT adapter
+        adapter_out = create_feature_adapter(
+            pre_feats=pre_feats,
+            pre_seq_len=pre_seq_len,
+            fine_feats=fine_feats,
+            fine_seq_len=fine_seq_len,
+            cfg=cfg,
+            adapter_type='output',
+            hidden_dim=hidden_dim,
+            use_residual=use_residual,
+            num_layers=num_layers
+        )
+        model.output_adapter = adapter_out.to(device)
+
+        print(f"\n   ✅ Adaptive layer adapters created!")
+        return model
+
+    def apply_linear_proj_mode(model, cfg, pre_feats, fine_feats, pre_seq_len, fine_seq_len, device):
+        """
+        Apply linear_proj fine-tuning mode.
+        Creates linear/non-linear projection adapters.
+
+        Args:
+            model: Model to modify
+            cfg: Configuration
+            pre_feats, fine_feats: Feature dimensions
+            pre_seq_len, fine_seq_len: Sequence lengths
+            device: Device
+
+        Returns:
+            Modified model
+        """
+
+        print("⚙️  Fine-tuning mode: 'linear_proj' (feature projection)")
+
+        # Get adapter configuration
+        adapter_config = cfg.opt.get('adapter', {})
+        use_nonlinear = adapter_config.get('use_nonlinear', False)
+        hidden_dim = adapter_config.get('hidden_dim', 32)
+
+        print(f"   Configuration:")
+        print(f"      - Type: {'Non-linear' if use_nonlinear else 'Linear'}")
+        if use_nonlinear:
+            print(f"      - Hidden dim: {hidden_dim}")
+
+        # Create INPUT adapter
+        adapter_in = create_projection_adapter(
+            pre_feats=pre_feats,
+            pre_seq_len=pre_seq_len,
+            fine_feats=fine_feats,
+            fine_seq_len=fine_seq_len,
+            cfg=cfg,
+            adapter_type='input',
+            use_nonlinear=use_nonlinear,
+            hidden_dim=hidden_dim
+        )
+        model.input_adapter = adapter_in.to(device)
+
+        # Create OUTPUT adapter
+        adapter_out = create_projection_adapter(
+            pre_feats=pre_feats,
+            pre_seq_len=pre_seq_len,
+            fine_feats=fine_feats,
+            fine_seq_len=fine_seq_len,
+            cfg=cfg,
+            adapter_type='output',
+            use_nonlinear=use_nonlinear,
+            hidden_dim=hidden_dim
+        )
+        model.output_adapter = adapter_out.to(device)
+
+        print(f"\n   ✅ Projection adapters created!")
+        return model
+
+    def apply_latent_space_mode(model, checkpoint, pre_feats, fine_feats, pre_seq_len, fine_seq_len):
+        """
+        Apply latent_space fine-tuning mode.
+        Reinitializes latent layers when dimensions change.
+
+        Args:
+            model: Model to modify
+            checkpoint: Pre-trained checkpoint
+            pre_feats, fine_feats: Feature dimensions
+            pre_seq_len, fine_seq_len: Sequence lengths
+
+        Returns:
+            Modified model
+        """
+
+        print("⚙️  Fine-tuning mode: 'latent_space' (reinitialize latent layers)")
+
+        # Retrieve dimensions
+        old_latent_dim = checkpoint.get('cfg', {}).get('model', {}).get("latent_dim")
+        old_flattened_feats = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size")
+        new_flattened_feats = getattr(model.encoder, "flattened_size")
+
+        old_input_size = pre_feats * pre_seq_len
+        new_input_size = fine_feats * fine_seq_len
+
+        compression_factor = getattr(model.encoder, "compression_factor")
+        compression_type = getattr(model.encoder, "compression_type", 'on_features')
+
+        print(f"📊 Dimension Analysis:")
+        print(f"   - Pre-training:  input={old_input_size}, flatten={old_flattened_feats}, latent={old_latent_dim}")
+        print(f"   - Fine-tuning:   input={new_input_size}, flatten={new_flattened_feats}")
+        print(f"   - Compression:   type={compression_type}, factor={compression_factor}")
+
+        # Detect changes
+        input_changed = (old_input_size != new_input_size)
+        flatten_changed = (old_flattened_feats != new_flattened_feats)
+
+        # Calculate new latent dimension
+        if compression_type == 'on_features':
+            new_latent_dim = int(new_flattened_feats // compression_factor)
+            if flatten_changed:
+                print(f"   → Flatten changed: {old_flattened_feats} → {new_flattened_feats}")
+                print(f"   → New latent (from flatten): {new_latent_dim}")
+            else:
+                new_latent_dim = old_latent_dim
+                print(f"   ✓ Flatten unchanged → latent unchanged: {old_latent_dim}")
+
+        elif compression_type == 'on_inputs':
+            new_latent_dim = int(new_input_size // compression_factor)
+            if input_changed:
+                print(f"   → Input changed: {old_input_size} → {new_input_size}")
+                print(f"   → New latent (from input): {new_latent_dim}")
+            else:
+                new_latent_dim = old_latent_dim
+                print(f"   ✓ Input unchanged → latent unchanged: {old_latent_dim}")
+
+            if flatten_changed:
+                print(f"   → Flatten also changed: {old_flattened_feats} → {new_flattened_feats}")
+
+        else:
+            raise ValueError(f"Unknown compression type: {compression_type}")
+
+        # Determine if update needed
+        latent_changed = (new_latent_dim != old_latent_dim)
+        update_needed = flatten_changed or latent_changed
+
+        if update_needed:
+            print(f"\n🔧 Update required:")
+            if flatten_changed:
+                print(f"   - Flatten changed: {old_flattened_feats} → {new_flattened_feats}")
+            if latent_changed:
+                print(f"   - Latent changed: {old_latent_dim} → {new_latent_dim}")
+
+            # Validation
+            min_latent = 16
+            max_latent = new_input_size * 0.8
+            if new_latent_dim < min_latent:
+                print(f"\n⚠️  WARNING: Latent dim {new_latent_dim} is very small (< {min_latent})")
+            if new_latent_dim > max_latent:
+                print(f"\n⚠️  WARNING: Latent dim {new_latent_dim} > 80% of input")
+
+            # Update latent space
+            model = update_latent(model, new_flattened_feats, new_latent_dim)
+            print(f"   ✅ Latent space updated successfully!")
+
+        else:
+            print(f"\n✅ No latent space update needed")
+            print(f"   - Dimensions unchanged: flatten={new_flattened_feats}, latent={old_latent_dim}")
+
+        return model
+
+    def apply_soft_latent_space_mode(model, checkpoint, pre_feats, fine_feats, pre_seq_len, fine_seq_len):
+        """
+        Apply soft_latent_space fine-tuning mode.
+
+        Strategy:
+        - If flatten unchanged: Keep original latent dimensions (weights will be restored later)
+        - If flatten changed: Fall back to latent_space mode (reinitialize)
+
+        This ensures model has correct dimensions for weight restoration in load_pretrained_checkpoint.
+
+        Args:
+            model: Model to modify
+            checkpoint: Pre-trained checkpoint
+            pre_feats, fine_feats: Feature dimensions
+            pre_seq_len, fine_seq_len: Sequence lengths
+
+        Returns:
+            Modified model
+        """
+
+        print("⚙️  Fine-tuning mode: 'soft_latent_space' (preserve latent dimensions if possible)")
+
+        # Retrieve dimensions
+        old_flattened = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size")
+        old_latent = checkpoint.get('cfg', {}).get('model', {}).get("latent_dim")
+        new_flattened = getattr(model.encoder, "flattened_size")
+
+        print(f"📊 Dimension Check:")
+        print(f"   - Pre-training: flatten={old_flattened}, latent={old_latent}")
+        print(f"   - Fine-tuning:  flatten={new_flattened}")
+
+        # Check if flatten dimension matches
+        flatten_unchanged = (old_flattened == new_flattened)
+
+        if flatten_unchanged:
+            # SOFT mode: Ensure model keeps original latent dimensions
+            print(f"\n✅ Flatten UNCHANGED → Keeping original latent dimensions")
+            print(f"   Model latent layers will match checkpoint dimensions")
+            print(f"   → Latent weights can be restored in load_pretrained_checkpoint")
+
+            # Verify current model latent dimensions
+            current_latent = getattr(model.encoder, "latent_dim")
+
+            if current_latent != old_latent:
+                print(f"\n⚠️  Current latent ({current_latent}) != Pre-trained latent ({old_latent})")
+                print(f"   Adjusting model to match pre-trained dimensions...")
+
+                # Update to match pre-trained dimensions
+                model = update_latent(model, old_flattened, old_latent)
+                print(f"   ✅ Model adjusted to match pre-trained latent dimensions")
+            else:
+                print(f"   ✓ Model latent dimensions already match: {current_latent}")
+
+            print(f"\n   ✅ SOFT latent space mode: dimensions preserved for weight restoration")
+
+        else:
+            # Fallback to latent_space mode
+            print(f"\n⚠️  Flatten CHANGED: {old_flattened} → {new_flattened}")
+            print(f"   Cannot preserve latent dimensions → Falling back to 'latent_space' mode")
+
+            # Call latent_space mode
+            model = apply_latent_space_mode(
+                model, checkpoint, pre_feats, fine_feats, pre_seq_len, fine_seq_len
+            )
+
+        return model
+
+    # =========================================================================
+    # MAIN LOGIC
+    # =========================================================================
+
+    # Get freeze configuration
     freeze_layers = fine_tuning_cfg.opt.get("freeze_layers", None)
     if freeze_layers:
         print(f"🧊 Requested freeze layers: {freeze_layers}")
 
-    # -------------------------------
-    # 1️⃣ Conv1D
-    # -------------------------------
+    # Handle Conv1D
     if conv_type.lower() == "conv_ae1d":
+
+        if fine_tuning_cfg.opt.fine_tuning_mode != "adaptive_layer":
+            raise Exception(' Not implemented error')
+
         if features_changed:
-            print(f"🔧 Adding Conv1D INPUT adapter: feats {fine_feats} → {pre_feats}")
-            #adapter_in = nn.Conv1d(fine_feats, pre_feats, kernel_size=1)
-            #nn.init.kaiming_normal_(adapter_in.weight)
-            #model.input_adapter = adapter_in.to(device)
+            print(f"🔧 Creating Conv1D adapters with refinement layers")
 
-            # Input adapter
+            # Get activation from config
+            from config import activation_dict
+            activation = activation_dict.get(
+                fine_tuning_cfg.model.get('activation', 'ELU'),
+                nn.ELU()
+            )
+
+            # Get adapter configuration
+            adapter_config = fine_tuning_cfg.opt.get('adapter', {})
+            hidden_dim = adapter_config.get('hidden_dim', 32)
+
+            print(f"   Configuration:")
+            print(f"      - Input:  {fine_feats} → {pre_feats}")
+            print(f"      - Output: {pre_feats} → {fine_feats}")
+            print(f"      - Hidden dim: {hidden_dim}")
+            print(f"      - Activation: {fine_tuning_cfg.model.get('activation', 'ELU')}")
+
+            # Input adapter: fine_feats → pre_feats
             model.input_adapter = nn.Sequential(
-                nn.Conv1d(fine_feats, pre_feats, kernel_size=1),
-                nn.BatchNorm1d(pre_feats),  # ✅ BatchNorm1d (non 2d!)
-                activation_dict[fine_tuning_cfg.model.activation]
+                # Initial projection
+                nn.Conv1d(fine_feats, hidden_dim, kernel_size=1),
+                nn.BatchNorm1d(hidden_dim),
+                activation,
+                # Refinement layer
+                nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                nn.BatchNorm1d(hidden_dim),
+                activation,
+                # Final projection
+                nn.Conv1d(hidden_dim, pre_feats, kernel_size=1)
             ).to(device)
-            # Inizializza solo il Conv1d (primo layer del Sequential)
-            nn.init.kaiming_normal_(model.input_adapter[0].weight)  # ✅ [0] = Conv1d layer
 
-            print(f"🔧 Adding Conv1D OUTPUT adapter: feats {pre_feats} → {fine_feats}")
+            # Initialize weights
+            for m in model.input_adapter:
+                if isinstance(m, nn.Conv1d):
+                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
 
-            # Output adapter
+            # Output adapter: pre_feats → fine_feats
             model.output_adapter = nn.Sequential(
-                nn.Conv1d(pre_feats, fine_feats, kernel_size=1),
-                nn.BatchNorm1d(fine_feats),  # ✅ BatchNorm1d
-                activation_dict[fine_tuning_cfg.model.activation]
+                # Initial projection
+                nn.Conv1d(pre_feats, hidden_dim, kernel_size=1),
+                nn.BatchNorm1d(hidden_dim),
+                activation,
+                # Refinement layer
+                nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                nn.BatchNorm1d(hidden_dim),
+                activation,
+                # Final projection
+                nn.Conv1d(hidden_dim, fine_feats, kernel_size=1)
             ).to(device)
-            nn.init.kaiming_normal_(model.output_adapter[0].weight)  # ✅ [0]
+
+            # Initialize weights
+            for m in model.output_adapter:
+                if isinstance(m, nn.Conv1d):
+                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
+
+            # Count parameters
+            input_params = sum(p.numel() for p in model.input_adapter.parameters())
+            output_params = sum(p.numel() for p in model.output_adapter.parameters())
+
+            print(f"\n   ✅ Conv1D adapters created!")
+            print(f"      - Input adapter:  {input_params:,} parameters")
+            print(f"      - Output adapter: {output_params:,} parameters")
 
         if freeze_layers:
-            freeze_layers_with_logging(model, freeze_layers,
-                                       fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode'))
+            freeze_layers_with_logging(
+                model, freeze_layers,
+                fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode')
+            )
 
         return model
 
-    # -------------------------------
-    # 2️⃣ Conv2D
-    # -------------------------------
+    # Handle Conv2D
     elif conv_type.lower() == "conv_ae2d":
+
         if features_changed or seq_changed:
             print("🔧 Adjusting Conv2D (features or sequence changed)")
 
             mode = fine_tuning_cfg.opt.get('fine_tuning_mode', None)
 
+            if mode is None:
+                raise ValueError("fine_tuning_mode must be specified when dimensions change!")
+
+            # Validate freeze policy compatibility
+            validate_freeze_policy(mode, freeze_layers)
+
+            # Apply appropriate mode
             if mode == "adaptive_layer":
-                print("⚙️ Fine-tuning mode: 'adaptive_layer' (learnable resizer)")
-
-                # ============================================================
-                # INPUT ADAPTER: fine → pre (19×16 → 16×16)
-                # ============================================================
-                adapter_in = create_feature_adapter(
-                    pre_feats=pre_feats,  # 16
-                    pre_seq_len=pre_seq_len,  # 16
-                    fine_feats=fine_feats,  # 19
-                    fine_seq_len=fine_seq_len,  # 16
-                    cfg=fine_tuning_cfg,  # ✅ Auto-ricava activation!
-                    adapter_type='input',
-                    hidden_dim=32,  # Capacity
-                    use_residual=True,  # Residual connection
-                    num_layers=2  # Depth
+                model = apply_adaptive_layer_mode(
+                    model, fine_tuning_cfg, pre_feats, fine_feats,
+                    pre_seq_len, fine_seq_len, device
                 )
-
-                model.input_adapter = adapter_in.to(device)
-
-                # ============================================================
-                # OUTPUT ADAPTER: pre → fine (16×16 → 19×16)
-                # ============================================================
-                adapter_out = create_feature_adapter(
-                    pre_feats=pre_feats,  # 16
-                    pre_seq_len=pre_seq_len,  # 16
-                    fine_feats=fine_feats,  # 19
-                    fine_seq_len=fine_seq_len,  # 16
-                    cfg=fine_tuning_cfg,  # ✅ Auto-ricava activation!
-                    adapter_type='output',
-                    hidden_dim=32,
-                    use_residual=True,
-                    num_layers=2
-                )
-
-                model.output_adapter = adapter_out.to(device)
-
-                print(f"\n✅ Adapters created successfully!")
 
             elif mode == "linear_proj":
-                print("\n⚙️ Fine-tuning mode: 'linear_proj' (feature projection)")
-                print("   Strategy: Linear/Non-linear projection N → 16")
-
-
-                # Get adapter configuration
-                adapter_config = fine_tuning_cfg.opt.get('adapter', {})
-                use_nonlinear = adapter_config.get('use_nonlinear', False)
-                hidden_dim = adapter_config.get('hidden_dim', 32)
-
-                print(f"   Configuration:")
-                print(f"      - Type: {'Non-linear' if use_nonlinear else 'Linear'}")
-                if use_nonlinear:
-                    print(f"      - Hidden dim: {hidden_dim}")
-
-                # INPUT adapter: fine_feats → pre_feats
-                adapter_in = create_projection_adapter(
-                    pre_feats=pre_feats,
-                    pre_seq_len=pre_seq_len,
-                    fine_feats=fine_feats,
-                    fine_seq_len=fine_seq_len,
-                    cfg=fine_tuning_cfg,
-                    adapter_type='input',
-                    use_nonlinear=use_nonlinear,
-                    hidden_dim=hidden_dim
+                model = apply_linear_proj_mode(
+                    model, fine_tuning_cfg, pre_feats, fine_feats,
+                    pre_seq_len, fine_seq_len, device
                 )
-
-                model.input_adapter = adapter_in.to(device)
-
-                # OUTPUT adapter: pre_feats → fine_feats
-                adapter_out = create_projection_adapter(
-                    pre_feats=pre_feats,
-                    pre_seq_len=pre_seq_len,
-                    fine_feats=fine_feats,
-                    fine_seq_len=fine_seq_len,
-                    cfg=fine_tuning_cfg,
-                    adapter_type='output',
-                    use_nonlinear=use_nonlinear,
-                    hidden_dim=hidden_dim
-                )
-
-                model.output_adapter = adapter_out.to(device)
-
-                print(f"\n   ✅ Projection adapters created!")
-
-                # Apply freeze strategy
-                if freeze_layers:
-                    freeze_layers_with_logging(model, freeze_layers,
-                                               fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode'))
-
-
 
             elif mode == "latent_space":
-
-                print("\n⚙️ Fine-tuning mode: 'latent_space' (update latent linear layers)")
-
-                # ============================================================
-
-                # RETRIEVE OLD AND NEW DIMENSIONS
-
-                # ============================================================
-
-                old_latent_dim = checkpoint.get('cfg', {}).get('model', {}).get("latent_dim")
-
-                old_flattened_feats = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size")
-
-                # New dimensions from fine-tuning model
-
-                new_flattened_feats = getattr(getattr(model, "encoder", None), "flattened_size")
-
-                # Input dimensions
-
-                old_input_size = pre_feats * pre_seq_len
-
-                new_input_size = fine_feats * fine_seq_len
-
-                # Compression settings
-
-                compression_factor = getattr(getattr(model, "encoder", None), "compression_factor")
-
-                compression_type = getattr(getattr(model, "encoder", None), "compression_type", None)
-
-                compression_type = 'on_features' if compression_type is None else compression_type
-
-                print(f"📊 Dimension Analysis:")
-
-                print(
-                    f"   - Pre-training:  input={old_input_size}, flatten={old_flattened_feats}, latent={old_latent_dim}")
-
-                print(f"   - Fine-tuning:   input={new_input_size}, flatten={new_flattened_feats}")
-
-                print(f"   - Compression:   type={compression_type}, factor={compression_factor}")
-
-                # ============================================================
-
-                # DETECT CHANGES
-
-                # ============================================================
-
-                input_changed = (old_input_size != new_input_size)
-
-                flatten_changed = (old_flattened_feats != new_flattened_feats)
-
-                # ============================================================
-
-                # CALCULATE NEW LATENT DIM BASED ON COMPRESSION TYPE
-
-                # ============================================================
-
-                if compression_type == 'on_features':
-
-                    # Latent calculated from flatten size
-
-                    new_latent_dim = int(new_flattened_feats // compression_factor)
-
-                    if flatten_changed:
-
-                        print(f"   → Flatten changed: {old_flattened_feats} → {new_flattened_feats}")
-
-                        print(f"   → New latent (from flatten): {new_latent_dim}")
-
-                    else:
-
-                        new_latent_dim = old_latent_dim
-
-                        print(f"   ✓ Flatten unchanged → latent unchanged: {old_latent_dim}")
-
-
-                elif compression_type == 'on_inputs':
-
-                    # Latent calculated from input size
-
-                    new_latent_dim = int(new_input_size // compression_factor)
-
-                    if input_changed:
-
-                        print(f"   → Input changed: {old_input_size} → {new_input_size}")
-
-                        print(f"   → New latent (from input): {new_latent_dim}")
-
-                    else:
-
-                        new_latent_dim = old_latent_dim
-
-                        print(f"   ✓ Input unchanged → latent unchanged: {old_latent_dim}")
-
-                    if flatten_changed:
-                        print(f"   → Flatten also changed: {old_flattened_feats} → {new_flattened_feats}")
-
-
-                else:
-
-                    raise ValueError(f"Unknown compression type: {compression_type}")
-
-                # ============================================================
-
-                # CRITICAL FIX: Update needed if EITHER dimension changed
-
-                # ============================================================
-
-                # Linear layer is: Linear(flatten → latent)
-
-                # Update if EITHER flatten OR latent dimension changed!
-
-                latent_changed = (new_latent_dim != old_latent_dim)
-
-                update_needed = flatten_changed or latent_changed
-
-                if update_needed:
-
-                    print(f"\n🔧 Update required:")
-
-                    if flatten_changed:
-                        print(f"   - Flatten changed: {old_flattened_feats} → {new_flattened_feats}")
-
-                    if latent_changed:
-                        print(f"   - Latent changed: {old_latent_dim} → {new_latent_dim}")
-
-                    print(
-                        f"   - Linear layer: ({old_flattened_feats} → {old_latent_dim}) to ({new_flattened_feats} → {new_latent_dim})")
-
-                # ============================================================
-
-                # VALIDATION
-
-                # ============================================================
-
-                if update_needed:
-
-                    # Sanity checks
-
-                    min_latent = 16
-
-                    max_latent = new_input_size * 0.8
-
-                    if new_latent_dim < min_latent:
-                        print(f"\n⚠️  WARNING: Latent dim {new_latent_dim} is very small (< {min_latent})")
-
-                    if new_latent_dim > max_latent:
-                        print(f"\n⚠️  WARNING: Latent dim {new_latent_dim} > 80% of input")
-
-                # ============================================================
-
-                # UPDATE LATENT SPACE IF NEEDED
-
-                # ============================================================
-
-                if update_needed:
-
-                    print(f"\n🔧 Updating latent space:")
-
-                    print(f"   - Old: Linear({old_flattened_feats} → {old_latent_dim})")
-
-                    print(f"   - New: Linear({new_flattened_feats} → {new_latent_dim})")
-
-                    model = update_latent(model, new_flattened_feats, new_latent_dim)
-
-                    print(f"   ✅ Latent space updated successfully!")
-
-                else:
-
-                    print(f"\n✅ No latent space update needed")
-
-                    print(f"   - Dimensions unchanged: flatten={new_flattened_feats}, latent={old_latent_dim}")
-
-            elif mode == "hard_latent_space":
-                # Recupera dimensione flatten vecchia e nuova
-                old_flattened = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size", None)
-                new_flattened = getattr(getattr(model, "encoder", None), "flattened_size", None)
-                compression_factor = getattr(getattr(model, "encoder", None), "compression_factor", 1)
-                new_latent_dim = int(new_flattened // compression_factor) if new_flattened is not None else None
-
-                print(f"  - old_flattened: {old_flattened}")
-                print(f"  - new_flattened: {new_flattened}")
-                print(f"  - new_latent_dim (computed): {new_latent_dim}")
-
-                if old_flattened != new_flattened:
-                    print(f"🔧 Flattened size changed: {old_flattened} → {new_flattened}. Updating latent space...")
-                    model = update_latent(model, old_flattened, new_flattened, device=device)
-                else:
-                    print(f"🔧 HARD LATENT SPACE MODE: Forcing latent space update even though size unchanged")
-                    model = update_latent(model, old_flattened, new_flattened, device=device)
+                model = apply_latent_space_mode(
+                    model, checkpoint, pre_feats, fine_feats,
+                    pre_seq_len, fine_seq_len
+                )
+
+            elif mode == "soft_latent_space":
+                model = apply_soft_latent_space_mode(
+                    model, checkpoint, pre_feats, fine_feats,
+                    pre_seq_len, fine_seq_len
+                )
 
             else:
-                raise ValueError(f"Unsupported fine_tuning_mode for Conv2D adjustment: {mode}")
+                raise ValueError(f"Unsupported fine_tuning_mode: '{mode}'")
 
+            # Apply freeze policy
             if freeze_layers:
-                freeze_layers_with_logging(model, freeze_layers,
-                                           fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode'))
+                freeze_layers_with_logging(
+                    model, freeze_layers,
+                    fine_tuning_mode=mode
+                )
 
         else:
             print("✅ Feature and sequence dimensions identical — no adapter needed")
+
             if freeze_layers:
-                freeze_layers_with_logging(model, freeze_layers,
-                                           fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode'))
+                freeze_layers_with_logging(
+                    model, freeze_layers,
+                    fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode')
+                )
 
         return model
 

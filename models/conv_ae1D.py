@@ -243,6 +243,8 @@ class CONV_AE1D(nn.Module):
         if self.cfg.opt.get("fine_tuning",0) and self.cfg.opt.get("fine_tuning_mode") == "adaptive_layer":
             # in case of adaptive layer fine-tuning, set in_channels according to the checkpoint pre-trained model
             self.in_channels  = len(torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.feats)
+        elif self.cfg.opt.get("fine_tuning",0) and self.cfg.opt.get("fine_tuning_mode") != "adaptive_layer":
+            raise NotImplementedError("for Conv 1D only adaptive layer available")
         else:
             self.in_channels = cfg.dataset.n_features
 

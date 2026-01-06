@@ -293,7 +293,7 @@ if __name__ == "__main__":
                             help="Ray head node address (default: None for local cluster)")
         parser.add_argument("--password", default=None,
                             help="Ray cluster password")
-        parser.add_argument("--config_file", "-c", default='conv_ae2D_MGM',
+        parser.add_argument("--config_file", "-c", default='conv_ae1D',
                             help="Config file name")
         parser.add_argument("--trials_per_node", default=1, type=int,
                             help="trial per node")

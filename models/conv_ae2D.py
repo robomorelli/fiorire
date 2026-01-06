@@ -253,7 +253,7 @@ class CONV_AE2D(nn.Module):
         self.increasing = model_cfg.increasing
         self.dilation = model_cfg.dilation
         if self.cfg.opt.get("fine_tuning",0) and self.cfg.opt.get("fine_tuning_mode") in ["adaptive_layer","linear_proj"]:
-            # Chage the output size according to the pre-trained model to enable putput adaptation layer
+            # Chage the output size according to the pre-trained model to enable adaptation layer and keep the old latent space (16X16)
             self.h = len(torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.feats)
             self.w = torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.seq_in_length
         else:
