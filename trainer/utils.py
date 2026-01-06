@@ -1627,8 +1627,8 @@ def adjust_model_for_finetuning(
         print("⚙️  Fine-tuning mode: 'linear_proj' (feature projection)")
 
         # Get adapter configuration
-        use_nonlinear = fine_tuning_cfg.opt.get('adapter_use_nonlinear', True)
-        hidden_dim = fine_tuning_cfg.opt.get('adapter_hidden_dim', 32)
+        use_nonlinear = cfg.opt.get('adapter_use_nonlinear', True)
+        hidden_dim = cfg.opt.get('adapter_hidden_dim', 32)
 
         print(f"   Configuration:")
         print(f"      - Type: {'Non-linear' if use_nonlinear else 'Linear'}")
@@ -1991,10 +1991,10 @@ def adjust_model_for_finetuning(
     # -------------------------------------------------------------------------
     elif conv_type.lower() == "conv_ae2d":
 
+        mode = fine_tuning_cfg.opt.get('fine_tuning_mode', None)
         if features_changed or seq_changed:
             print("🔧 Adjusting Conv2D (features or sequence changed)")
 
-            mode = fine_tuning_cfg.opt.get('fine_tuning_mode', None)
 
             if mode is None:
                 raise ValueError("fine_tuning_mode must be specified when dimensions change!")
@@ -2071,7 +2071,7 @@ def adjust_model_for_finetuning(
             if freeze_layers:
                 freeze_layers_with_logging(
                     model, freeze_layers,
-                    fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode')
+                    fine_tuning_mode=mode
                 )
 
         return model, mode
