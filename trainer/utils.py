@@ -2424,7 +2424,7 @@ class FeatureProjectionAdapter(nn.Module):
             [B, C, H_out, W]
         """
         B, C, H_in, W = x.shape
-        #assert H_in == self.n_in, f"Expected {self.n_in} input features, got {H_in}"
+        assert H_in == self.n_in, f"Expected {self.n_in} input features, got {H_in}"
 
         # Reshape: treat each timestep independently
         x = x.permute(0, 3, 1, 2).contiguous()

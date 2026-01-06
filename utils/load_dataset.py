@@ -13,6 +13,8 @@ from scipy import interpolate
 from omegaconf import ListConfig
 from torch.utils.data import SubsetRandomSampler
 import json
+from pathlib import Path
+import pickle
 
 from utils.metric_dataset_generator import generate_and_save_metric_dataset
 from preprocessing.scaling import *
@@ -623,186 +625,11 @@ def prepare_shared_configuration(cfg):
     print(f"\n🔍 Mode: {'FINE-TUNING' if is_fine_tuning else 'TRAINING FROM SCRATCH'}")
 
     # ============================================================
-    # FINE-TUNING MODE: Try to reuse existing files
+    # Try to reuse existing files
     # ============================================================
-    if is_fine_tuning:
-        metric_dataset_path = cfg.dataset.get('metric_dataset_path', None)
-        train_val_indices_path = cfg.dataset.get('train_val_indices_path', None)
-
-        print(f"\n   Checking for existing files...")
-        print(f"   - metric_dataset_path: {metric_dataset_path}")
-        print(f"   - train_val_indices_path: {train_val_indices_path}")
-
-        # Validate paths exist
-        if (metric_dataset_path and os.path.exists(metric_dataset_path) and
-                train_val_indices_path and os.path.exists(train_val_indices_path)):
-
-            print(f"\n   ✅ REUSING existing files (fine-tuning mode)")
-
-            # ========================================================
-            # FIND FILES IN DIRECTORY
-            # ========================================================
-
-            indices_dir = Path(train_val_indices_path)
-            if indices_dir.is_file():
-                indices_dir = indices_dir.parent
-
-            # Find files
-            train_val_indices_file = None
-            scaler_file = None
-            metadata_file = None
-
-            for f in indices_dir.iterdir():
-                if 'train_val' in f.name.lower() and f.suffix in ['.npz', '.npy']:
-                    train_val_indices_file = f
-                elif 'scaler' in f.name.lower() and f.suffix == '.pkl':
-                    scaler_file = f
-                elif 'metadata' in f.name.lower() and f.suffix == '.txt':
-                    metadata_file = f
-
-            # Validate required files exist
-            if train_val_indices_file is None or not train_val_indices_file.exists():
-                raise FileNotFoundError(f"❌ train_val_indices file not found in {indices_dir}")
-
-            if scaler_file is None or not scaler_file.exists():
-                raise FileNotFoundError(f"❌ scaler.pkl not found in {indices_dir}")
-
-            # ========================================================
-            # LOAD METADATA (Primary source of truth)
-            # ========================================================
-
-            if metadata_file and metadata_file.exists():
-                print(f"\n   📂 Loading metadata from: {metadata_file}")
-                metadata = parse_metadata_file(metadata_file)
-
-                print(f"   ✓ Experiment: {metadata.get('exp_name')}")
-                print(f"   ✓ Model: {metadata.get('model_name')}")
-                print(f"   ✓ Dataset: {metadata.get('dataset_name')}")
-                print(f"   ✓ Seed: {metadata.get('seed')}")
-                print(f"   ✓ Features: {len(metadata.get('feature_columns', []))}")
-
-                # Extract key info from metadata
-                feature_columns = metadata.get('feature_columns')
-                scaler_params = metadata.get('scaler_params')
-                seq_len_from_meta = metadata.get('seq_len')
-                train_size = metadata.get('train_size')
-                val_size = metadata.get('val_size')
-
-                if feature_columns is None:
-                    raise ValueError("❌ Feature columns not found in metadata!")
-
-                # Use seq_len from metadata if available, else from config
-                if seq_len_from_meta:
-                    seq_len = seq_len_from_meta
-                    print(f"   ✓ Sequence length (from metadata): {seq_len}")
-                else:
-                    print(f"   ⚠️  Sequence length not in metadata, using config: {seq_len}")
-
-            else:
-                print(f"\n   ⚠️  Metadata file not found!")
-                print(f"   ⚠️  Falling back to config (not recommended)")
-
-                # Fallback to config
-                feature_columns = cfg.dataset.feats
-                scaler_params = None
-                train_size = None
-                val_size = None
-
-            # ========================================================
-            # LOAD INDICES
-            # ========================================================
-
-            print(f"\n   📂 Loading indices from: {train_val_indices_file}")
-            indices_data = np.load(train_val_indices_file)
-            train_indexes = indices_data['train_indices']
-            val_indexes = indices_data['val_indices']
-
-            # Use loaded sizes if not from metadata
-            if train_size is None:
-                train_size = len(train_indexes)
-            if val_size is None:
-                val_size = len(val_indexes)
-
-            print(f"   ✓ Train indices: {train_size:,}")
-            print(f"   ✓ Val indices: {val_size:,}")
-
-            # ========================================================
-            # LOAD SCALER
-            # ========================================================
-
-            print(f"\n   📂 Loading scaler from: {scaler_file}")
-            with open(scaler_file, 'rb') as f:
-                scaler = pickle.load(f)
-
-            print(f"   ✓ Scaler: {scaler.__class__.__name__}")
-
-            # If scaler_params not from metadata, extract from scaler
-            if scaler_params is None:
-                if hasattr(scaler, 'mean_'):
-                    scaler_params = {
-                        'mean': scaler.mean_.tolist() if hasattr(scaler.mean_, 'tolist') else None,
-                        'std': scaler.scale_.tolist() if hasattr(scaler, 'scale_') else None
-                    }
-                else:
-                    scaler_params = {'type': scaler.__class__.__name__}
-
-            # Validate feature count
-            if len(feature_columns) != scaler.n_features_in_:
-                raise ValueError(
-                    f"Feature mismatch! Metadata has {len(feature_columns)} "
-                    f"but scaler expects {scaler.n_features_in_}"
-                )
-
-            # Get experiment directory
-            exp_indices_dir = train_val_indices_file.parent
-
-            print(f"\n   ✓ Experiment directory: {exp_indices_dir}")
-
-            # ========================================================
-            # BUILD SHARED CONFIG (from loaded data)
-            # ========================================================
-            shared_config = {
-                # Paths to existing files
-                'indices_path': str(train_val_indices_file),
-                'scaler_path': str(scaler_file),
-                'experiment_dir': str(exp_indices_dir),
-
-                # Dataset path
-                'dataset_path': str(dataset_path),
-                'metric_loader_path': str(metric_dataset_path),
-
-                # Metadata (from metadata.txt)
-                'scaler_params': scaler_params,
-                'feature_columns': list(feature_columns),
-                'seq_len': int(seq_len),
-
-                # Statistics (from metadata.txt or loaded data)
-                'train_size': int(train_size),
-                'val_size': int(val_size),
-
-                # Experiment identifier
-                'exp_identifier': exp_indices_dir.name,
-            }
-
-            print("\n" + "=" * 80)
-            print("✅ SHARED CONFIGURATION READY (REUSED)")
-            print("=" * 80)
-            print(f"   Mode: Fine-tuning (reusing existing files)")
-            print(f"   - Experiment directory: {exp_indices_dir}")
-            print(f"   - Indices: {train_size:,} train, {val_size:,} val")
-            print(f"   - Scaler: {scaler.__class__.__name__}")
-            print(f"   - Features: {len(feature_columns)}")
-            print(f"   - Sequence length: {seq_len}")
-            print(f"   - Metric dataset: {metric_dataset_path}")
-            print(f"   ✓ All trials will read from: {exp_indices_dir}")
-            print("=" * 80)
-
-            return shared_config
-
-        else:
-            print(f"\n   ⚠️  Existing files not found or incomplete!")
-            print(f"       Falling back to REGENERATE mode")
-            is_fine_tuning = False  # Fallback to regenerate
+    shared_config = check_existing_file(cfg, dataset_path, seq_len)
+    if shared_config:
+        return shared_config
 
     # ============================================================
     # TRAINING FROM SCRATCH MODE: Regenerate everything
@@ -1473,3 +1300,185 @@ def apply_step_get_samplers_from_index_sets(index_sets: dict, shuffle=False, see
         samplers[key] = SubsetRandomSampler(idxs)
 
     return samplers
+
+
+def check_existing_file(cfg, dataset_path, seq_len):
+    metric_dataset_path = cfg.dataset.get('metric_dataset_path', None)
+    train_val_indices_path = cfg.dataset.get('train_val_indices_path', None)
+
+    print(f"\n   Checking for existing files...")
+    print(f"   - metric_dataset_path: {metric_dataset_path}")
+    print(f"   - train_val_indices_path: {train_val_indices_path}")
+
+    # Validate paths exist
+    if (metric_dataset_path and os.path.exists(metric_dataset_path) and
+            train_val_indices_path and os.path.exists(train_val_indices_path)):
+
+        print(f"\n   ✅ REUSING existing files (fine-tuning mode)")
+
+        # ========================================================
+        # FIND FILES IN DIRECTORY
+        # ========================================================
+
+        indices_dir = Path(train_val_indices_path)
+        if indices_dir.is_file():
+            indices_dir = indices_dir.parent
+
+        # Find files
+        train_val_indices_file = None
+        scaler_file = None
+        metadata_file = None
+
+        for f in indices_dir.iterdir():
+            if 'train_val' in f.name.lower() and f.suffix in ['.npz', '.npy']:
+                train_val_indices_file = f
+            elif 'scaler' in f.name.lower() and f.suffix == '.pkl':
+                scaler_file = f
+            elif 'metadata' in f.name.lower() and f.suffix == '.txt':
+                metadata_file = f
+
+        # Validate required files exist
+        if train_val_indices_file is None or not train_val_indices_file.exists():
+            raise FileNotFoundError(f"❌ train_val_indices file not found in {indices_dir}")
+
+        if scaler_file is None or not scaler_file.exists():
+            raise FileNotFoundError(f"❌ scaler.pkl not found in {indices_dir}")
+
+        # ========================================================
+        # LOAD METADATA (Primary source of truth)
+        # ========================================================
+
+        if metadata_file and metadata_file.exists():
+            print(f"\n   📂 Loading metadata from: {metadata_file}")
+            metadata = parse_metadata_file(metadata_file)
+
+            print(f"   ✓ Experiment: {metadata.get('exp_name')}")
+            print(f"   ✓ Model: {metadata.get('model_name')}")
+            print(f"   ✓ Dataset: {metadata.get('dataset_name')}")
+            print(f"   ✓ Seed: {metadata.get('seed')}")
+            print(f"   ✓ Features: {len(metadata.get('feature_columns', []))}")
+
+            # Extract key info from metadata
+            feature_columns = metadata.get('feature_columns')
+            scaler_params = metadata.get('scaler_params')
+            seq_len_from_meta = metadata.get('seq_len')
+            train_size = metadata.get('train_size')
+            val_size = metadata.get('val_size')
+
+            if feature_columns is None:
+                raise ValueError("❌ Feature columns not found in metadata!")
+
+            # Use seq_len from metadata if available, else from config
+            if seq_len_from_meta:
+                seq_len = seq_len_from_meta
+                print(f"   ✓ Sequence length (from metadata): {seq_len}")
+            else:
+                print(f"   ⚠️  Sequence length not in metadata, using config: {seq_len}")
+
+        else:
+            print(f"\n   ⚠️  Metadata file not found!")
+            print(f"   ⚠️  Falling back to config (not recommended)")
+
+            # Fallback to config
+            feature_columns = cfg.dataset.feats
+            scaler_params = None
+            train_size = None
+            val_size = None
+
+        # ========================================================
+        # LOAD INDICES
+        # ========================================================
+
+        print(f"\n   📂 Loading indices from: {train_val_indices_file}")
+        indices_data = np.load(train_val_indices_file)
+        train_indexes = indices_data['train_indices']
+        val_indexes = indices_data['val_indices']
+
+        # Use loaded sizes if not from metadata
+        if train_size is None:
+            train_size = len(train_indexes)
+        if val_size is None:
+            val_size = len(val_indexes)
+
+        print(f"   ✓ Train indices: {train_size:,}")
+        print(f"   ✓ Val indices: {val_size:,}")
+
+        # ========================================================
+        # LOAD SCALER
+        # ========================================================
+
+        print(f"\n   📂 Loading scaler from: {scaler_file}")
+        with open(scaler_file, 'rb') as f:
+            scaler = pickle.load(f)
+
+        print(f"   ✓ Scaler: {scaler.__class__.__name__}")
+
+        # If scaler_params not from metadata, extract from scaler
+        if scaler_params is None:
+            if hasattr(scaler, 'mean_'):
+                scaler_params = {
+                    'mean': scaler.mean_.tolist() if hasattr(scaler.mean_, 'tolist') else None,
+                    'std': scaler.scale_.tolist() if hasattr(scaler, 'scale_') else None
+                }
+            else:
+                scaler_params = {'type': scaler.__class__.__name__}
+
+        # Validate feature count
+        if len(feature_columns) != scaler.n_features_in_:
+            raise ValueError(
+                f"Feature mismatch! Metadata has {len(feature_columns)} "
+                f"but scaler expects {scaler.n_features_in_}"
+            )
+
+        # Get experiment directory
+        exp_indices_dir = train_val_indices_file.parent
+
+        print(f"\n   ✓ Experiment directory: {exp_indices_dir}")
+
+        # ========================================================
+        # BUILD SHARED CONFIG (from loaded data)
+        # ========================================================
+        shared_config = {
+            # Paths to existing files
+            'indices_path': str(train_val_indices_file),
+            'scaler_path': str(scaler_file),
+            'experiment_dir': str(exp_indices_dir),
+
+            # Dataset path
+            'dataset_path': str(dataset_path),
+            'metric_loader_path': str(metric_dataset_path),
+
+            # Metadata (from metadata.txt)
+            'scaler_params': scaler_params,
+            'feature_columns': list(feature_columns),
+            'seq_len': int(seq_len),
+
+            # Statistics (from metadata.txt or loaded data)
+            'train_size': int(train_size),
+            'val_size': int(val_size),
+
+            # Experiment identifier
+            'exp_identifier': exp_indices_dir.name,
+        }
+
+        print("\n" + "=" * 80)
+        print("✅ SHARED CONFIGURATION READY (REUSED)")
+        print("=" * 80)
+        print(f"   Mode: Fine-tuning (reusing existing files)")
+        print(f"   - Experiment directory: {exp_indices_dir}")
+        print(f"   - Indices: {train_size:,} train, {val_size:,} val")
+        print(f"   - Scaler: {scaler.__class__.__name__}")
+        print(f"   - Features: {len(feature_columns)}")
+        print(f"   - Sequence length: {seq_len}")
+        print(f"   - Metric dataset: {metric_dataset_path}")
+        print(f"   ✓ All trials will read from: {exp_indices_dir}")
+        print("=" * 80)
+
+        return shared_config
+
+    else:
+        print(f"\n   ⚠️  Existing files not found or incomplete!")
+        print(f"       Falling back to REGENERATE mode")
+        is_fine_tuning = False  # Fallback to regenerate
+
+        return False
