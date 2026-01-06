@@ -1568,10 +1568,9 @@ def adjust_model_for_finetuning(
         print("⚙️  Fine-tuning mode: 'adaptive_layer' (learnable Conv2D adapters)")
 
         # Get adapter configuration
-        adapter_config = cfg.opt.get('adapter', {})
-        hidden_dim = adapter_config.get('hidden_dim', 32)
-        use_residual = adapter_config.get('use_residual', True)
-        num_layers = adapter_config.get('num_layers', 2)
+        hidden_dim = cfg.opt.get('adapter_hidden_dim', 32)
+        use_residual = True
+        num_layers = 1
 
         print(f"   Configuration:")
         print(f"      - Hidden dim: {hidden_dim}")
@@ -1628,9 +1627,8 @@ def adjust_model_for_finetuning(
         print("⚙️  Fine-tuning mode: 'linear_proj' (feature projection)")
 
         # Get adapter configuration
-        adapter_config = cfg.opt.get('adapter', {})
-        use_nonlinear = adapter_config.get('use_nonlinear', False)
-        hidden_dim = adapter_config.get('hidden_dim', 32)
+        use_nonlinear = fine_tuning_cfg.opt.get('adapter_use_nonlinear', True)
+        hidden_dim = fine_tuning_cfg.opt.get('adapter_hidden_dim', 32)
 
         print(f"   Configuration:")
         print(f"      - Type: {'Non-linear' if use_nonlinear else 'Linear'}")
@@ -1854,88 +1852,143 @@ def adjust_model_for_finetuning(
     # Handle Conv1D
     # -------------------------------------------------------------------------
     if conv_type.lower() == "conv_ae1d":
+        mode = fine_tuning_cfg.opt.get('fine_tuning_mode', 'adaptive_layer')  # Default mode
         if features_changed:
-            print(f"🔧 Creating Conv1D adapters with refinement layers")
 
-            # Get activation from config
-            from config import activation_dict
-            activation = activation_dict.get(
-                fine_tuning_cfg.model.get('activation', 'ELU'),
-                nn.ELU()
-            )
+            print(f"🔧 Adjusting Conv1D (features changed: {pre_feats} → {fine_feats})")
+            print(f"⚙️  Fine-tuning mode: '{mode}'")
 
-            # Get adapter configuration
-            adapter_config = fine_tuning_cfg.opt.get('adapter', {})
-            hidden_dim = adapter_config.get('hidden_dim', 32)
+            # =====================================================================
+            # Conv1D Adapter Modes
+            # =====================================================================
 
-            print(f"   Configuration:")
-            print(f"      - Input:  {fine_feats} → {pre_feats}")
-            print(f"      - Output: {pre_feats} → {fine_feats}")
-            print(f"      - Hidden dim: {hidden_dim}")
-            print(f"      - Activation: {fine_tuning_cfg.model.get('activation', 'ELU')}")
+            if mode == 'linear_proj':
+                # Linear/Non-linear projection adapter
+                print("   Strategy: Linear/Non-linear feature projection")
 
-            # Input adapter: fine_feats → pre_feats
-            model.input_adapter = nn.Sequential(
-                # Initial projection
-                nn.Conv1d(fine_feats, hidden_dim, kernel_size=1),
-                nn.BatchNorm1d(hidden_dim),
-                activation,
-                # Refinement layer with context
-                nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
-                nn.BatchNorm1d(hidden_dim),
-                activation,
-                # Final projection
-                nn.Conv1d(hidden_dim, pre_feats, kernel_size=1)
-            ).to(device)
+                # Get adapter configuration
+                use_nonlinear = fine_tuning_cfg.opt.get('adapter_use_nonlinear', True)
+                hidden_dim = fine_tuning_cfg.opt.get('adapter_hidden_dim', 32)
 
-            # Initialize weights
-            for m in model.input_adapter:
-                if isinstance(m, nn.Conv1d):
-                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                    if m.bias is not None:
-                        nn.init.zeros_(m.bias)
+                print(f"   Configuration:")
+                print(f"      - Type: {'Non-linear' if use_nonlinear else 'Linear'}")
+                if use_nonlinear:
+                    print(f"      - Hidden dim: {hidden_dim}")
 
-            # Output adapter: pre_feats → fine_feats
-            model.output_adapter = nn.Sequential(
-                # Initial projection
-                nn.Conv1d(pre_feats, hidden_dim, kernel_size=1),
-                nn.BatchNorm1d(hidden_dim),
-                activation,
-                # Refinement layer with context
-                nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
-                nn.BatchNorm1d(hidden_dim),
-                activation,
-                # Final projection
-                nn.Conv1d(hidden_dim, fine_feats, kernel_size=1)
-            ).to(device)
+                # Create INPUT adapter
+                adapter_in = create_projection_adapter_1d(
+                    pre_feats=pre_feats,
+                    fine_feats=fine_feats,
+                    cfg=fine_tuning_cfg,
+                    adapter_type='input',
+                    use_nonlinear=use_nonlinear,
+                    hidden_dim=hidden_dim
+                )
+                model.input_adapter = adapter_in.to(device)
 
-            # Initialize weights
-            for m in model.output_adapter:
-                if isinstance(m, nn.Conv1d):
-                    nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                    if m.bias is not None:
-                        nn.init.zeros_(m.bias)
+                # Create OUTPUT adapter
+                adapter_out = create_projection_adapter_1d(
+                    pre_feats=pre_feats,
+                    fine_feats=fine_feats,
+                    cfg=fine_tuning_cfg,
+                    adapter_type='output',
+                    use_nonlinear=use_nonlinear,
+                    hidden_dim=hidden_dim
+                )
+                model.output_adapter = adapter_out.to(device)
 
-            # Count parameters
-            input_params = sum(p.numel() for p in model.input_adapter.parameters())
-            output_params = sum(p.numel() for p in model.output_adapter.parameters())
+                print(f"\n   ✅ Linear projection adapters created!")
 
-            print(f"\n   ✅ Conv1D adapters created!")
-            print(f"      - Input adapter:  {input_params:,} parameters")
-            print(f"      - Output adapter: {output_params:,} parameters")
+            elif mode == 'adaptive_layer':
+                # Conv1D adapter with refinement (original implementation)
+                print("   Strategy: Conv1D with refinement layers")
 
+                # Get activation from config
+                from config import activation_dict
+                activation = activation_dict.get(
+                    fine_tuning_cfg.model.get('activation', 'ELU'),
+                    nn.ELU()
+                )
+
+                # Get adapter configuration
+                adapter_config = fine_tuning_cfg.opt.get('adapter', {})
+                hidden_dim = fine_tuning_cfg.opt.get('adapter_hidden_dim', 32)
+
+                print(f"   Configuration:")
+                print(f"      - Input:  {fine_feats} → {pre_feats}")
+                print(f"      - Output: {pre_feats} → {fine_feats}")
+                print(f"      - Hidden dim: {hidden_dim}")
+                print(f"      - Activation: {fine_tuning_cfg.model.get('activation', 'ELU')}")
+
+                # Input adapter: fine_feats → pre_feats
+                model.input_adapter = nn.Sequential(
+                    # Initial projection
+                    nn.Conv1d(fine_feats, hidden_dim, kernel_size=1),
+                    nn.BatchNorm1d(hidden_dim),
+                    activation,
+                    # Refinement layer with context
+                    nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                    nn.BatchNorm1d(hidden_dim),
+                    activation,
+                    # Final projection
+                    nn.Conv1d(hidden_dim, pre_feats, kernel_size=1)
+                ).to(device)
+
+                # Initialize weights
+                for m in model.input_adapter:
+                    if isinstance(m, nn.Conv1d):
+                        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                        if m.bias is not None:
+                            nn.init.zeros_(m.bias)
+
+                # Output adapter: pre_feats → fine_feats
+                model.output_adapter = nn.Sequential(
+                    # Initial projection
+                    nn.Conv1d(pre_feats, hidden_dim, kernel_size=1),
+                    nn.BatchNorm1d(hidden_dim),
+                    activation,
+                    # Refinement layer with context
+                    nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                    nn.BatchNorm1d(hidden_dim),
+                    activation,
+                    # Final projection
+                    nn.Conv1d(hidden_dim, fine_feats, kernel_size=1)
+                ).to(device)
+
+                # Initialize weights
+                for m in model.output_adapter:
+                    if isinstance(m, nn.Conv1d):
+                        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                        if m.bias is not None:
+                            nn.init.zeros_(m.bias)
+
+                # Count parameters
+                input_params = sum(p.numel() for p in model.input_adapter.parameters())
+                output_params = sum(p.numel() for p in model.output_adapter.parameters())
+
+                print(f"\n   ✅ Conv1D adapters created!")
+                print(f"      - Input adapter:  {input_params:,} parameters")
+                print(f"      - Output adapter: {output_params:,} parameters")
+
+            else:
+                raise ValueError(f"Unsupported fine_tuning_mode for Conv1D: '{mode}'")
+
+        else:
+            print(" no features changes, use pretrained model")
+
+
+        # Apply freeze policy
         if freeze_layers:
             freeze_layers_with_logging(
                 model, freeze_layers,
                 fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode')
             )
 
-        return model
+        return model, mode
 
     # -------------------------------------------------------------------------
     # Handle Conv2D
     # -------------------------------------------------------------------------
-    # Handle Conv2D
     elif conv_type.lower() == "conv_ae2d":
 
         if features_changed or seq_changed:
@@ -2586,10 +2639,123 @@ class LightweightFeatureAdapter2D(nn.Module):
 # =============================================================================
 # ADAPTER 1: Feature Projection (Linear/Non-linear)
 # =============================================================================
+class FeatureProjectionAdapter1D(nn.Module):
+    """
+    Feature projection adapter for Conv1D with BatchNorm.
+    Projects features along the channel dimension while preserving sequence length.
+    Uses BatchNorm1d for consistency with the base Conv1D model.
+
+    Input:  [B, n_in, L]
+    Output: [B, n_out, L]
+
+    Args:
+        n_in: Input number of features
+        n_out: Output number of features
+        use_nonlinear: If True, use non-linear projection (default: False)
+        hidden_dim: Hidden dimension for non-linear (default: 32)
+        activation: Activation function (default: GELU)
+        use_batchnorm: Use BatchNorm1d (default: True for consistency)
+    """
+
+    def __init__(self, n_in, n_out, use_nonlinear=False, hidden_dim=32,
+                 activation=None, use_batchnorm=True):
+        super().__init__()
+        self.n_in = n_in
+        self.n_out = n_out
+        self.use_nonlinear = use_nonlinear
+        self.use_batchnorm = use_batchnorm
+
+        if activation is None:
+            activation = nn.GELU()
+
+        if not use_nonlinear:
+            # Linear projection with optional BatchNorm
+            self.adapter_linear = nn.Linear(n_in, n_out)
+            if use_batchnorm:
+                self.adapter_bn = nn.BatchNorm1d(n_out)
+        else:
+            # Non-linear projection with BatchNorm
+            self.adapter_linear1 = nn.Linear(n_in, hidden_dim)
+            if use_batchnorm:
+                self.adapter_bn1 = nn.BatchNorm1d(hidden_dim)
+            self.adapter_activation = activation
+            self.adapter_linear2 = nn.Linear(hidden_dim, n_out)
+            if use_batchnorm:
+                self.adapter_bn2 = nn.BatchNorm1d(n_out)
+
+        self._init_weights()
+
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"\n   🔧 FeatureProjectionAdapter1D initialized:")
+        print(f"      Features: {n_in} → {n_out}")
+        print(f"      Type: {'Non-linear (hidden_dim={})'.format(hidden_dim) if use_nonlinear else 'Linear'}")
+        print(f"      BatchNorm: {use_batchnorm}")
+        print(f"      Parameters: {total_params:,}")
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        """
+        Forward pass with proper BatchNorm handling.
+
+        Args:
+            x: Input tensor [B, n_in, L]
+
+        Returns:
+            Output tensor [B, n_out, L]
+        """
+        B, C, L = x.shape
+        assert C == self.n_in, f"Expected {self.n_in} input features, got {C}"
+
+        # Permute to apply linear layer on features dimension
+        # [B, n_in, L] → [B, L, n_in]
+        x = x.permute(0, 2, 1)
+
+        if not self.use_nonlinear:
+            # Linear projection: [B, L, n_in] → [B, L, n_out]
+            x = self.adapter_linear(x)
+
+            if self.use_batchnorm:
+                # BatchNorm1d expects [B, C] or [B, C, L]
+                # Permute: [B, L, n_out] → [B, n_out, L]
+                x = x.permute(0, 2, 1)
+                x = self.adapter_bn(x)  # [B, n_out, L] ✅
+                x = x.permute(0, 2, 1)  # [B, L, n_out]
+        else:
+            # Non-linear projection
+            # First layer
+            x = self.adapter_linear1(x)  # [B, L, hidden]
+
+            if self.use_batchnorm:
+                x = x.permute(0, 2, 1)  # [B, hidden, L]
+                x = self.adapter_bn1(x)
+                x = x.permute(0, 2, 1)  # [B, L, hidden]
+
+            x = self.adapter_activation(x)
+
+            # Second layer
+            x = self.adapter_linear2(x)  # [B, L, n_out]
+
+            if self.use_batchnorm:
+                x = x.permute(0, 2, 1)  # [B, n_out, L]
+                x = self.adapter_bn2(x)
+                x = x.permute(0, 2, 1)  # [B, L, n_out]
+
+        # Permute back: [B, L, n_out] → [B, n_out, L]
+        x = x.permute(0, 2, 1)
+
+        return x
+
 
 class FeatureProjectionAdapter(nn.Module):
     """
     Linear/Non-linear projection adapter for feature dimension transformation.
+    Uses BatchNorm for consistency with the base Conv2D model.
 
     All parameters have 'adapter' in their names for proper LR assignment.
 
@@ -2599,6 +2765,7 @@ class FeatureProjectionAdapter(nn.Module):
         use_nonlinear: If True, use non-linear projection (default: False)
         hidden_dim: Hidden dimension for non-linear (default: 32)
         activation: Activation function (default: GELU)
+        use_batchnorm: Use BatchNorm1d (default: True for consistency)
     """
 
     def __init__(
@@ -2607,28 +2774,33 @@ class FeatureProjectionAdapter(nn.Module):
             n_out,
             use_nonlinear=False,
             hidden_dim=32,
-            activation=None
+            activation=None,
+            use_batchnorm=True
     ):
         super().__init__()
 
         self.n_in = n_in
         self.n_out = n_out
         self.use_nonlinear = use_nonlinear
+        self.use_batchnorm = use_batchnorm
 
         if activation is None:
             activation = nn.GELU()
 
         if not use_nonlinear:
-            # ✅ Nome include "adapter"
-            self.adapter_projection = nn.Linear(n_in, n_out)
+            # Linear projection with optional BatchNorm
+            self.adapter_linear = nn.Linear(n_in, n_out)
+            if use_batchnorm:
+                self.adapter_bn = nn.BatchNorm1d(n_out)
         else:
-            # ✅ Tutti i nomi includono "adapter"
-            self.adapter_projection = nn.Sequential(
-                nn.Linear(n_in, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                activation,
-                nn.Linear(hidden_dim, n_out)
-            )
+            # Non-linear projection with BatchNorm
+            self.adapter_linear1 = nn.Linear(n_in, hidden_dim)
+            if use_batchnorm:
+                self.adapter_bn1 = nn.BatchNorm1d(hidden_dim)
+            self.adapter_activation = activation
+            self.adapter_linear2 = nn.Linear(hidden_dim, n_out)
+            if use_batchnorm:
+                self.adapter_bn2 = nn.BatchNorm1d(n_out)
 
         self._init_weights()
 
@@ -2636,6 +2808,7 @@ class FeatureProjectionAdapter(nn.Module):
         print(f"\n   🔧 FeatureProjectionAdapter initialized:")
         print(f"      Features: {n_in} → {n_out}")
         print(f"      Type: {'Non-linear (hidden={})'.format(hidden_dim) if use_nonlinear else 'Linear'}")
+        print(f"      BatchNorm: {use_batchnorm}")
         print(f"      Parameters: {total_params:,}")
 
     def _init_weights(self):
@@ -2656,17 +2829,37 @@ class FeatureProjectionAdapter(nn.Module):
         assert H_in == self.n_in, f"Expected {self.n_in} input features, got {H_in}"
 
         # Reshape: treat each timestep independently
-        x = x.permute(0, 3, 1, 2).contiguous()
-        x = x.view(B * W, C * H_in)
+        # [B, C, H_in, W] → [B*W, C*H_in]
+        x = x.permute(0, 3, 1, 2).contiguous()  # [B, W, C, H_in]
+        x = x.view(B * W, C * H_in)  # [B*W, C*H_in]
 
-        # Apply projection
-        x_proj = self.adapter_projection(x)
+        if not self.use_nonlinear:
+            # Linear projection
+            x = self.adapter_linear(x)  # [B*W, C*H_out]
 
-        # Reshape back
-        x_proj = x_proj.view(B, W, C, self.n_out)
-        x_proj = x_proj.permute(0, 2, 3, 1).contiguous()
+            if self.use_batchnorm:
+                # Reshape for BatchNorm1d: [B*W, C*H_out] → [B*W, n_out]
+                # BatchNorm1d expects [B, C] or [B, C, L]
+                # Our case: [B*W, n_out] ✅
+                x = self.adapter_bn(x)
+        else:
+            # Non-linear projection
+            x = self.adapter_linear1(x)  # [B*W, hidden]
 
-        return x_proj
+            if self.use_batchnorm:
+                x = self.adapter_bn1(x)
+
+            x = self.adapter_activation(x)
+            x = self.adapter_linear2(x)  # [B*W, C*H_out]
+
+            if self.use_batchnorm:
+                x = self.adapter_bn2(x)
+
+        # Reshape back: [B*W, C*H_out] → [B, C, H_out, W]
+        x = x.view(B, W, C, self.n_out)  # [B, W, C, H_out]
+        x = x.permute(0, 2, 3, 1).contiguous()  # [B, C, H_out, W]
+
+        return x
 
 
 # =============================================================================
@@ -2884,6 +3077,68 @@ def create_conv2d_adapter(
         num_layers=num_layers,
         activation=activation,
         use_residual=use_residual
+    )
+
+    return adapter
+
+
+
+
+
+def create_projection_adapter_1d(
+        pre_feats,
+        fine_feats,
+        cfg,
+        adapter_type='input',
+        use_nonlinear=False,
+        hidden_dim=32
+):
+    """
+    Create linear/non-linear projection adapter for Conv1D.
+
+    Args:
+        pre_feats: Pre-training features (16)
+        fine_feats: Fine-tuning features (19)
+        cfg: Config
+        adapter_type: 'input' or 'output'
+        use_nonlinear: Use non-linear projection
+        hidden_dim: Hidden dimension if non-linear
+
+    Returns:
+        FeatureProjectionAdapter1D instance
+    """
+    from config import activation_dict
+
+    activation_name = cfg.model.get('activation', 'ELU')
+    activation = activation_dict.get(activation_name, nn.ELU())
+
+    # ✅ Map adapter type to actual data flow
+    if adapter_type == 'input':
+        # INPUT adapter receives fine-tuning data, outputs to pre-trained model
+        n_in = fine_feats  # 19 - receives from dataset
+        n_out = pre_feats  # 16 - outputs to model
+        print(f"\n🔧 Creating INPUT projection adapter (Conv1D):")
+        print(f"   Fine-tuning data [{fine_feats} features] → Pre-trained model [{pre_feats} features]")
+        print(f"   Adapter: {n_in} → {n_out}")
+
+    elif adapter_type == 'output':
+        # OUTPUT adapter receives from pre-trained model, outputs fine-tuning data
+        n_in = pre_feats  # 16 - receives from model
+        n_out = fine_feats  # 19 - outputs to dataset
+        print(f"\n🔧 Creating OUTPUT projection adapter (Conv1D):")
+        print(f"   Pre-trained model [{pre_feats} features] → Fine-tuning data [{fine_feats} features]")
+        print(f"   Adapter: {n_in} → {n_out}")
+
+    else:
+        raise ValueError(f"adapter_type must be 'input' or 'output'")
+
+    # ✅ Create adapter with correct dimensions
+    adapter = FeatureProjectionAdapter1D(
+        n_in=n_in,
+        n_out=n_out,
+        use_nonlinear=use_nonlinear,
+        hidden_dim=hidden_dim,
+        activation=activation
     )
 
     return adapter

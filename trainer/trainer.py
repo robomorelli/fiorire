@@ -250,7 +250,7 @@ class Trainer(tune.Trainable):
         result = {
             "epoch": self.current_epoch, "train_loss": train_loss,
             "parameters_number": self.parameters_number, "data_path": self.data_path, "latent_dim": self.latent_dim,
-            'effective_mode': self.effective_mode
+            "effective_mode": self.effective_mode
         }
 
         current_val_loss = self.val_results["val_loss"]

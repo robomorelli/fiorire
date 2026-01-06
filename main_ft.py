@@ -321,7 +321,7 @@ if __name__ == "__main__":
                         help="Number of trials")
     parser.add_argument("--wandb", default=1, type=int,
                         help="Enable W&B logging (0/1)")
-    parser.add_argument("--project_name", default='Test_ft_MGM',
+    parser.add_argument("--project_name", default='Test_ft_conv2d',
                         help="W&B project name")
     parser.add_argument("--entity", default='robmorelli',
                         help="W&B entity")
