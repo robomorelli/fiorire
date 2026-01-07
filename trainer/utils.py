@@ -1223,6 +1223,9 @@ def adjust_model_for_finetuning(
 
         Returns:
             model: Updated model (on same device)
+
+        Raises:
+            RuntimeError: If required layers are not found or update fails
         """
 
         def init_kaiming_linear(layer, mode='fan_in'):
@@ -1240,6 +1243,7 @@ def adjust_model_for_finetuning(
             print(f"\n🔧 Updating Latent Space:")
             print(f"   - Detected device:  {device}")
         except StopIteration:
+            # Model has no parameters (shouldn't happen)
             device = torch.device('cpu')
             print(f"\n⚠️  WARNING: Could not detect device, using CPU")
 
@@ -1249,11 +1253,13 @@ def adjust_model_for_finetuning(
 
         # Update encoder: to_latent
         encoder_updated = False
+
         for name, module in encoder.named_modules():
             if isinstance(module, nn.Linear) and "to_latent" in name.lower():
                 old_in_features = module.in_features
                 old_out_features = module.out_features
 
+                # ✅ Create new layer on SAME device as model
                 new_layer = nn.Linear(new_flattened, new_latent_dim).to(device)
                 init_kaiming_linear(new_layer)
 
@@ -1262,11 +1268,13 @@ def adjust_model_for_finetuning(
                 parent = encoder
                 for p in parts[:-1]:
                     parent = getattr(parent, p)
+
                 setattr(parent, parts[-1], new_layer)
 
                 print(f"   ✅ Encoder: {name}")
                 print(f"      Old: Linear({old_in_features} → {old_out_features})")
                 print(f"      New: Linear({new_flattened} → {new_latent_dim})")
+
                 encoder_updated = True
 
         if not encoder_updated:
@@ -1431,9 +1439,9 @@ def adjust_model_for_finetuning(
             print("\nℹ️  Freeze layers = '0' → no freezing applied")
             freeze_layers = []
 
-        # =====================================================================
-        # Identify protected layers based on mode
-        # =====================================================================
+        # =====================================================
+        # Protected Layers
+        # =====================================================
         always_protected = ["adapter", "adaptive"]
         mode_protected = []
 
