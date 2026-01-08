@@ -181,20 +181,21 @@ class Trainer(tune.Trainable):
         self.model = get_model(self.cfg).to(self.device)
         print("=== NAMED MODULES ===")
 
-        self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-
         try:
             self.latent_dim = self.model.latent_dim
         except:
             self.latent_dim = None
-        self.parameters_number = self.cfg.model.parameter_count
-        print('Parameters count', self.parameters_number)
+
         self.data_path = self.cfg.dataset.data_path
 
         # ✅ 14. Load pretrained if fine-tuning
         self.model, self.pretrained_loaded, self.effective_mode = load_pretrained_checkpoint(
             model=self.model, config=self.cfg, device=self.device
         )
+
+        self.cfg.model.parameter_count = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        self.parameters_number = self.cfg.model.parameter_count
+        print('Parameters count', self.parameters_number)
 
         config['opt.fine_tuning_mode'] = self.effective_mode
 
