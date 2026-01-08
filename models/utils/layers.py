@@ -291,18 +291,21 @@ def bottleneck1D(in_channels, out_channels, activation=nn.ReLU(), bottleneck_act
     return nn.Sequential(layers)
 '''
 
+
 def bottleneck1D(bottleneck_conv, activation=nn.ReLU(),
                  flattened=True, flattened_size=None, latent_dim=None,
                  bottleneck_activation=nn.ReLU(), batch_norm=True, bottleneck_batch_norm=False):
     """
-    Crea un bottleneck 1D con conv 1x1, optional BatchNorm e attivazione.
+    Creates a 1D bottleneck with optional 1x1 conv, BatchNorm and activation.
     """
     layers = OrderedDict()
-    layers["bottleneck_conv"] = bottleneck_conv
-    if batch_norm:
-        layers["bottleneck_bn"] = nn.BatchNorm1d(bottleneck_conv.out_channels)
-    if activation is not None:
-        layers["act1"] = activation
+
+    if bottleneck_conv is not None:
+        layers["bottleneck_conv"] = bottleneck_conv
+        if batch_norm:
+            layers["bottleneck_bn"] = nn.BatchNorm1d(bottleneck_conv.out_channels)
+        if activation is not None:
+            layers["act1"] = activation
 
     if flattened:
         layers["flatten"] = nn.Flatten()
@@ -311,11 +314,8 @@ def bottleneck1D(bottleneck_conv, activation=nn.ReLU(),
             layers["batch_norm_latent"] = nn.BatchNorm1d(latent_dim)
         if bottleneck_activation is not None:
             layers["act"] = bottleneck_activation
-
     else:
         raise NotImplementedError("Non-flattened bottleneck not implemented yet.")
-
-
 
     return nn.Sequential(layers)
 

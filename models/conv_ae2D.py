@@ -162,13 +162,16 @@ class Encoder(nn.Module):
 
         return enc
 
+
 class Decoder(nn.Module):
-    def __init__(self, in_channels=1, first_deconv_channels = None, base_filters=32, kernel_size: Union[int, Tuple[int, int]] = 2, num_layers=2,
+    def __init__(self, in_channels=1, first_deconv_channels=None, base_filters=32,
+                 kernel_size: Union[int, Tuple[int, int]] = 2, num_layers=2,
                  stride: Union[int, Tuple[int, int]] = 2,
                  latent_dim=None, flattened_size=None,
                  img_heigth=16, img_width=16, h_enc=2, w_enc=2, activation=nn.ReLU(),
-                 flattened=True, double_deconv=False, conv_padding: Union[int, Tuple[int, int]] = 0, conv_kernel_size=3,
-                 conv_stride=1, conv_dilation=1, batch_norm=True):
+                 flattened=True, double_deconv=False, conv_padding: Union[int, Tuple[int, int]] = 0,
+                 conv_kernel_size=3, conv_stride=1, conv_dilation=1, batch_norm=True,
+                 decoder_mode='progressive'):
         super(Decoder, self).__init__()
 
         self.in_channels = in_channels
@@ -191,36 +194,52 @@ class Decoder(nn.Module):
         self.flattened = flattened
         self.flattened_size = flattened_size
         self.batch_norm = batch_norm
-        self.act_str = {'relu':'relu', 'lrelu':'leaky_relu', 'elu':'relu'}[{v: k for k, v in activation_dict.items()}.get(activation, 'relu').lower()]
+        self.decoder_mode = decoder_mode
+        self.act_str = {'relu': 'relu', 'lrelu': 'leaky_relu', 'elu': 'relu'}[
+            {v: k for k, v in activation_dict.items()}.get(activation, 'relu').lower()
+        ]
 
-        # Compute output paddings for deconv
         output_paddings = self._compute_output_padding(
             Lb=[self.h_enc, self.w_enc], L_target=[self.h, self.w],
             num_layers=self.num_layers, stride=self.stride)
 
-        # Build decoder layers
+        encoder_filters = [self.base_filters * (2 ** i) for i in range(self.num_layers)]
+
         decoder_layers = []
-        in_f = self.first_deconv_channels  # start from bottleneck channels
+        in_f = self.first_deconv_channels
 
         for i in range(self.num_layers):
 
-            if i == self.num_layers - 1:
-                out_f = self.base_filters
-            else:
+            if self.decoder_mode == 'mirror':
+                if i == self.num_layers - 1:
+                    out_f = self.in_channels
+                else:
+                    out_f = encoder_filters[self.num_layers - i - 2]
+
+            elif self.decoder_mode == 'standard':
                 out_f = in_f // 2
+                if out_f < self.base_filters:
+                    out_f = self.base_filters
+
+            elif self.decoder_mode == 'progressive':
+                out_f = in_f // 2
+
+            else:
+                raise ValueError(f"Unknown decoder_mode: '{self.decoder_mode}'")
 
             reshape = (i == 0)
 
             decoder_layers.append((
-                f'dec_lay_{i+1}',
+                f'dec_lay_{i + 1}',
                 deconv_block(
                     in_f=in_f,
-                    out_f=out_f, # General rule: halve the number of filters at each layer
-
-                    flattened=flattened, latent_dim=latent_dim, flattened_size=flattened_size,
+                    out_f=out_f,
+                    flattened=flattened,
+                    latent_dim=latent_dim,
+                    flattened_size=flattened_size,
                     first_deconv_channels=first_deconv_channels,
-                    h_enc=h_enc, w_enc=w_enc,    # For the reshape layer if reshape=True
-
+                    h_enc=h_enc,
+                    w_enc=w_enc,
                     kernel_size=self.kernel_size,
                     stride=self.stride,
                     activation=self.act,
@@ -230,15 +249,17 @@ class Decoder(nn.Module):
                     conv_padding=self.conv_padding,
                     conv_stride=self.conv_stride,
                     conv_dilation=self.conv_dilation,
-                    reshape = reshape
+                    reshape=reshape
                 )
             ))
             in_f = out_f
 
         self.decoder = nn.Sequential(OrderedDict(decoder_layers))
 
-        # Final reconstruction layer — map base_filters → input channels (1 by default)
-        self.decoder_out = nn.Conv2d(self.base_filters, self.in_channels, kernel_size=1)
+        self.decoder_out = nn.Conv2d(out_f, self.in_channels, kernel_size=1)
+
+        if self.decoder_mode == 'mirror':
+            print(f"Decoder: Mirror mode - decoder_out is 1x1 refinement layer ({out_f}->{self.in_channels})")
 
         self.init_kaiming_normal()
 
@@ -311,6 +332,9 @@ class CONV_AE2D(nn.Module):
         self.stride = model_cfg.stride if not model_cfg.pool else 1
         self.halve_both = model_cfg.halve_both
         self.double_deconv = model_cfg.double_deconv
+        self.decoder_mode = model_cfg.get("decoder_mode", "progressive") #progressive, standard, mirror
+        self.bottleneck_conv = self.bottleneck_conv if self.decoder_mode != 'mirror' else 0
+        # Progressiv == Starndard if bottle_conv = 1
 
         if self.halve_both:
             # halve both height (time) and width (features)
@@ -374,7 +398,8 @@ class CONV_AE2D(nn.Module):
                                img_heigth=self.h, img_width=self.w, h_enc=self.encoder.h_enc, w_enc=self.encoder.w_enc,
                                activation=self.act, flattened=self.flattened,
                                double_deconv=self.double_deconv, conv_padding=self.padding,
-                               conv_kernel_size=self.kernel_size, conv_stride=self.stride, conv_dilation=self.dilation)
+                               conv_kernel_size=self.kernel_size, conv_stride=self.stride, conv_dilation=self.dilation,
+                               decoder_mode=self.decoder_mode)
 
 
     def _compute_same_padding(self, in_size, kernel_size, stride=1, dilation=1):
