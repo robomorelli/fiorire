@@ -290,8 +290,23 @@ class CONV_AE1D(nn.Module):
         self.seq_length = cfg.dataset.seq_in_length
         self.pool_ks = 2
         self.pool_stride = 2
-        self.bottleneck_conv = self.bottleneck_conv if self.decoder_mode != 'mirror' else 0
-        # Progressiv == Starndard if bottle_conv = 1
+        if self.decoder_mode == 'mirror' and self.bottleneck_conv:
+            print('⚠️  WARNING: Mirror mode requires bottleneck_conv=False for true symmetry')
+            print('   → Forcing bottleneck_conv=False')
+            self.bottleneck_conv = False
+
+        # Check 2: Progressive and Standard converge when bottleneck_conv=True
+        if self.decoder_mode in ['progressive', 'standard'] and self.bottleneck_conv:
+            # Calculate if they will converge
+            last_encoder_filters = self.base_filters * (2 ** (self.num_layers - 1))
+            bottleneck_filters = last_encoder_filters * 2
+
+            # After num_layers halvings from bottleneck_filters
+            final_filters = bottleneck_filters // (2 ** self.num_layers)
+
+            if final_filters >= self.base_filters:
+                print('ℹ️  NOTE: Progressive and Standard modes are equivalent with bottleneck_conv=True')
+                print(f'   → Both will halt at base_filters={self.base_filters}')
 
         self.padding = (self.kernel_size - 1) // 2
 
