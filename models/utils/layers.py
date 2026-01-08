@@ -320,23 +320,35 @@ def bottleneck1D(bottleneck_conv, activation=nn.ReLU(),
     return nn.Sequential(layers)
 
 
-
 def bottleneck2D(bottleneck_conv,
                  flattened=True, flattened_size=None, latent_dim=None,
-                 activation=nn.ReLU(), bottleneck_activation=nn.ReLU(), batch_norm=True, bottleneck_batch_norm=False):
+                 activation=nn.ReLU(), bottleneck_activation=nn.ReLU(),
+                 batch_norm=True, bottleneck_batch_norm=False):
     """
-    Crea un bottleneck 2D: Flatten → Dense → Dense → Unflatten.
+    Crea un bottleneck 2D: [Conv (opzionale)] → Flatten → Dense → Dense → Unflatten.
+
+    Args:
+        bottleneck_conv: nn.Conv2d o None (se None, salta la conv e va diretto al flatten)
     """
 
     layers = OrderedDict()
 
-    layers['bottleneck_conv'] = bottleneck_conv
+    # ✅ GESTISCI IL CASO bottleneck_conv=None
+    if bottleneck_conv is not None:
+        # Caso 1: CON bottleneck conv (architettura con raddoppio)
+        layers['bottleneck_conv'] = bottleneck_conv
 
-    if batch_norm:
-        layers['batch_norm_conv'] = nn.BatchNorm2d(bottleneck_conv.out_channels)
-    if activation is not None:
-        layers['activation'] = activation
+        if batch_norm:
+            layers['batch_norm_conv'] = nn.BatchNorm2d(bottleneck_conv.out_channels)
+        if activation is not None:
+            layers['activation'] = activation
+    else:
+        # Caso 2: SENZA bottleneck conv (architettura simmetrica)
+        # Non aggiungiamo conv, batch_norm, activation
+        # Andiamo direttamente al flatten
+        pass
 
+    # ✅ FLATTEN E LATENT (comuni a entrambi i casi)
     if flattened:
         layers["flatten"] = nn.Flatten()
         layers["to_latent"] = nn.Linear(flattened_size, latent_dim)
@@ -344,7 +356,6 @@ def bottleneck2D(bottleneck_conv,
             layers["batch_norm_latent"] = nn.BatchNorm1d(latent_dim)
         if bottleneck_activation is not None:
             layers["act1"] = bottleneck_activation
-
     else:
         raise NotImplementedError("Non-flattened bottleneck not implemented yet.")
 

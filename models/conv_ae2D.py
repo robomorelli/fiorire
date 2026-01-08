@@ -15,7 +15,8 @@ class Encoder(nn.Module):
                  pool_ks: Union[int, Tuple[int, int]] = 2,
                  pool_stride: Union[int, Tuple[int, int]] = 2, activation=nn.ReLU(),
                  compression_factor=2,
-                 img_heigth=16, img_width=16, flattened=True,  bottleneck_act=nn.Tanh(), compression_type='on_features'):
+                 img_heigth=16, img_width=16, flattened=True,  bottleneck_act=nn.Tanh(), compression_type='on_features',
+                 bottleneck_conv=True):
         super(Encoder, self).__init__()
 
         self.in_channels = in_channels
@@ -34,6 +35,7 @@ class Encoder(nn.Module):
         self.act = activation
         self.flattened = flattened
         self.bottleneck_act = bottleneck_act
+        self.bottleneck_conv_enabled = bottleneck_conv
         self.act_str = {'relu':'relu', 'lrelu':'leaky_relu', 'elu':'relu'}[{v: k for k, v in activation_dict.items()}.get(activation, 'relu').lower()]
 
         out_f = None
@@ -61,11 +63,32 @@ class Encoder(nn.Module):
         #self.bottleneck_out_channels = in_f * 2  # <--- store output filter count
         #self.bottleneck = bottleneck2D(in_f, self.bottleneck_out_channels, activation=self.act, batch_norm=True)
         # compute flattened size *after* bottleneck
-        self.last_layers_channels = out_f * 2
-        bottleneck_conv = nn.Conv2d(in_f, self.last_layers_channels, kernel_size=kernel_size, padding=padding, dilation=dilation)
-        self.flattened_size, self.h_enc, self.w_enc = self._get_final_flattened_size(bottleneck_conv)
 
-        self.latent_dim = int(self.flattened_size // self.compression_factor) if  self.compression_type == 'on_features' else int((self.h*self.w // self.compression_factor))
+        if self.bottleneck_conv_enabled:
+            # Caso 1: CON bottleneck conv (raddoppio canali)
+            print("🔧 Encoder: Using bottleneck conv (doubling channels)")
+            self.last_layers_channels = out_f * 2
+            bottleneck_conv = nn.Conv2d(
+                in_f,
+                self.last_layers_channels,
+                kernel_size=kernel_size,
+                padding=padding,
+                dilation=dilation
+            )
+            self.flattened_size, self.h_enc, self.w_enc = self._get_final_flattened_size(bottleneck_conv)
+        else:
+            # Caso 2: SENZA bottleneck conv (simmetrico)
+            print("🔧 Encoder: Symmetric architecture (no bottleneck conv)")
+            self.last_layers_channels = out_f
+            bottleneck_conv = None
+            self.flattened_size, self.h_enc, self.w_enc = self._get_final_flattened_size_no_conv()
+
+
+        # Calculate latent dimension
+        if self.compression_type == 'on_features':
+            self.latent_dim = int(self.flattened_size // self.compression_factor)
+        else:
+            self.latent_dim = int((self.h * self.w) // self.compression_factor)
 
         self.bottleneck = bottleneck2D(bottleneck_conv=bottleneck_conv,
                                        flattened=self.flattened, flattened_size= self.flattened_size,
@@ -106,6 +129,28 @@ class Encoder(nn.Module):
             x = bottleneck_conv(x)
 
             # Ottieni le dimensioni finali
+            _, c, h, w = x.size()
+
+        return c * h * w, h, w
+
+    def _get_final_flattened_size_no_conv(self):
+        """
+        ✅ NUOVO: Calcola flattened size SENZA bottleneck_conv (simmetrico)
+        """
+        with torch.no_grad():
+            param = next(self.parameters())
+            dtype = param.dtype
+            device = param.device
+
+            x = torch.zeros(
+                (1, self.in_channels, self.h, self.w),
+                dtype=dtype,
+                device=device
+            )
+
+            # Pass through encoder only (no additional conv)
+            x = self.encoder(x)
+
             _, c, h, w = x.size()
 
         return c * h * w, h, w
@@ -246,6 +291,7 @@ class CONV_AE2D(nn.Module):
         self.num_layers = model_cfg.num_layers
         self.act = activation_dict.get(model_cfg.get("activation", None), None)
         self.bottleneck_act = activation_dict.get(model_cfg.get("bottleneck_activation", None), None)
+        self.bottleneck_conv = model_cfg.get('bottleneck_conv', True)  # Default
         self.pool = model_cfg.pool
         self.flattened = model_cfg.flattened
         self.compression_factor = model_cfg.compression_factor if model_cfg.get('compression_factor_on_inputs', None) is None else model_cfg.get('compression_factor_on_inputs', None)
@@ -315,7 +361,8 @@ class CONV_AE2D(nn.Module):
                                compression_factor = self.compression_factor,
                                img_heigth=self.h, img_width=self.w, activation=self.act,
                                padding=self.padding, flattened=self.flattened,
-                               dilation=self.dilation, bottleneck_act=self.bottleneck_act, compression_type=self.compression_type)
+                               dilation=self.dilation, bottleneck_act=self.bottleneck_act, compression_type=self.compression_type,
+                                bottleneck_conv = self.bottleneck_conv )
         self.flattened_size = self.encoder.flattened_size
         self.latent_dim = self.encoder.latent_dim
         self.cfg.model.flattened_size = self.flattened_size
