@@ -301,7 +301,16 @@ def main(args):
     progress_reporter = CLIReporter(
         metric_columns=[metric, f'best_{metric}'] +
                        list(cfg.opt.metrics_to_report) +
-                       list(cfg.opt.other_reports)
+                       list(cfg.opt.other_reports),     parameter_columns=[
+        "model.bottleneck_conv",
+        "model.decoder_mode",
+        "model.base_filters",
+        "model.num_layers",
+        "model.kernel_size",
+        "model.compression_factor",
+        "opt.lr",
+        "opt.batch_size",
+    ]
     )
 
     # Scheduler
@@ -408,7 +417,7 @@ if __name__ == "__main__":
         args = parser.parse_args()
 
         # Environment configuration
-        os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "6"
+        os.environ['TUNE_MAX_PENDING_TRIALS_PG'] = "12"
 
         # Cleanup and initialize Ray
         cleanup_ray()
