@@ -179,7 +179,7 @@ class Decoder1D(nn.Module):
                 else:
                     out_f = encoder_filters[self.num_layers - i - 2]
 
-            elif self.decoder_mode == 'standard':
+            elif self.decoder_mode == 'base_filters':
                 out_f = in_f // 2
                 if out_f < self.base_filters:
                     out_f = self.base_filters
@@ -295,8 +295,8 @@ class CONV_AE1D(nn.Module):
             print('   → Forcing bottleneck_conv=False')
             self.bottleneck_conv = False
 
-        # Check 2: Progressive and Standard converge when bottleneck_conv=True
-        if self.decoder_mode in ['progressive', 'standard'] and self.bottleneck_conv:
+        # Check 2: Progressive and base_filters  converge when bottleneck_conv=True
+        if self.decoder_mode in ['progressive', 'base_filters'] and self.bottleneck_conv:
             # Calculate if they will converge
             last_encoder_filters = self.base_filters * (2 ** (self.num_layers - 1))
             bottleneck_filters = last_encoder_filters * 2
@@ -305,7 +305,7 @@ class CONV_AE1D(nn.Module):
             final_filters = bottleneck_filters // (2 ** self.num_layers)
 
             if final_filters >= self.base_filters:
-                print('ℹ️  NOTE: Progressive and Standard modes are equivalent with bottleneck_conv=True')
+                print('ℹ️  NOTE: Progressive and base_filters modes are equivalent with bottleneck_conv=True')
                 print(f'   → Both will halt at base_filters={self.base_filters}')
 
         self.padding = (self.kernel_size - 1) // 2
