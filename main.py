@@ -105,6 +105,88 @@ def initialize_ray_with_memory(memory_gb=10, address='auto', password=None):
         print(f"   ⚠️  Could not get cluster info: {e}")
 
 
+def generate_valid_configs(ray_config):
+    """
+    Generate valid configurations avoiding duplicates.
+
+    When bottleneck_conv=1, progressive and base_filters are equivalent,
+    so we keep only one of them.
+    """
+    import copy
+    from itertools import product
+
+    # Extract tune parameters
+    tune_params = {}
+    fixed_params = {}
+
+    for key, value in ray_config.items():
+        if hasattr(value, '__class__') and 'tune' in value.__class__.__module__:
+            tune_params[key] = value
+        else:
+            fixed_params[key] = value
+
+    # Check if we have the problematic parameters
+    has_bottleneck = 'model.bottleneck_conv' in tune_params
+    has_decoder = 'model.decoder_mode' in tune_params
+
+    if not (has_bottleneck and has_decoder):
+        # No conflict possible, return original config
+        return ray_config
+
+    print("\n" + "=" * 80)
+    print("🔧 GENERATING VALID CONFIGURATIONS (avoiding duplicates)")
+    print("=" * 80)
+
+    # Extract choices
+    bottleneck_choices = tune_params['model.bottleneck_conv'].categories \
+        if hasattr(tune_params['model.bottleneck_conv'], 'categories') else [0, 1]
+
+    decoder_choices = tune_params['model.decoder_mode'].categories \
+        if hasattr(tune_params['model.decoder_mode'], 'categories') else ['base_filters', 'progressive']
+
+    # Collect other tune parameters
+    other_tune_params = {k: v for k, v in tune_params.items()
+                         if k not in ['model.bottleneck_conv', 'model.decoder_mode']}
+
+    # Generate valid combinations
+    valid_configs = []
+
+    for bottleneck_conv in bottleneck_choices:
+        if bottleneck_conv == 1:
+            # With bottleneck: progressive and base_filters are identical
+            # Keep only 'progressive' as representative
+            decoder_modes = ['progressive']
+            print(f"   ℹ️  bottleneck_conv=1: using only 'progressive' (equivalent to 'base_filters')")
+        else:
+            # Without bottleneck: they are different
+            decoder_modes = decoder_choices
+            print(f"   ✅ bottleneck_conv=0: using both modes {decoder_modes}")
+
+        for decoder_mode in decoder_modes:
+            config = copy.deepcopy(fixed_params)
+            config['model.bottleneck_conv'] = bottleneck_conv
+            config['model.decoder_mode'] = decoder_mode
+
+            # Add other tune parameters
+            for key, value in other_tune_params.items():
+                config[key] = value
+
+            valid_configs.append(config)
+
+    # Calculate reduction
+    original_count = len(bottleneck_choices) * len(decoder_choices)
+    valid_count = len(valid_configs)
+
+    print(f"\n   📊 Configuration count:")
+    print(f"      - Original (with duplicates): {original_count}")
+    print(f"      - Valid (no duplicates): {valid_count}")
+    print(f"      - Reduction: {original_count - valid_count} configs removed")
+    print("=" * 80 + "\n")
+
+    # Return as grid_search
+    return tune.grid_search(valid_configs)
+
+
 def main(args):
     """Main training function with shared datasets."""
 
@@ -134,6 +216,11 @@ def main(args):
     # Prepare shared configuration
     shared_config = prepare_shared_configuration(cfg)
     ray_config['shared_config'] = shared_config
+
+    if not args.debug_mode:
+        ray_config_clean = generate_valid_configs(ray_config)
+    else:
+        ray_config_clean = ray_config
 
     # Debug mode
     if args.debug_mode:
@@ -248,7 +335,7 @@ def main(args):
             name=cfg.opt.exp_name,
             progress_reporter=progress_reporter,
             sync_config=sync_config,
-            config=ray_config,
+            config=ray_config_clean,
             callbacks=callbacks,
             checkpoint_at_end=False,
             checkpoint_freq=0,
@@ -312,7 +399,7 @@ if __name__ == "__main__":
         parser.add_argument("--wandb_key",
                             default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
                             help="W&B API key")
-        parser.add_argument("--debug_mode", default=1, type=int,
+        parser.add_argument("--debug_mode", default=0, type=int,
                             help="Run single trial for debugging (0/1)")
 
         parser.add_argument("--ray_memory_gb", default=10, type=int,
