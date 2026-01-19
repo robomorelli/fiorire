@@ -327,6 +327,9 @@ class Trainer(tune.Trainable):
         return result
 
     def test_step(self, checkpoint_dir=None):
+        # modellos
+        # dati sequenze validation
+        # ciclo for oppure iperparametro
         raise NotImplementedError("test_step method is not implemented yet.")
 
     def save_checkpoint(self, checkpoint_dir):
