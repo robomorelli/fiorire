@@ -6,6 +6,7 @@ import torch
 from config import activation_dict
 torch.manual_seed(0)
 
+
 class Encoder1D(nn.Module):
     def __init__(self,
                  in_channels=1,
@@ -20,7 +21,9 @@ class Encoder1D(nn.Module):
                  bottleneck_act=None,
                  compression_factor=2,
                  seq_length=16,
-                 flattened=True):
+                 flattened=True,
+                 compression_type='on_features',
+                 bottleneck_conv=True):
         super().__init__()
         self.in_channels = in_channels
         self.base_filters = base_filters
@@ -30,17 +33,19 @@ class Encoder1D(nn.Module):
         self.pool_ks = pool_ks
         self.pool_stride = pool_stride
         self.compression_factor = compression_factor
+        self.compression_type = compression_type
         self.seq_length = seq_length
         self.act = activation
         self.bottleneck_act = bottleneck_act
         self.flattened = flattened
+        self.bottleneck_conv_enabled = bottleneck_conv
 
         layers = []
         in_f = in_channels
         for i in range(num_layers):
             out_f = base_filters * (2 ** i)
             layers.append((
-                f'enc_lay_{i+1}',
+                f'enc_lay_{i + 1}',
                 conv_block1D(
                     in_f, out_f,
                     kernel_size=self.kernel_size,
@@ -55,19 +60,29 @@ class Encoder1D(nn.Module):
 
         self.encoder = nn.Sequential(OrderedDict(layers))
 
-        # Bottleneck: 1x1 conv doubling channels
-        self.bottleneck_out_channels = in_f * 2
-        # Compute flattened size after bottleneck
-        bottleneck_conv = nn.Conv1d(in_f, self.bottleneck_out_channels, kernel_size=1)
-        self.flattened_size, self.seq_enc = self._get_final_flattened_size(bottleneck_conv=bottleneck_conv)
-        self.latent_dim = int(self.flattened_size // self.compression_factor)
-        self.bottleneck = bottleneck1D(bottleneck_conv=bottleneck_conv, activation=self.act,
-                                       flattened=self.flattened, flattened_size=self.flattened_size, latent_dim=self.latent_dim,
-                                       bottleneck_activation=self.bottleneck_act, batch_norm=True)
+        if self.bottleneck_conv_enabled:
+            print("Encoder1D: Using bottleneck conv (doubling channels)")
+            self.bottleneck_out_channels = in_f * 2
+            bottleneck_conv = nn.Conv1d(in_f, self.bottleneck_out_channels, kernel_size=1)
+            self.flattened_size, self.seq_enc = self._get_final_flattened_size(bottleneck_conv=bottleneck_conv)
+        else:
+            print("Encoder1D: Symmetric architecture (no bottleneck conv)")
+            self.bottleneck_out_channels = in_f
+            bottleneck_conv = None
+            self.flattened_size, self.seq_enc = self._get_final_flattened_size_no_conv()
 
-        #if self.flattened:
-        #    self.flatten = nn.Flatten()
-        #    self.encoder_layer = nn.Linear(self.flattened_size, self.latent_dim)
+        self.latent_dim = int(self.flattened_size // self.compression_factor) if self.compression_type == 'on_features' \
+            else int((self.in_channels * self.seq_length // self.compression_factor))
+
+        self.bottleneck = bottleneck1D(
+            bottleneck_conv=bottleneck_conv,
+            activation=self.act,
+            flattened=self.flattened,
+            flattened_size=self.flattened_size,
+            latent_dim=self.latent_dim,
+            bottleneck_activation=self.bottleneck_act,
+            batch_norm=True
+        )
 
         self._init_weights()
 
@@ -76,6 +91,13 @@ class Encoder1D(nn.Module):
             x = torch.zeros(1, self.in_channels, self.seq_length)
             x = self.encoder(x)
             x = bottleneck_conv(x)
+            _, c, l = x.size()
+        return c * l, l
+
+    def _get_final_flattened_size_no_conv(self):
+        with torch.no_grad():
+            x = torch.zeros(1, self.in_channels, self.seq_length)
+            x = self.encoder(x)
             _, c, l = x.size()
         return c * l, l
 
@@ -90,9 +112,6 @@ class Encoder1D(nn.Module):
     def forward(self, x):
         x = self.encoder(x)
         x = self.bottleneck(x)
-        #if self.flattened:
-        #    x = self.flatten(x)
-        #    x = self.encoder_layer(x)
         return x
 
 
@@ -118,7 +137,8 @@ class Decoder1D(nn.Module):
                  conv_kernel_size=3,
                  conv_stride=1,
                  conv_dilation=1,
-                 bottleneck_out_channels=None):
+                 bottleneck_out_channels=None,
+                 decoder_mode='progressive'):
         super().__init__()
         self.in_channels = in_channels
         self.base_filters = base_filters
@@ -135,6 +155,7 @@ class Decoder1D(nn.Module):
         self.conv_kernel_size = conv_kernel_size
         self.conv_padding = conv_padding
         self.double_deconv = double_deconv
+        self.decoder_mode = decoder_mode
 
         if bottleneck_out_channels is None:
             raise ValueError("Provide bottleneck_out_channels from encoder")
@@ -145,15 +166,32 @@ class Decoder1D(nn.Module):
 
         output_padding = self._compute_output_padding(seq_enc, seq_length, num_layers, stride)
 
-        # Build decoder
+        encoder_filters = [self.base_filters * (2 ** i) for i in range(self.num_layers)]
+
         layers = []
         in_f = bottleneck_out_channels
-        out_f = in_f // 2
+
         for i in range(num_layers):
-            if i == num_layers - 1:
-                out_f = base_filters
+
+            if self.decoder_mode == 'mirror':
+                if i == self.num_layers - 1:
+                    out_f = self.in_channels
+                else:
+                    out_f = encoder_filters[self.num_layers - i - 2]
+
+            elif self.decoder_mode == 'base_filters':
+                out_f = in_f // 2
+                if out_f < self.base_filters:
+                    out_f = self.base_filters
+
+            elif self.decoder_mode == 'progressive':
+                out_f = in_f // 2
+
+            else:
+                raise ValueError(f"Unknown decoder_mode: '{self.decoder_mode}'")
+
             layers.append((
-                f'dec_lay_{i+1}',
+                f'dec_lay_{i + 1}',
                 deconv_block1D(
                     in_f, out_f,
                     kernel_size=self.kernel_size,
@@ -168,25 +206,16 @@ class Decoder1D(nn.Module):
                 )
             ))
             in_f = out_f
-            if i != num_layers - 1:
-                out_f = max(in_f // 2, base_filters)
 
         self.decoder = nn.Sequential(OrderedDict(layers))
-        self.decoder_out = nn.Conv1d(base_filters, in_channels, kernel_size=1)
+        self.decoder_out = nn.Conv1d(out_f, in_channels, kernel_size=1)
+
+        if self.decoder_mode == 'mirror':
+            print(f"Decoder1D: Mirror mode - decoder_out is 1x1 refinement layer ({out_f}->{self.in_channels})")
+
         self._init_weights()
 
     def _compute_output_padding(self, Lb, L_target, num_layers, stride, kernel_size=2, padding=0, dilation=1):
-        """
-        Compute per-layer output_padding for ConvTranspose1d so that
-        the final output length matches L_target.
-
-        Lb: encoded sequence length (from encoder)
-        L_target: original input sequence length
-        num_layers: number of decoder layers
-        stride, kernel_size, padding, dilation: ConvTranspose1d parameters
-        """
-
-        # Compute lengths forward without output_padding
         lengths = [Lb]
         for _ in range(num_layers):
             L_in = lengths[-1]
@@ -195,15 +224,12 @@ class Decoder1D(nn.Module):
 
         diff = L_target - lengths[-1]
 
-        # Distribute output_padding from the last layer backwards
         ops = [0] * num_layers
         for i in reversed(range(num_layers)):
             if diff <= 0:
                 break
-            # Output padding can't exceed stride - 1
             op = min(diff, stride - 1)
             ops[i] = op
-            # Each output padding at layer i increases output length by op * (stride ** i)
             diff -= op * (stride ** (num_layers - 1 - i))
 
         return ops
@@ -237,9 +263,12 @@ class CONV_AE1D(nn.Module):
         self.cfg = cfg
         model_cfg = cfg.model
 
-        if self.cfg.opt.get("fine_tuning",0) and self.cfg.opt.get("fine_tuning_mode") == "adaptive_layer":
-            # in case of adaptive layer fine-tuning, set in_channels according to the checkpoint pre-trained model
-            self.in_channels  = len(torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.feats)
+        available_ft_mode = ['adaptive_layer', 'linear_proj']
+
+        if self.cfg.opt.get("fine_tuning", 0) and self.cfg.opt.get("fine_tuning_mode") in available_ft_mode:
+            self.in_channels = len(torch.load(cfg.opt.checkpoint_path)['cfg'].dataset.feats)
+        elif self.cfg.opt.get("fine_tuning", 0) and self.cfg.opt.get("fine_tuning_mode") not in available_ft_mode:
+            raise NotImplementedError("for Conv 1D only adaptive layer available")
         else:
             self.in_channels = cfg.dataset.n_features
 
@@ -249,19 +278,38 @@ class CONV_AE1D(nn.Module):
         self.num_layers = model_cfg.num_layers
         self.act = activation_dict.get(model_cfg.get("activation", None), None)
         self.bottleneck_act = activation_dict.get(model_cfg.get("bottleneck_activation", None), None)
+        self.bottleneck_conv = model_cfg.get('bottleneck_conv', True)
+        self.decoder_mode = model_cfg.get('decoder_mode', 'progressive')
         self.stride = model_cfg.stride
         self.pool = model_cfg.pool
         self.increasing = model_cfg.increasing
         self.dilation = model_cfg.dilation
         self.flattened = model_cfg.flattened
-        self.compression_factor = model_cfg.compression_factor
+        self.compression_factor = model_cfg.compression_factor if model_cfg.get('compression_factor_on_inputs', None) is None else model_cfg.get('compression_factor_on_inputs', None)
+        self.compression_type = 'on_inputs' if model_cfg.get('compression_factor_on_inputs', None) is not None else 'on_features'
         self.seq_length = cfg.dataset.seq_in_length
         self.pool_ks = 2
         self.pool_stride = 2
+        if self.decoder_mode == 'mirror' and self.bottleneck_conv:
+            print('⚠️  WARNING: Mirror mode requires bottleneck_conv=False for true symmetry')
+            print('   → Forcing bottleneck_conv=False')
+            self.bottleneck_conv = False
 
-        self.padding = (self.kernel_size - 1) // 2  # automatic "same" padding
+        # Check 2: Progressive and base_filters  converge when bottleneck_conv=True
+        if self.decoder_mode in ['progressive', 'base_filters'] and self.bottleneck_conv:
+            # Calculate if they will converge
+            last_encoder_filters = self.base_filters * (2 ** (self.num_layers - 1))
+            bottleneck_filters = last_encoder_filters * 2
 
-        # Encoder
+            # After num_layers halvings from bottleneck_filters
+            final_filters = bottleneck_filters // (2 ** self.num_layers)
+
+            if final_filters >= self.base_filters:
+                print('ℹ️  NOTE: Progressive and base_filters modes are equivalent with bottleneck_conv=True')
+                print(f'   → Both will halt at base_filters={self.base_filters}')
+
+        self.padding = (self.kernel_size - 1) // 2
+
         self.encoder = Encoder1D(
             in_channels=self.in_channels,
             base_filters=self.base_filters,
@@ -272,14 +320,16 @@ class CONV_AE1D(nn.Module):
             activation=self.act,
             flattened=self.flattened,
             compression_factor=self.compression_factor,
-            bottleneck_act = self.bottleneck_act
+            bottleneck_act=self.bottleneck_act,
+            compression_type=self.compression_type,
+            bottleneck_conv=self.bottleneck_conv
         )
 
         self.flattened_size = self.encoder.flattened_size
         self.cfg.model.flattened_size = self.flattened_size
-        self.latent_dim = int(self.flattened_size // self.compression_factor)
+        self.latent_dim = self.encoder.latent_dim
+        self.cfg.model.latent_dim = self.latent_dim
 
-        # Decoder
         self.decoder = Decoder1D(
             in_channels=self.in_channels,
             base_filters=self.base_filters,
@@ -292,24 +342,22 @@ class CONV_AE1D(nn.Module):
             seq_enc=self.encoder.seq_enc,
             activation=self.act,
             flattened=self.flattened,
-            double_deconv=self.double_deconv, conv_padding=self.padding,
-            conv_kernel_size=self.kernel_size, conv_stride=self.stride, conv_dilation=self.dilation,
+            double_deconv=self.double_deconv,
+            conv_padding=self.padding,
+            conv_kernel_size=self.kernel_size,
+            conv_stride=self.stride,
+            conv_dilation=self.dilation,
             bottleneck_out_channels=self.encoder.bottleneck_out_channels,
+            decoder_mode=self.decoder_mode
         )
 
-
     def forward(self, x):
-        # input adapter (solo se presente)
         if hasattr(self, "input_adapter") and self.input_adapter is not None:
             x = self.input_adapter(x)
 
-        # encoder + bottleneck
         enc = self.encoder(x)
-
-        # decoder
         out = self.decoder(enc)
 
-        # output adapter (solo se presente)
         if hasattr(self, "output_adapter") and self.output_adapter is not None:
             out = self.output_adapter(out)
 

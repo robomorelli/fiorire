@@ -1,0 +1,83 @@
+# Optimization
+tune_config:
+  #opt.fine_tuning: tune.choice([1])
+  opt.robust:  tune.choice([1])
+  opt.checkpoint_path: tune.choice(["./ray_results/fiorire_1/conv2D_fiorire1_ref/checkpoint_Trainer_3b2a8_00004/model.pt"]) # 3
+  opt.config_file_path: tune.choice(["conv_ae2D_CMG_robustness.yaml"])
+  # dataset clean e perturbed con perturbed [Delta]
+  # perturbazione adversariale
+  # inb test adversariale o domanin-specifci
+  opt.rubstness_tests: tune.choice(["adv_def_attack". "adv_def_train"]) # 4
+
+
+dataset:
+  seed: 42
+  name: 'fiorire_2'
+  upsample_factor: 1
+  upsample_method: 'linear'
+  upsample_augmentation: 0
+  seq_in_length: 16
+  val_overlap: 0
+  scaler: 'StandardScaler'
+  data_path: './data/fiorire_2/AllScenarios_CMG.csv'
+  seq_in_length_into_chunk: 200    # number of sequences for each split chunk
+  seq_out_length: null
+  train_val_split: 0.8
+  shuffle_train: True #shuffle the idx of the train
+  feats: null
+  target: null    # null: the same input features are the target (reconstruction task); all: all the variables of the dataframe are the target; list/str: specific value/s
+  remove_target: False
+  dataset_subset: null
+  save_dataloaders: False
+  forecast: False
+  is_anomaly_column: 'is_anomaly'   # name of the anomaly column; if None there are no anomalous sequences
+
+# Model
+model:
+  name: 'conv_ae2D'
+  aux_channels: 1   # 1 if the input is (batch, channels, height, width); height=features, width=seq_in_length; channels=1 mono-channels
+
+resources:
+  gpu_trial: 1
+  cpu_trial: 12
+
+opt:
+  exp_name: 'CMG_ft'
+  seed: 42
+  opt_metric: {'val_roc_auc':'max'}   #val_loss; val_f1_score; val_roc_auc This is the metric key used to rank the models (the optimization is still on the loss)
+  metrics_to_report: ['train_loss', 'val_loss', 'val_f1_score', 'best_val_f1_score',
+                      'val_roc_auc', 'best_val_roc_auc', "val_fpr", "best_val_fpr", "val_tpr", "best_val_tpr",
+                      "best_val_thresh_f1"]  # list of metrics to report in the summary of the results
+  other_reports: ['parameters_number']
+  metric_seq_overlap: 0
+  use_error: 'se'   # 'abs' or 'se'
+  num_workers: 12
+  anomalies_dataset_subset: 400_000  # subset used to compute the metrics during training
+  num_thresholds: 100
+  remove_columns: null   #["affected_channels", "anomaly_type"]
+  filter_anomalies: True
+  plot_metric_samples: true   # Enable plotting
+  plot_metric_percentage: 0.05  # Plot 5% of sequences
+  anomaly_strategy: "corrupt_validation"    # ["use_original", "corrupt_validation", "both", "none"]
+  force_regenerate: False
+  evaluate_metrics: True
+  detect_anomaly_epoch_freq: 1
+  corruption_config:
+    # Anomaly types to inject
+    anomalies_type: [ 'GWN', 'Step', 'Impulse', 'Constant' ]
+    # Intensity of anomalies (0.0 to 1.0+, higher = more intense)
+    delta_mean: 0.5
+    # Number of channels to affect per sequence
+    min_channels: 1
+    max_channels: 1
+    # Ratio of validation sequences to corrupt (1.0 = all)
+    corruption_ratio: 1
+    # Random seed for reproducibility
+    random_seed: 123
+
+    # Optional: specific channels to corrupt (None = all numeric columns)
+    target_channels: null
+  max_epochs: 500
+
+
+### HOW TO ADDRESS ON THE RIGHT METRIC LOADER?

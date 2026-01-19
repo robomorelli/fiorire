@@ -12,6 +12,8 @@ dataloader/
 # C extensions
 *.so
 
+delete_articacts.py
+
 # Distribution / packaging
 .Python
 build/
@@ -212,3 +214,4 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 /train_configurations/
+/test/

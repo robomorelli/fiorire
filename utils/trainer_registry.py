@@ -1,15 +1,12 @@
 # utils/trainer_registry.py
 
-from trainer.lstm_ae_trainer import trainLSTMAE
-from trainer.lstm_trainer import trainLSTM
-from trainer.conv_ae1d_trainer import trainCONVAE1D
-from trainer.conv_ae2d_trainer import trainCONVAE2D
+from trainer.trainer import Trainer
 
 
 TRAINER_REGISTRY = {
-    "lstm_ae": trainLSTMAE,
-    "lstm": trainLSTM,
-    "conv_ae1D": trainCONVAE1D,
-    "conv_ae2D": trainCONVAE2D,
+    "lstm_ae": Trainer,
+    "lstm": Trainer,
+    "conv_ae1D": Trainer,
+    "conv_ae2D": Trainer,
     # Add new trainers here
 }

@@ -6,10 +6,10 @@
 #PBS -k oe
 #PBS -m e
 #PBS -M roberto.morelli.ext@leonardocompany.com
-#PBS -l select=1:ngpus=4:ncpus=16,walltime=72:00:00
-#PBS -v num_nodes=1,num_gpus=4,num_cpus=16,config_file=conv_ae2D_ft_FSS,num_samples=100,entity=robmorelli,wandb_key=56b6f7f0b13c4d89207e51c28ceb90c24201eab5,wandb=1,project_name=conv2D_FSS_ft
+#PBS -l select=2:ngpus=4:ncpus=16,walltime=72:00:00
+#PBS -v num_nodes=2,num_gpus=4,num_cpus=16,config_file=conv_ae2D_ref,num_samples=50,entity=robmorelli,wandb_key=56b6f7f0b13c4d89207e51c28ceb90c24201eab5,wandb=1,project_name=conv2D_scratch_ref
 
-##PBS -v num_nodes=1,num_gpus=4,num_cpus=16,config_file=,num_samples=100,wandb_key=56b6f7f0b13c4d89207e51c28ceb90c24201eab5,entity=robmorelli
+##PBS -v num_nodes=2,num_gpus=4,num_cpus=16,config_file=,num_samples=50,wandb_key=56b6f7f0b13c4d89207e51c28ceb90c24201eab5,entity=robmorelli
 
 module load proxy/proxy_20
 bash /davinci-1/home/morellir/artificial_intelligence/repos/fiorire/launch_hpo.sh

@@ -64,15 +64,11 @@ class EarlyStopping:
 _BASE_CONFIG_CACHE = {}
 
 
-def model_setup(config_file_name, config, root):
+def model_setup(config_file_name, config, root=None):
     """
     Setup model configuration with caching to prevent reloading from disk.
 
-    Strategy:
-    1. Load base config ONCE and cache it
-    2. Clone cached config for each worker
-    3. Merge Ray Tune parameters (frozen)
-    4. Result: Truly frozen config
+    ⚠️ NOTE: 'shared_config' must be extracted BEFORE OmegaConf merge!
     """
     import os
     from omegaconf import OmegaConf
@@ -80,35 +76,28 @@ def model_setup(config_file_name, config, root):
 
     cache_key = config_file_name
 
-    # =====================================================
+    # ✅ Extract shared_config FIRST (don't pass to OmegaConf)
+    shared_config = config.pop('shared_config', None) if config else None
+
     # Load base config ONCE (or use cached)
-    # =====================================================
     if cache_key not in _BASE_CONFIG_CACHE:
         print(f"📂 [PID {os.getpid()}] Loading and caching base config: {config_file_name}")
         base_cfg = OmegaConf.load(config_path + config_file_name)
-
-        # Store frozen snapshot in cache
         _BASE_CONFIG_CACHE[cache_key] = OmegaConf.to_container(base_cfg, resolve=True)
     else:
         print(f"📌 [PID {os.getpid()}] Using cached base config: {config_file_name}")
 
-    # Clone from cache (deep copy)
+    # Clone from cache
     cfg = OmegaConf.create(_BASE_CONFIG_CACHE[cache_key])
-
-    # Allow dynamic field insertion
     OmegaConf.set_struct(cfg, False)
 
-    # =====================================================
-    # Merge Ray Tune parameters (OVERRIDE cached values)
-    # =====================================================
+    # Merge Ray Tune parameters (WITHOUT shared_config)
     if config and len(config) > 0:
         print(f"🔀 [PID {os.getpid()}] Merging frozen Ray Tune parameters")
 
-        # Merge trial parameters from Ray Tune
         for k, v in config.items():
             OmegaConf.update(cfg, k, v, merge=True)
 
-        # Debug
         try:
             print(f"   ✓ Final opt.lr = {cfg.opt.get('lr', 'N/A')}")
         except:
@@ -116,14 +105,15 @@ def model_setup(config_file_name, config, root):
 
     # Resolve paths
     cfg = resolve_paths(cfg, root)
+    shared_config = resolve_paths(shared_config, root)
 
-    return cfg
+    # ✅ Return both cfg and shared_config separately
+    return cfg, shared_config
+
 
 def update_input_output(cfg):
     """
     Infer input and output dimensions from the configuration.
-    :param cfg: configuration object
-    :return: input_dim, output_dim
     """
     if isinstance(cfg.dataset.feats, (list, ListConfig)):
         feats = cfg.dataset.feats
@@ -138,124 +128,97 @@ def update_input_output(cfg):
     else:
         target = None
 
+    # Handle remove_columns
     if cfg.opt.get("remove_columns", False):
-        if isinstance(cfg.opt.get("remove_columns"), (list, ListConfig)):
-            remove_columns = cfg.opt.get("remove_columns")
-        elif isinstance(cfg.dataset.target, str):
-            remove_columns = [cfg.opt.get("remove_columns")]
-    elif cfg.opt.get("remove_columns", False) is None:
-        remove_columns = []
+        remove_columns_val = cfg.opt.get("remove_columns")
+        if isinstance(remove_columns_val, (list, ListConfig)):
+            remove_columns = remove_columns_val
+        elif isinstance(remove_columns_val, str):
+            remove_columns = [remove_columns_val]
+        else:
+            remove_columns = []
     else:
         remove_columns = []
 
-        # Merge model and opt into cfg
+    # Update cfg
     cfg.dataset.feats = feats
     cfg.dataset.target = target
     cfg.opt.remove_columns = remove_columns
+    seq_out_length = cfg.dataset.get('seq_out_length', None)
+    if seq_out_length  is None:
+        cfg.dataset.seq_out_length  = cfg.dataset.seq_in_length
 
     return cfg, feats, target
 
-def get_optimizazion_objects(cfg, model, opt_metric_dict):
 
-    # ============================================================
-    # DEFAULT AUTOMATICO PER IL LR DEL BOTTLECK
-    # ============================================================
-    bottleneck_lr = getattr(cfg.opt, "bottleneck_lr", 0)
+def compute_indices_with_overlap(base_indices, overlap, seq_len):
+    """
+    Compute final indices with overlap, respecting chunk boundaries.
 
-    print("\n=================== OPTIMIZER SETUP ===================")
-    print(f"Main LR:          {cfg.opt.lr}")
-    print(f"Bottleneck LR:    {bottleneck_lr}  (0 → same LR as main)")
-    print("--------------------------------------------------------")
+    Args:
+        base_indices: Base indices (may have gaps/chunks)
+        overlap: Percentage overlap (0.0 to 1.0)
+        seq_len: Sequence length
 
-    # ============================================================
-    # IDENTIFICA I PARAMETRI DEL BOTTLENECK
-    # ============================================================
-    bottleneck_params = []
-    main_params = []
+    Returns:
+        final_indices: Indices with overlap applied
+    """
+    import numpy as np
 
-    for name, param in model.named_parameters():
-        if "bottleneck" in name.lower():
-            bottleneck_params.append(param)
-            print(f"   → Bottleneck param found: {name}")
-        else:
-            main_params.append(param)
+    # Ensure numpy array
+    if not isinstance(base_indices, np.ndarray):
+        base_indices = np.array(base_indices)
 
-    # ============================================================
-    # GESTIONE WARNING: NESSUN BOTTLECK TROVATO
-    # ============================================================
-    if bottleneck_lr > 0 and len(bottleneck_params) == 0:
-        print("\n!!! WARNING: bottleneck_lr > 0 but NO bottleneck layers found in model !!!")
-        print("    → Falling back to SINGLE LR for all parameters\n")
-        bottleneck_lr = 0  # forza single LR
+    # Calculate step
+    step = max(1, int(seq_len * (1 - overlap)))
 
-    # ============================================================
-    # CASO 1: SINGLE LR (bottleneck_lr == 0)
-    # ============================================================
-    if bottleneck_lr == 0:
-        print(">>> [MODE] USING SINGLE LR FOR ALL MODEL PARAMETERS\n")
+    # ✅ Detect chunk boundaries (where diff > 1)
+    diffs = np.diff(base_indices)
+    chunk_breaks = np.where(diffs > 1)[0] + 1
 
-        optimizer = torch.optim.Adam(model.parameters(), lr=cfg.opt.lr)
+    # Split into chunks
+    chunks = np.split(base_indices, chunk_breaks)
 
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode=opt_metric_dict["mode"],
-            factor=0.8,
-            patience=cfg.opt.lr_patience,
-            threshold=0.0001,
-            threshold_mode='rel',
-            cooldown=0,
-            min_lr=9e-8,
-            verbose=True
-        )
+    final_indices = []
 
-        criterion = nn.MSELoss()
-        min_delta = 1e-6 if opt_metric_dict["mode"] == "min" else 3e-3
+    print(f"\n{'=' * 60}")
+    print(f"DEBUG: compute_indices_with_overlap")
+    print(f"{'=' * 60}")
+    print(f"Total base indices: {len(base_indices):,}")
+    print(f"Step: {step}")
+    print(f"Chunks detected: {len(chunks)}")
+    print(f"{'=' * 60}\n")
 
-        early_stopping = EarlyStopping(
-            patience=cfg.opt.es_patience,
-            min_delta=min_delta,
-            opt_metric_dict=opt_metric_dict
-        ) if cfg.opt.es_patience else None
+    total_obtained = 0
 
-        print("========================================================\n")
-        return optimizer, scheduler, criterion, early_stopping
+    for i, chunk in enumerate(chunks):
+        if len(chunk) == 0:
+            continue
 
-    # ============================================================
-    # CASO 2: LR DIVERSO PER BOTTLECNEK
-    # ============================================================
-    print("\n>>> [MODE] USING SEPARATE LR FOR BOTTLENECK")
-    print(f"Total bottleneck params: {len(bottleneck_params)}")
-    print(f"Total main params:       {len(main_params)}")
-    print("--------------------------------------------------------")
+        # ✅ subsample chunk positions
+        chunk_final = chunk[::step]
 
-    optimizer = torch.optim.Adam([
-        {"params": main_params,       "lr": cfg.opt.lr},
-        {"params": bottleneck_params, "lr": bottleneck_lr},
-    ])
+        expected = len(chunk) // step
+        obtained = len(chunk_final)
+        total_obtained += obtained
 
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode=opt_metric_dict["mode"],
-        factor=0.8,
-        patience=cfg.opt.lr_patience,
-        threshold=0.0001,
-        threshold_mode='rel',
-        cooldown=0,
-        min_lr=9e-8,
-        verbose=True
-    )
+        print(
+            f"Chunk {i:2d}: len={len(chunk):7,} | expected={expected:5,} | obtained={obtained:5,} | {'✓' if obtained >= expected else '✗'}")
 
-    criterion = nn.MSELoss()
-    min_delta = 1e-6 if opt_metric_dict["mode"] == "min" else 3e-3
+        final_indices.append(chunk_final)
 
-    early_stopping = EarlyStopping(
-        patience=cfg.opt.es_patience,
-        min_delta=min_delta,
-        opt_metric_dict=opt_metric_dict
-    ) if cfg.opt.es_patience else None
+    print(f"\n{'=' * 60}")
+    print(f"Total expected:  {len(base_indices) // step:,}")
+    print(f"Total obtained:  {total_obtained:,}")
+    print(f"Difference:      {abs(len(base_indices) // step - total_obtained):,}")
+    print(f"{'=' * 60}\n")
 
-    print("========================================================\n")
-    return optimizer, scheduler, criterion, early_stopping
+    # Concatenate all chunks
+    if len(final_indices) > 0:
+        return np.concatenate(final_indices)
+    else:
+        return np.array([], dtype=np.int64)
+
 
 
 def infer_metric_mode(metric_name: str) -> str:
@@ -427,6 +390,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train
 
     pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc=desc, leave=False)
     for i, (inputs, targets, is_anomaly) in pbar:
+
         inputs, targets = inputs.to(device), targets.to(device)
         # conv ae 1d torch.Size([100, 16, 8]), torch.Size([100, 16, 8]), torch.Size([100, 1, 8])
         # conv ae 2d torch.Size([100, 1, 16, 8]), torch.Size([100, 1, 16, 8]), torch.Size([100, 1, 8])
@@ -458,6 +422,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, desc="Train
 
 @torch.no_grad()
 def validate_one_epoch(
+    cfg,
     model,
     dataloader: Optional[torch.utils.data.DataLoader],
     metric_loader: Optional[torch.utils.data.DataLoader],
@@ -494,15 +459,23 @@ def validate_one_epoch(
         "val_loss": epoch_loss / len(dataloader),
     }
 
+    if cfg.opt.get('use_val_normal_errors', 0) and cfg.dataset.get('val_overlap', 0) == 0 \
+        and cfg.opt.get('anomaly_strategy', None) == "corrupt_validation" and cfg.opt.corruption_config.get('corruption_ratio', None) == 1 \
+        and cfg.opt.get('metric_seq_overlap', 0):
+        print('USING NORMAL ERRORS FROM VAL')
+    else:
+        print('Computing normal errors from metric loader')
+        all_errors = None
+
     # Optionally evaluate anomaly detection metrics
     if evaluate_metrics:
         print("\n[INFO] Evaluating anomaly detection metrics...with error =", use_error)
+        print("\n[INFO] F1 score is computed approximatively don'0t trust")
         test_results, indices = test_anomaly_step(
             model=model,
             metric_dataloader=metric_loader,
             device=device,
             external_normal_errors=all_errors,
-            compare_external_with_loader=False,
             num_thresh=num_thresholds,
             epsilon=1e-5,
             desc=f"Testing anomalies ({use_error})",
@@ -535,49 +508,95 @@ def validate_one_epoch(
 
 @torch.no_grad()
 def test_anomaly_step(
-    model,
-    metric_dataloader,
-    device="cuda",
-    external_normal_errors=None,
-    compare_external_with_loader=False,
-    num_thresh=100,
-    epsilon=1e-5,
-    desc="Testing anomalies",
-    normal_anomalies_ratio=1,
-    seed=123,
-    use_error="abs"  # "abs" = |x - y|, "se" = (x - y)^2
+        model,
+        metric_dataloader,
+        device="cuda",
+        external_normal_errors=None,
+        num_thresh=100,
+        epsilon=1e-3,
+        desc="Testing anomalies",
+        normal_anomalies_ratio=1,
+        seed=123,
+        use_error="abs"
 ):
+    """
+    Compute anomaly detection metrics with comprehensive NaN/Inf checking.
+
+    Args:
+        model: The trained model
+        metric_dataloader: DataLoader with metric dataset (normal + anomalies)
+        device: Device to run on
+        external_normal_errors: Pre-computed normal errors (optional)
+        num_thresh: Number of thresholds (deprecated, using Youden's index)
+        epsilon: Small constant for normalization stability
+        desc: Progress bar description
+        normal_anomalies_ratio: Ratio of normal to anomaly sequences
+        seed: Random seed for sampling
+        use_error: "abs" or "se" for error computation
+
+    Returns:
+        metrics_dict: Dictionary with all computed metrics
+    """
     model.eval()
     anomaly_errors_list = []
     anomaly_masks_list = []
-    normal_errors_list = [] if external_normal_errors is None or compare_external_with_loader else None
+
+    should_compute_normal_errors = (external_normal_errors is None)
+    normal_errors_list = [] if should_compute_normal_errors else None
 
     normal_running_sum = 0.0
     normal_running_count = 0
     anom_running_sum = 0.0
     anom_running_count = 0
 
+    # ✅ DIAGNOSTIC counters
+    nan_count_recon = 0
+    nan_count_errors = 0
+
     normal_bar = tqdm(total=0, position=0, leave=True, desc="Normals")
-    anom_bar   = tqdm(total=0, position=1, leave=True, desc="Anomalies")
+    anom_bar = tqdm(total=0, position=1, leave=True, desc="Anomalies")
 
     model_type, last_layer = infer_model_type(model)
+
+    print(f"\n[TEST_ANOMALY] Starting - use_error: {use_error}, epsilon: {epsilon}")
 
     # ==============================
     # 1) PASS THROUGH DATALOADER
     # ==============================
-    for batch in tqdm(metric_dataloader, desc=desc, position=2):
+    for batch_idx, batch in enumerate(tqdm(metric_dataloader, desc=desc, position=2)):
         x, target, mask, *_ = batch
         x, target = x.to(device), target.to(device)
 
         is_anom = mask.view(mask.size(0), -1).sum(dim=1) > 0
         is_norm = ~is_anom
 
+        # ==================
         # Anomalies
+        # ==================
         if is_anom.any():
             x_anom, target_anom, mask_anom = x[is_anom], target[is_anom], mask[is_anom]
             recon = model(x_anom)
 
+            # ✅ CHECK: Reconstruction (anomalies)
+            if torch.isnan(recon).any() or torch.isinf(recon).any():
+                nan_count_recon += 1
+                if nan_count_recon == 1:
+                    print(f"\n⚠️  [TEST_ANOMALY] NaN/Inf in RECONSTRUCTION at batch {batch_idx}!")
+                    print(f"   - Type: Anomalies")
+                    print(f"   - NaN: {torch.isnan(recon).sum().item()}")
+                    print(f"   - Inf: {torch.isinf(recon).sum().item()}")
+
             err_anom = compute_errors(target_anom, recon, error_type=use_error).cpu()
+
+            # ✅ CHECK: Errors (anomalies)
+            if torch.isnan(err_anom).any() or torch.isinf(err_anom).any():
+                nan_count_errors += 1
+                if nan_count_errors == 1:
+                    print(f"\n⚠️  [TEST_ANOMALY] NaN/Inf in ERRORS at batch {batch_idx}!")
+                    print(f"   - Type: Anomalies")
+                    print(f"   - Error type: {use_error}")
+                    print(f"   - NaN: {torch.isnan(err_anom).sum().item()}")
+                    print(f"   - Inf: {torch.isinf(err_anom).sum().item()}")
 
             if last_layer == "Conv2d":
                 err_anom = torch.squeeze(err_anom, (1))
@@ -585,7 +604,7 @@ def test_anomaly_step(
             anomaly_errors_list.append(err_anom)
             anomaly_masks_list.append(mask_anom.cpu())
 
-            # update progress
+            # Update progress
             batch_mean = err_anom.mean().item()
             anom_running_sum += err_anom.sum().item()
             anom_running_count += err_anom.numel()
@@ -594,18 +613,40 @@ def test_anomaly_step(
                                   "global_mean": f"{global_mean:.6f}"})
             anom_bar.update(1)
 
+        # ==================
         # Normals
-        if is_norm.any() and normal_errors_list is not None:
+        # ==================
+        if is_norm.any() and should_compute_normal_errors:
             x_norm, target_norm = x[is_norm], target[is_norm]
             recon = model(x_norm)
 
+            # ✅ CHECK: Reconstruction (normals)
+            if torch.isnan(recon).any() or torch.isinf(recon).any():
+                nan_count_recon += 1
+                if nan_count_recon == 1:
+                    print(f"\n⚠️  [TEST_ANOMALY] NaN/Inf in RECONSTRUCTION at batch {batch_idx}!")
+                    print(f"   - Type: Normals")
+                    print(f"   - NaN: {torch.isnan(recon).sum().item()}")
+                    print(f"   - Inf: {torch.isinf(recon).sum().item()}")
+
             err_norm = compute_errors(target_norm, recon, error_type=use_error).cpu()
 
+            # ✅ CHECK: Errors (normals)
+            if torch.isnan(err_norm).any() or torch.isinf(err_norm).any():
+                nan_count_errors += 1
+                if nan_count_errors == 1:
+                    print(f"\n⚠️  [TEST_ANOMALY] NaN/Inf in ERRORS at batch {batch_idx}!")
+                    print(f"   - Type: Normals")
+                    print(f"   - Error type: {use_error}")
+                    print(f"   - NaN: {torch.isnan(err_norm).sum().item()}")
+                    print(f"   - Inf: {torch.isinf(err_norm).sum().item()}")
+
             if last_layer == "Conv2d":
-                err_norm = torch.squeeze(err_norm , (1))
+                err_norm = torch.squeeze(err_norm, (1))
 
             normal_errors_list.append(err_norm)
 
+            # Update progress
             batch_mean = err_norm.mean().item()
             normal_running_sum += err_norm.sum().item()
             normal_running_count += err_norm.numel()
@@ -617,23 +658,26 @@ def test_anomaly_step(
     normal_bar.close()
     anom_bar.close()
 
+    print(f"\n[TEST_ANOMALY] Forward pass complete:")
+    print(f"   - Batches with NaN/Inf reconstruction: {nan_count_recon}")
+    print(f"   - Batches with NaN/Inf errors: {nan_count_errors}")
+
     anomaly_errors = torch.cat(anomaly_errors_list, dim=0)  # [N_anom, C, L]
-    anomaly_masks  = torch.cat(anomaly_masks_list, dim=0)   # [N_anom, 1, L]
+    anomaly_masks = torch.cat(anomaly_masks_list, dim=0)  # [N_anom, 1, L]
 
     # ==============================
     # 2) NORMAL ERROR SOURCE
     # ==============================
-    if external_normal_errors is not None:
+    if should_compute_normal_errors:
+        # From loader
+        normal_errors_all = torch.cat(normal_errors_list, dim=0)
+        normal_error_source = "loader"
+    else:
+        # From external
         if last_layer == "Conv2d":
             external_normal_errors = torch.squeeze(external_normal_errors, (1))
-
         normal_errors_all = external_normal_errors.cpu()
         normal_error_source = "external"
-        normal_loader_all = torch.cat(normal_errors_list, dim=0) if compare_external_with_loader else None
-    else:
-        normal_errors_all = torch.cat(normal_errors_list, dim=0)
-        normal_loader_all = None
-        normal_error_source = "loader"
 
     # ==============================
     # 3) SAMPLE NORMAL SEQUENCES
@@ -674,22 +718,47 @@ def test_anomaly_step(
     # ==============================
     # 5) NORMALIZATION
     # ==============================
-    normal_perm  = normal_errors.permute(0, 2, 1)  # [N, L, C]
+    normal_perm = normal_errors.permute(0, 2, 1)  # [N, L, C]
     anomaly_perm = anomaly_errors.permute(0, 2, 1)
 
     C = normal_perm.shape[2]
 
     flat_norm = normal_perm.reshape(-1, C).float()
     normalization_factor = torch.quantile(flat_norm, 0.5, dim=0)
+
+    # ✅ CHECK: Normalization factor
+    if torch.isnan(normalization_factor).any() or torch.isinf(normalization_factor).any():
+        print(f"\n⚠️  [NORMALIZATION] NaN/Inf in NORMALIZATION_FACTOR!")
+        print(f"   - NaN: {torch.isnan(normalization_factor).sum().item()}")
+        print(f"   - Inf: {torch.isinf(normalization_factor).sum().item()}")
+        print(f"   - Values: {normalization_factor}")
+
     norm = normalization_factor.view(1, 1, C) + epsilon
 
-    normal_norm  = normal_perm  / norm
+    normal_norm = normal_perm / norm
     anomaly_norm = anomaly_perm / norm
+
+    assert not torch.isnan(normal_norm).any() and not torch.isinf(normal_norm).any(), "NaN/Inf in normal_norm!"
+    assert not torch.isnan(anomaly_norm).any() and not torch.isinf(anomaly_norm).any(), "NaN/Inf in anomaly_norm!"
+
+    # ✅ CHECK 1: Post-normalization NaN/Inf
+    nan_normal = torch.isnan(normal_norm).sum().item()
+    inf_normal = torch.isinf(normal_norm).sum().item()
+    nan_anomaly = torch.isnan(anomaly_norm).sum().item()
+    inf_anomaly = torch.isinf(anomaly_norm).sum().item()
+
+    if nan_normal > 0 or inf_normal > 0 or nan_anomaly > 0 or inf_anomaly > 0:
+        print(f"\n⚠️  [NORMALIZATION] NaN/Inf detected after normalization!")
+        print(f"   - Normal errors:  NaN={nan_normal}, Inf={inf_normal}")
+        print(f"   - Anomaly errors: NaN={nan_anomaly}, Inf={inf_anomaly}")
+        print(
+            f"   - Normalization factor: min={normalization_factor.min().item():.6f}, max={normalization_factor.max().item():.6f}")
+        print(f"   - Epsilon: {epsilon}")
 
     masks_norm = torch.zeros((normal_norm.shape[0], anomaly_masks.shape[1], anomaly_masks.shape[2]), dtype=torch.int)
 
     all_errors = torch.cat([normal_norm, anomaly_norm], dim=0)  # [N, L, C]
-    all_masks  = torch.cat([masks_norm, anomaly_masks], dim=0)   # [N, L, 1]
+    all_masks = torch.cat([masks_norm, anomaly_masks], dim=0)  # [N, L, 1]
 
     N, T, C = all_errors.shape
 
@@ -706,16 +775,39 @@ def test_anomaly_step(
     flat_scores = val_anomaly_scores.flatten().numpy()
     flat_labels = val_labels.flatten().numpy()
 
+    # ✅ CHECK 2: Flat scores NaN/Inf (before ROC)
+    nan_scores = np.isnan(flat_scores).sum()
+    inf_scores = np.isinf(flat_scores).sum()
+    total_scores = len(flat_scores)
+
+    if nan_scores > 0 or inf_scores > 0:
+        print(f"\n⚠️  [SCORES] NaN/Inf detected in anomaly scores!")
+        print(f"   - NaN: {nan_scores} / {total_scores} ({100 * nan_scores / total_scores:.2f}%)")
+        print(f"   - Inf: {inf_scores} / {total_scores} ({100 * inf_scores / total_scores:.2f}%)")
+        print(f"   - This will corrupt ROC/AUC calculation!")
+
+    nan_scores = np.isnan(flat_labels).sum()
+    inf_scores = np.isinf(flat_labels).sum()
+    total_scores = len(flat_labels)
+
+    if nan_scores > 0 or inf_scores > 0:
+        print(f"\n⚠️  [SCORES] NaN/Inf detected in anomaly scores!")
+        print(f"   - NaN: {nan_scores} / {total_scores} ({100 * nan_scores / total_scores:.2f}%)")
+        print(f"   - Inf: {inf_scores} / {total_scores} ({100 * inf_scores / total_scores:.2f}%)")
+        print(f"   - This will corrupt ROC/AUC calculation!")
+
+
+    # Compute ROC curve
     fpr, tpr, thresholds = roc_curve(flat_labels, flat_scores)
     roc_auc = auc(fpr, tpr)
 
     # ==============================
-    # STIMA F1 DA TPR/FPR
+    # F1 ESTIMATION FROM TPR/FPR
     # ==============================
     n_pos = int(flat_labels.sum())
     n_neg = len(flat_labels) - n_pos
 
-    # Prendiamo TPR e FPR di Youden
+    # Use Youden's index
     ix_youden = np.argmax(tpr - fpr)
     rec_est = tpr[ix_youden]
     fpr_val = fpr[ix_youden]
@@ -723,24 +815,25 @@ def test_anomaly_step(
     prec_est = (rec_est * n_pos) / (rec_est * n_pos + fpr_val * n_neg + 1e-12)
     f1_est = 2 * (prec_est * rec_est) / (prec_est + rec_est + 1e-12)
 
-    # Vecchia stima F1 empirica basata sulle soglie (commentata)
-    # candidate_thresholds = np.quantile(flat_scores, np.linspace(0, 1, num_thresh))
-    # f1s = [f1_score(flat_labels, (flat_scores >= t).astype(int)) for t in candidate_thresholds]
-    # ix_f1 = np.argmax(f1s)
+    print(f"\n[TEST_ANOMALY] Metrics computed successfully:")
+    print(f"   - ROC AUC: {roc_auc:.4f}")
+    print(f"   - F1: {f1_est:.4f}")
+    print(f"   - TPR: {rec_est:.4f}")
+    print(f"   - FPR: {fpr_val:.4f}")
 
     # ==============================
     # 7) BUILD RETURN OBJECT
     # ==============================
     metrics_dict = {
         "metrics_results": {
-            "val_anomaly_scores": val_anomaly_scores,      # [N, T]
-            "val_labels": val_labels,                      # [N, T]
+            "val_anomaly_scores": val_anomaly_scores,  # [N, T]
+            "val_labels": val_labels,  # [N, T]
 
             "val_roc_auc": roc_auc,
             "val_fpr": fpr_val,
             "val_tpr": rec_est,
             "val_best_thresh_youden": thresholds[ix_youden],
-            "val_best_thresh_f1": None,  # non usiamo più soglie empiriche
+            "val_best_thresh_f1": None,  # deprecated
             "val_f1_score": f1_est,
             "val_precision": prec_est,
             "val_recall": rec_est,
@@ -752,6 +845,9 @@ def test_anomaly_step(
         "sampled_normal_indices": idx_main,
         "normal_error_source": normal_error_source
     }
+
+    return metrics_dict, idx_main
+
 
     '''
     # Flatten per timestep
@@ -1082,11 +1178,27 @@ def adjust_model_for_finetuning(
         device='cuda:0'
 ):
     """
-    Adjust the model for fine-tuning when input dimensions change,
-    optionally freeze layers, and patch forward to handle adapters.
+    Adjust the model for fine-tuning when input dimensions change.
 
-    Conv1D and Conv2D supported. Adapters map input/output between
-    fine-tuning and pre-training shapes.
+    Supports multiple fine-tuning strategies:
+    - adaptive_layer: Learnable Conv2D adapters with spatial context
+    - linear_proj: Linear/non-linear feature projection
+    - latent_space: Reinitialize latent layers (random init)
+    - soft_latent_space: Preserve latent dimensions for weight restoration (pre-trained)
+
+    Args:
+        fine_tuning_cfg: Fine-tuning configuration
+        model: Model to adjust
+        checkpoint: Pre-trained checkpoint
+        pre_feats: Pre-training features
+        fine_feats: Fine-tuning features
+        pre_seq_len: Pre-training sequence length
+        fine_seq_len: Fine-tuning sequence length
+        conv_type: 'conv_ae1d' or 'conv_ae2d'
+        device: Device to use
+
+    Returns:
+        Adjusted model
     """
 
     features_changed = pre_feats != fine_feats
@@ -1095,13 +1207,29 @@ def adjust_model_for_finetuning(
     print(f"🔍 Pre-training: feats={pre_feats}, seq={pre_seq_len}")
     print(f"🔍 Fine-tuning: feats={fine_feats}, seq={fine_seq_len}")
 
-    def update_latent(model, old_flattened, new_flattened, device='cuda:0'):
+    # =========================================================================
+    # HELPER FUNCTIONS
+    # =========================================================================
+
+    def update_latent(model, new_flattened, new_latent_dim):
         """
-        Aggiorna la dimensione del latent space ricreando i layer Linear
-        con inizializzazione Kaiming Normal.
+        Update latent space dimension by replacing linear layers.
+        Creates new layers with Kaiming normal initialization.
+
+        Args:
+            model: Autoencoder model (already on device)
+            new_flattened: New flattened size after conv layers
+            new_latent_dim: New latent dimension
+
+        Returns:
+            model: Updated model (on same device)
+
+        Raises:
+            RuntimeError: If required layers are not found or update fails
         """
 
         def init_kaiming_linear(layer, mode='fan_in'):
+            """Initialize linear layer with Kaiming normal."""
             nn.init.kaiming_normal_(layer.weight, mode=mode, nonlinearity='relu')
             if layer.bias is not None:
                 nn.init.zeros_(layer.bias)
@@ -1109,18 +1237,29 @@ def adjust_model_for_finetuning(
         encoder = model.encoder
         decoder = model.decoder
 
-        compression_factor = encoder.compression_factor
-        new_latent_dim = int(new_flattened // compression_factor)
+        # Auto-detect device
+        try:
+            device = next(model.parameters()).device
+            print(f"\n🔧 Updating Latent Space:")
+            print(f"   - Detected device:  {device}")
+        except StopIteration:
+            # Model has no parameters (shouldn't happen)
+            device = torch.device('cpu')
+            print(f"\n⚠️  WARNING: Could not detect device, using CPU")
 
-        print(f"Updating latent: old_flattened={old_flattened} → new_flattened={new_flattened}")
-        print(f"New latent dim = {new_latent_dim}")
+        print(f"   - New flatten size: {new_flattened}")
+        print(f"   - New latent dim:   {new_latent_dim}")
+        print(f"   - Compression On Feaures (not on Inputs!!!):      {new_flattened / new_latent_dim:.1f}:1")
 
-        # ---------------------------
-        # ENCODER: to_latent
-        # ---------------------------
+        # Update encoder: to_latent
+        encoder_updated = False
+
         for name, module in encoder.named_modules():
             if isinstance(module, nn.Linear) and "to_latent" in name.lower():
+                old_in_features = module.in_features
+                old_out_features = module.out_features
 
+                # ✅ Create new layer on SAME device as model
                 new_layer = nn.Linear(new_flattened, new_latent_dim).to(device)
                 init_kaiming_linear(new_layer)
 
@@ -1132,16 +1271,24 @@ def adjust_model_for_finetuning(
 
                 setattr(parent, parts[-1], new_layer)
 
-                print(f"✅ Replaced encoder.{name} with Linear({new_flattened} → {new_latent_dim})")
+                print(f"   ✅ Encoder: {name}")
+                print(f"      Old: Linear({old_in_features} → {old_out_features})")
+                print(f"      New: Linear({new_flattened} → {new_latent_dim})")
+
+                encoder_updated = True
+
+        if not encoder_updated:
+            raise RuntimeError("❌ ERROR: No 'to_latent' layer found in encoder!")
 
         encoder.flattened_size = new_flattened
         encoder.latent_dim = new_latent_dim
 
-        # ---------------------------
-        # DECODER: latent_to_flatten
-        # ---------------------------
+        # Update decoder: latent_to_flatten
+        decoder_updated = False
         for name, module in decoder.named_modules():
             if isinstance(module, nn.Linear) and "latent_to_flatten" in name.lower():
+                old_in_features = module.in_features
+                old_out_features = module.out_features
 
                 new_layer = nn.Linear(new_latent_dim, new_flattened).to(device)
                 init_kaiming_linear(new_layer)
@@ -1150,25 +1297,132 @@ def adjust_model_for_finetuning(
                 parent = decoder
                 for p in parts[:-1]:
                     parent = getattr(parent, p)
-
                 setattr(parent, parts[-1], new_layer)
 
-                print(f"✅ Replaced decoder.{name} with Linear({new_latent_dim} → {new_flattened})")
+                print(f"   ✅ Decoder: {name}")
+                print(f"      Old: Linear({old_in_features} → {old_out_features})")
+                print(f"      New: Linear({new_latent_dim} → {new_flattened})")
+                decoder_updated = True
+
+        if not decoder_updated:
+            raise RuntimeError("❌ ERROR: No 'latent_to_flatten' layer found in decoder!")
 
         decoder.flattened_size = new_flattened
         decoder.latent_dim = new_latent_dim
 
-        print("✔ Latent space update complete\n")
+        print(f"\n✔  Latent space update complete!")
         return model
 
-    # -------------------------------
-    # 0️⃣ Freeze Layers Function
-    # -------------------------------
+    def validate_freeze_policy(mode, freeze_layers, is_fallback=False):
+        """
+        Validate and inform about freeze policy compatibility with fine-tuning mode.
+
+        This function only issues WARNINGS, never blocks execution.
+        The actual freeze protection is handled by freeze_layers_with_logging.
+
+        Key distinction:
+        - latent_space: Random init latent → Will be PROTECTED automatically
+        - soft_latent_space: Pre-trained latent → Can be frozen safely
+
+        Args:
+            mode: Fine-tuning mode
+            freeze_layers: Freeze specification
+            is_fallback: If True, indicates automatic fallback occurred
+        """
+
+        if freeze_layers is None or freeze_layers == '0':
+            return  # No freezing, all modes compatible
+
+        if isinstance(freeze_layers, int):
+            freeze_layers = str(freeze_layers)
+
+        # Convert to list
+        if isinstance(freeze_layers, str):
+            freeze_list = [freeze_layers]
+        else:
+            freeze_list = list(freeze_layers)
+
+        warnings = []
+
+        # =========================================================================
+        # Inform about mode-specific behavior
+        # =========================================================================
+
+        if mode == 'latent_space':
+            # latent_space = RANDOM INIT → Will be protected automatically
+            if any(freeze in freeze_list for freeze in
+                   ['encoder-bottleneck', 'encoder_bottleneck', 'bottleneck', 'all']):
+
+                if is_fallback:
+                    warnings.append(
+                        f"⚠️  AUTOMATIC FALLBACK to 'latent_space' mode:\n"
+                        f"   → Latent layers have RANDOM INIT → Will be PROTECTED automatically\n"
+                        f"   → freeze_layers='{freeze_layers}' will freeze backbone only\n"
+                        f"   → Latent layers will remain TRAINABLE (mode has precedence)\n"
+                        f"   → This is the expected behavior"
+                    )
+                else:
+                    warnings.append(
+                        f"ℹ️  Mode 'latent_space' with freeze_layers='{freeze_layers}':\n"
+                        f"   → Latent layers have RANDOM INIT → Will be PROTECTED automatically\n"
+                        f"   → Requested freeze will apply to backbone layers only\n"
+                        f"   → Latent layers will remain TRAINABLE (mode protection has precedence)\n"
+                        f"   → This is the expected behavior - no action needed"
+                    )
+
+        elif mode == 'soft_latent_space':
+            # soft_latent_space = PRE-TRAINED WEIGHTS → Can freeze bottleneck
+            if any(freeze in freeze_list for freeze in ['encoder-bottleneck', 'encoder_bottleneck', 'bottleneck']):
+                warnings.append(
+                    f"✅ Mode 'soft_latent_space' with freeze bottleneck:\n"
+                    f"   → Latent weights will be RESTORED from checkpoint\n"
+                    f"   → Bottleneck will be FROZEN (pre-trained weights preserved)\n"
+                    f"   → This is a VALID configuration for transfer learning"
+                )
+
+            if 'all' in freeze_list:
+                warnings.append(
+                    f"ℹ️  Mode 'soft_latent_space' with freeze_layers='all':\n"
+                    f"   → This will freeze the ENTIRE model including latent layers\n"
+                    f"   → Only adapters (if present) will be trainable\n"
+                    f"   → Make sure this is intentional"
+                )
+
+        # Adapter-based modes: adapters always protected
+        if mode in ['adaptive_layer', 'linear_proj', 'conv2d_adapter']:
+            if 'all' in freeze_list:
+                warnings.append(
+                    f"ℹ️  Mode '{mode}' with freeze_layers='all':\n"
+                    f"   → Adapters will remain TRAINABLE (always protected)\n"
+                    f"   → Backbone will be frozen"
+                )
+
+        # Display warnings (informative only)
+        if warnings:
+            print("\n" + "=" * 80)
+            print("📋 FREEZE POLICY INFORMATION:")
+            print("=" * 80)
+            for warning in warnings:
+                print(f"\n{warning}")
+            print("\n" + "=" * 80)
+        else:
+            print(f"✅ Freeze policy: '{freeze_layers}' with mode '{mode}'")
+
     def freeze_layers_with_logging(model, freeze_layers, fine_tuning_mode=None):
         """
-        Congela selettivamente i layer del modello secondo freeze_layers.
-        Usa get_module_type() per classificazione robusta.
+        Freeze model layers selectively based on freeze_layers specification.
+        Uses get_module_type() for robust classification.
+
+        Special handling for latent layers:
+        - latent_space mode: Latent layers are PROTECTED (random init, must train)
+        - soft_latent_space mode: Latent layers CAN be frozen (pre-trained weights)
+
+        Args:
+            model: Model to freeze
+            freeze_layers: Freeze specification
+            fine_tuning_mode: Fine-tuning mode for special handling
         """
+
         print("\n" + "=" * 80)
         print("🧊 FREEZE-LAYERS: STARTING PROCEDURE")
         print("=" * 80)
@@ -1180,20 +1434,23 @@ def adjust_model_for_finetuning(
         elif isinstance(freeze_layers, str):
             freeze_layers = [freeze_layers]
 
-        # Caso speciale: '0' → nessun freeze
+        # Special case: '0' means no freezing
         if "0" in freeze_layers:
-            print("\nℹ️ Freeze layers = '0' → no freezing applied")
+            print("\nℹ️  Freeze layers = '0' → no freezing applied")
             freeze_layers = []
 
         # =====================================================
-        # Identifica layer protetti
+        # Protected Layers
         # =====================================================
         always_protected = ["adapter", "adaptive"]
         mode_protected = []
 
-        is_latent_strategy = fine_tuning_mode in ["latent_space", "hard_latent_space"]
+        # CRITICAL: Only latent_space (random init) protects latent layers
+        # soft_latent_space (pre-trained) allows freezing latent layers
+        is_random_init_latent = (fine_tuning_mode == "latent_space")
+        is_pretrained_latent = (fine_tuning_mode == "soft_latent_space")
 
-        if is_latent_strategy:
+        if is_random_init_latent:
             mode_protected = [
                 "to_latent",
                 "latent_to_flatten",
@@ -1201,24 +1458,20 @@ def adjust_model_for_finetuning(
                 "encoder_layer",
                 "reshape"
             ]
-            print(f"\n⚙️ Fine-tuning mode = '{fine_tuning_mode}' → Latent LINEAR layers MUST be trainable")
-            print(f"   Protected keywords: {mode_protected}")
+            print(f"\n⚙️  Fine-tuning mode = 'latent_space'")
+            print(f"   → Latent layers have RANDOM INIT → MUST be trainable")
+            print(f"   → Protected keywords: {mode_protected}")
+
+        elif is_pretrained_latent:
+            print(f"\n⚙️  Fine-tuning mode = 'soft_latent_space'")
+            print(f"   → Latent layers have PRE-TRAINED weights → CAN be frozen")
+            print(f"   → No special protection for latent layers")
 
         def is_always_protected(name):
             return any(k in name.lower() for k in always_protected)
 
         def is_mode_protected(name):
             return any(k in name.lower() for k in mode_protected)
-
-        # =====================================================
-        # Validazione configurazione conflittuale
-        # =====================================================
-        if is_latent_strategy and ("encoder-bottleneck" in freeze_layers or "encoder_bottleneck" in freeze_layers):
-            print("\n⚠️ WARNING: Conflicting configuration detected!")
-            print(f"  - fine_tuning_mode='{fine_tuning_mode}' requires latent layers TRAINABLE")
-            print(f"  - freeze_layers contains 'encoder-bottleneck' which tries to freeze them")
-            print(f"  → Resolution: Latent layers will remain TRAINABLE (mode takes precedence)")
-            print()
 
         def freeze_module(name, module):
             for p in module.parameters(recurse=True):
@@ -1230,23 +1483,23 @@ def adjust_model_for_finetuning(
             for p in module.parameters(recurse=True):
                 p.requires_grad = True
 
-        # =====================================================
-        # Apply Freeze Logic
-        # =====================================================
+        # =====================================================================
+        # Apply freeze logic
+        # =====================================================================
         for name, module in model.named_modules():
             if not name:  # Skip root
                 continue
 
             module_type = get_module_type(name)
 
-            # Check 1: SEMPRE protetti (adapter, adaptive)
+            # Check 1: Always protected (adapter, adaptive)
             if is_always_protected(name):
                 keep_module(name, module, "(always protected)")
                 continue
 
-            # Check 2: Protetti da MODALITÀ (latent se latent_strategy)
+            # Check 2: Mode protected (only for latent_space with random init)
             if is_mode_protected(name):
-                keep_module(name, module, f"(protected by mode={fine_tuning_mode})")
+                keep_module(name, module, f"(protected by mode={fine_tuning_mode} - random init)")
                 continue
 
             # Check 3: Freeze 'all'
@@ -1256,7 +1509,7 @@ def adjust_model_for_finetuning(
 
             # Check 4: Freeze 'encoder-bottleneck'
             if "encoder-bottleneck" in freeze_layers or "encoder_bottleneck" in freeze_layers:
-                if module_type in ["encoder", "bottleneck_conv", "bottleneck"]:
+                if module_type in ["encoder", "bottleneck_conv", "bottleneck", "latent"]:
                     freeze_module(name, module)
                     continue
                 else:
@@ -1272,7 +1525,7 @@ def adjust_model_for_finetuning(
                     keep_module(name, module, "(not in encoder-decoder)")
                     continue
 
-            # Check 6: Freeze singoli componenti
+            # Check 6: Freeze individual components
             if "encoder" in freeze_layers and module_type == "encoder":
                 freeze_module(name, module)
                 continue
@@ -1281,11 +1534,11 @@ def adjust_model_for_finetuning(
                 freeze_module(name, module)
                 continue
 
-            if "bottleneck" in freeze_layers and module_type in ["bottleneck_conv", "bottleneck"]:
+            if "bottleneck" in freeze_layers and module_type in ["bottleneck_conv", "bottleneck", "latent"]:
                 freeze_module(name, module)
                 continue
 
-            # Check 7: Freeze numeric (primi N layer)
+            # Check 7: Freeze numeric (first N layers)
             if any(item.isdigit() for item in freeze_layers):
                 numeric_layers = [int(item) for item in freeze_layers if item.isdigit()]
                 max_n = max(numeric_layers)
@@ -1300,124 +1553,536 @@ def adjust_model_for_finetuning(
 
         print("\n✅ FREEZE COMPLETE\n" + "=" * 80 + "\n")
 
+    # =========================================================================
+    # FINE-TUNING MODE IMPLEMENTATIONS
+    # =========================================================================
+
+    def apply_adaptive_layer_mode(model, cfg, pre_feats, fine_feats, pre_seq_len, fine_seq_len, device):
+        """
+        Apply adaptive_layer fine-tuning mode.
+        Creates learnable Conv2D adapters for input/output transformation.
+
+        Args:
+            model: Model to modify
+            cfg: Configuration
+            pre_feats, fine_feats: Feature dimensions
+            pre_seq_len, fine_seq_len: Sequence lengths
+            device: Device
+
+        Returns:
+            Modified model
+        """
+
+        print("⚙️  Fine-tuning mode: 'adaptive_layer' (learnable Conv2D adapters)")
+
+        # Get adapter configuration
+        hidden_dim = cfg.opt.get('adapter_hidden_dim', 32)
+        use_residual = True
+        num_layers = 1
+
+        print(f"   Configuration:")
+        print(f"      - Hidden dim: {hidden_dim}")
+        print(f"      - Residual: {use_residual}")
+        print(f"      - Num layers: {num_layers}")
+
+        # Create INPUT adapter
+        adapter_in = create_feature_adapter(
+            pre_feats=pre_feats,
+            pre_seq_len=pre_seq_len,
+            fine_feats=fine_feats,
+            fine_seq_len=fine_seq_len,
+            cfg=cfg,
+            adapter_type='input',
+            hidden_dim=hidden_dim,
+            use_residual=use_residual,
+            num_layers=num_layers
+        )
+        model.input_adapter = adapter_in.to(device)
+
+        # Create OUTPUT adapter
+        adapter_out = create_feature_adapter(
+            pre_feats=pre_feats,
+            pre_seq_len=pre_seq_len,
+            fine_feats=fine_feats,
+            fine_seq_len=fine_seq_len,
+            cfg=cfg,
+            adapter_type='output',
+            hidden_dim=hidden_dim,
+            use_residual=use_residual,
+            num_layers=num_layers
+        )
+        model.output_adapter = adapter_out.to(device)
+
+        print(f"\n   ✅ Adaptive layer adapters created!")
+        return model
+
+    def apply_linear_proj_mode(model, cfg, pre_feats, fine_feats, pre_seq_len, fine_seq_len, device):
+        """
+        Apply linear_proj fine-tuning mode.
+        Creates linear/non-linear projection adapters.
+
+        Args:
+            model: Model to modify
+            cfg: Configuration
+            pre_feats, fine_feats: Feature dimensions
+            pre_seq_len, fine_seq_len: Sequence lengths
+            device: Device
+
+        Returns:
+            Modified model
+        """
+
+        print("⚙️  Fine-tuning mode: 'linear_proj' (feature projection)")
+
+        # Get adapter configuration
+        use_nonlinear = cfg.opt.get('adapter_use_nonlinear', True)
+        hidden_dim = cfg.opt.get('adapter_hidden_dim', 32)
+
+        print(f"   Configuration:")
+        print(f"      - Type: {'Non-linear' if use_nonlinear else 'Linear'}")
+        if use_nonlinear:
+            print(f"      - Hidden dim: {hidden_dim}")
+
+        # Create INPUT adapter
+        adapter_in = create_projection_adapter(
+            pre_feats=pre_feats,
+            pre_seq_len=pre_seq_len,
+            fine_feats=fine_feats,
+            fine_seq_len=fine_seq_len,
+            cfg=cfg,
+            adapter_type='input',
+            use_nonlinear=use_nonlinear,
+            hidden_dim=hidden_dim
+        )
+        model.input_adapter = adapter_in.to(device)
+
+        # Create OUTPUT adapter
+        adapter_out = create_projection_adapter(
+            pre_feats=pre_feats,
+            pre_seq_len=pre_seq_len,
+            fine_feats=fine_feats,
+            fine_seq_len=fine_seq_len,
+            cfg=cfg,
+            adapter_type='output',
+            use_nonlinear=use_nonlinear,
+            hidden_dim=hidden_dim
+        )
+        model.output_adapter = adapter_out.to(device)
+
+        print(f"\n   ✅ Projection adapters created!")
+        return model
+
+    def apply_latent_space_mode(model, checkpoint, pre_feats, fine_feats, pre_seq_len, fine_seq_len):
+        """
+        Apply latent_space fine-tuning mode.
+        Reinitializes latent layers ONLY if dimensions don't match required size.
+
+        Args:
+            model: Model to modify
+            checkpoint: Pre-trained checkpoint
+            pre_feats, fine_feats: Feature dimensions
+            pre_seq_len, fine_seq_len: Sequence lengths
+
+        Returns:
+            Modified model
+        """
+
+        print("⚙️  Fine-tuning mode: 'latent_space' (reinitialize latent if needed)")
+
+        # Retrieve checkpoint dimensions
+        old_latent_dim = checkpoint.get('cfg', {}).get('model', {}).get("latent_dim")
+        old_flattened_feats = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size")
+        old_input_size = pre_feats * pre_seq_len
+
+        # Retrieve current model dimensions
+        current_flattened = getattr(model.encoder, "flattened_size")
+        current_latent = getattr(model.encoder, "latent_dim")
+        new_input_size = fine_feats * fine_seq_len
+
+        compression_factor = getattr(model.encoder, "compression_factor")
+        compression_type = getattr(model.encoder, "compression_type", 'on_features')
+
+        print(f"📊 Dimension Analysis:")
+        print(f"   - Checkpoint:     input={old_input_size}, flatten={old_flattened_feats}, latent={old_latent_dim}")
+        print(f"   - Current model:  input={new_input_size}, flatten={current_flattened}, latent={current_latent}")
+        print(f"   - Compression:    type={compression_type}, factor={compression_factor}")
+
+        # =========================================================================
+        # Calculate REQUIRED latent dimension based on compression strategy
+        # =========================================================================
+
+        if compression_type == 'on_features':
+            # Latent based on flattened size
+            required_latent = int(current_flattened // compression_factor)
+            print(f"   - Required latent (from flatten): {required_latent}")
+
+        elif compression_type == 'on_inputs':
+            # Latent based on input size
+            required_latent = int(new_input_size // compression_factor)
+            print(f"   - Required latent (from input): {required_latent}")
+
+        else:
+            raise ValueError(f"Unknown compression type: {compression_type}")
+
+        # =========================================================================
+        # Determine if update is needed
+        # =========================================================================
+
+        # Check if current latent matches required latent
+        latent_mismatch = (current_latent != required_latent)
+        flatten_mismatch = (current_flattened != old_flattened_feats)
+
+        print(f"\n🔍 Compatibility Check:")
+        print(
+            f"   - Flatten: checkpoint={old_flattened_feats}, current={current_flattened} → {'CHANGED' if flatten_mismatch else 'UNCHANGED'}")
+        print(
+            f"   - Latent:  current={current_latent}, required={required_latent} → {'MISMATCH' if latent_mismatch else 'MATCH'}")
+
+        if latent_mismatch:
+            # Latent dimensions don't match → MUST update
+            print(f"\n🔧 Latent Update REQUIRED:")
+            print(f"   → Current latent ({current_latent}) ≠ Required latent ({required_latent})")
+            print(f"   → Reinitializing latent layers with correct dimensions...")
+
+            # Validation
+            min_latent = 16
+            max_latent = new_input_size * 0.8
+            if required_latent < min_latent:
+                print(f"\n⚠️  WARNING: Latent dim {required_latent} is very small (< {min_latent})")
+            if required_latent > max_latent:
+                print(f"\n⚠️  WARNING: Latent dim {required_latent} > 80% of input")
+
+            # Update latent space with required dimensions
+            model = update_latent(model, current_flattened, required_latent)
+            print(f"   ✅ Latent space updated: {current_latent} → {required_latent}")
+
+        else:
+            # Latent dimensions already match → NO update needed
+            print(f"\n✅ Latent dimensions already CORRECT:")
+            print(f"   → Current latent ({current_latent}) = Required latent ({required_latent})")
+            print(f"   → No reinitialization needed!")
+
+            if flatten_mismatch:
+                print(f"\n   ℹ️  Note: Flatten changed ({old_flattened_feats} → {current_flattened})")
+                print(f"      But latent is already correctly sized for new flatten")
+
+        return model
+
+    def apply_soft_latent_space_mode(model, checkpoint, pre_feats, fine_feats, pre_seq_len, fine_seq_len):
+        """
+        Apply soft_latent_space fine-tuning mode.
+
+        Strategy:
+        - If flatten unchanged: Keep original latent dimensions (weights restored later)
+        - If flatten changed: Fall back to latent_space mode (reinitialize)
+
+        CRITICAL: Returns the ACTUAL mode used (may differ from requested if fallback occurs)
+
+        Args:
+            model: Model to modify
+            checkpoint: Pre-trained checkpoint
+            pre_feats, fine_feats: Feature dimensions
+            pre_seq_len, fine_seq_len: Sequence lengths
+
+        Returns:
+            tuple: (model, effective_mode)
+                - model: Modified model
+                - effective_mode: 'soft_latent_space' or 'latent_space' (if fallback)
+        """
+
+        print("⚙️  Fine-tuning mode: 'soft_latent_space' (preserve latent dimensions if possible)")
+
+        # Retrieve dimensions
+        old_flattened = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size")
+        old_latent = checkpoint.get('cfg', {}).get('model', {}).get("latent_dim")
+        new_flattened = getattr(model.encoder, "flattened_size")
+
+        print(f"📊 Dimension Check:")
+        print(f"   - Pre-training: flatten={old_flattened}, latent={old_latent}")
+        print(f"   - Fine-tuning:  flatten={new_flattened}")
+
+        # Check if flatten dimension matches
+        flatten_unchanged = (old_flattened == new_flattened)
+
+        if flatten_unchanged:
+            # TRUE SOFT MODE: Dimensions preserved
+            print(f"\n✅ Flatten UNCHANGED → TRUE soft_latent_space mode")
+            print(f"   Model latent layers will match checkpoint dimensions")
+            print(f"   → Latent weights can be restored in load_pretrained_checkpoint")
+
+            # Verify current model latent dimensions
+            current_latent = getattr(model.encoder, "latent_dim")
+
+            if current_latent != old_latent:
+                print(f"\n⚠️  Current latent ({current_latent}) != Pre-trained latent ({old_latent})")
+                print(f"   Adjusting model to match pre-trained dimensions...")
+
+                # Update to match pre-trained dimensions
+                model = update_latent(model, old_flattened, old_latent)
+                print(f"   ✅ Model adjusted to match pre-trained latent dimensions")
+            else:
+                print(f"   ✓ Model latent dimensions already match: {current_latent}")
+
+            print(f"\n   ✅ SOFT latent space mode: dimensions preserved for weight restoration")
+
+            # Return TRUE soft mode
+            return model, 'soft_latent_space'
+
+        else:
+            # FALLBACK TO LATENT_SPACE: Cannot preserve dimensions
+            print(f"\n⚠️  Flatten CHANGED: {old_flattened} → {new_flattened}")
+            print(f"   ❌ Cannot preserve latent dimensions")
+            print(f"   🔄 FALLING BACK to 'latent_space' mode (random init)")
+            print(f"\n" + "=" * 80)
+            print(f"⚠️  CRITICAL: Effective mode changed to 'latent_space'")
+            print(f"   → Latent layers will be RANDOMLY INITIALIZED")
+            print(f"   → Freeze policy will be RE-VALIDATED for 'latent_space'")
+            print(f"=" * 80)
+
+            # Call latent_space mode
+            model = apply_latent_space_mode(
+                model, checkpoint, pre_feats, fine_feats, pre_seq_len, fine_seq_len
+            )
+
+            # Return EFFECTIVE mode (latent_space, not soft!)
+            return model, 'latent_space'
+
+    # =========================================================================
+    # MAIN LOGIC
+    # =========================================================================
+
+    # Get freeze configuration
     freeze_layers = fine_tuning_cfg.opt.get("freeze_layers", None)
     if freeze_layers:
         print(f"🧊 Requested freeze layers: {freeze_layers}")
 
-    # -------------------------------
-    # 1️⃣ Conv1D
-    # -------------------------------
+    # -------------------------------------------------------------------------
+    # Handle Conv1D
+    # -------------------------------------------------------------------------
     if conv_type.lower() == "conv_ae1d":
+        mode = fine_tuning_cfg.opt.get('fine_tuning_mode', 'adaptive_layer')  # Default mode
         if features_changed:
-            print(f"🔧 Adding Conv1D INPUT adapter: feats {fine_feats} → {pre_feats}")
-            #adapter_in = nn.Conv1d(fine_feats, pre_feats, kernel_size=1)
-            #nn.init.kaiming_normal_(adapter_in.weight)
-            #model.input_adapter = adapter_in.to(device)
 
-            # Input adapter
-            model.input_adapter = nn.Sequential(
-                nn.Conv1d(fine_feats, pre_feats, kernel_size=1),
-                nn.BatchNorm1d(pre_feats),  # ✅ BatchNorm1d (non 2d!)
-                activation_dict[fine_tuning_cfg.model.activation]
-            ).to(device)
-            # Inizializza solo il Conv1d (primo layer del Sequential)
-            nn.init.kaiming_normal_(model.input_adapter[0].weight)  # ✅ [0] = Conv1d layer
+            print(f"🔧 Adjusting Conv1D (features changed: {pre_feats} → {fine_feats})")
+            print(f"⚙️  Fine-tuning mode: '{mode}'")
 
-            print(f"🔧 Adding Conv1D OUTPUT adapter: feats {pre_feats} → {fine_feats}")
+            # =====================================================================
+            # Conv1D Adapter Modes
+            # =====================================================================
 
-            # Output adapter
-            model.output_adapter = nn.Sequential(
-                nn.Conv1d(pre_feats, fine_feats, kernel_size=1),
-                nn.BatchNorm1d(fine_feats),  # ✅ BatchNorm1d
-                activation_dict[fine_tuning_cfg.model.activation]
-            ).to(device)
-            nn.init.kaiming_normal_(model.output_adapter[0].weight)  # ✅ [0]
+            if mode == 'linear_proj':
+                # Linear/Non-linear projection adapter
+                print("   Strategy: Linear/Non-linear feature projection")
 
+                # Get adapter configuration
+                use_nonlinear = fine_tuning_cfg.opt.get('adapter_use_nonlinear', True)
+                hidden_dim = fine_tuning_cfg.opt.get('adapter_hidden_dim', 32)
+
+                print(f"   Configuration:")
+                print(f"      - Type: {'Non-linear' if use_nonlinear else 'Linear'}")
+                if use_nonlinear:
+                    print(f"      - Hidden dim: {hidden_dim}")
+
+                # Create INPUT adapter
+                adapter_in = create_projection_adapter_1d(
+                    pre_feats=pre_feats,
+                    fine_feats=fine_feats,
+                    cfg=fine_tuning_cfg,
+                    adapter_type='input',
+                    use_nonlinear=use_nonlinear,
+                    hidden_dim=hidden_dim
+                )
+                model.input_adapter = adapter_in.to(device)
+
+                # Create OUTPUT adapter
+                adapter_out = create_projection_adapter_1d(
+                    pre_feats=pre_feats,
+                    fine_feats=fine_feats,
+                    cfg=fine_tuning_cfg,
+                    adapter_type='output',
+                    use_nonlinear=use_nonlinear,
+                    hidden_dim=hidden_dim
+                )
+                model.output_adapter = adapter_out.to(device)
+
+                print(f"\n   ✅ Linear projection adapters created!")
+
+            elif mode == 'adaptive_layer':
+                # Conv1D adapter with refinement (original implementation)
+                print("   Strategy: Conv1D with refinement layers")
+
+                # Get activation from config
+                from config import activation_dict
+                activation = activation_dict.get(
+                    fine_tuning_cfg.model.get('activation', 'ELU'),
+                    nn.ELU()
+                )
+
+                # Get adapter configuration
+                adapter_config = fine_tuning_cfg.opt.get('adapter', {})
+                hidden_dim = fine_tuning_cfg.opt.get('adapter_hidden_dim', 32)
+
+                print(f"   Configuration:")
+                print(f"      - Input:  {fine_feats} → {pre_feats}")
+                print(f"      - Output: {pre_feats} → {fine_feats}")
+                print(f"      - Hidden dim: {hidden_dim}")
+                print(f"      - Activation: {fine_tuning_cfg.model.get('activation', 'ELU')}")
+
+                # Input adapter: fine_feats → pre_feats
+                model.input_adapter = nn.Sequential(
+                    # Initial projection
+                    nn.Conv1d(fine_feats, hidden_dim, kernel_size=1),
+                    nn.BatchNorm1d(hidden_dim),
+                    activation,
+                    # Refinement layer with context
+                    nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                    nn.BatchNorm1d(hidden_dim),
+                    activation,
+                    # Final projection
+                    nn.Conv1d(hidden_dim, pre_feats, kernel_size=1)
+                ).to(device)
+
+                # Initialize weights
+                for m in model.input_adapter:
+                    if isinstance(m, nn.Conv1d):
+                        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                        if m.bias is not None:
+                            nn.init.zeros_(m.bias)
+
+                # Output adapter: pre_feats → fine_feats
+                model.output_adapter = nn.Sequential(
+                    # Initial projection
+                    nn.Conv1d(pre_feats, hidden_dim, kernel_size=1),
+                    nn.BatchNorm1d(hidden_dim),
+                    activation,
+                    # Refinement layer with context
+                    nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                    nn.BatchNorm1d(hidden_dim),
+                    activation,
+                    # Final projection
+                    nn.Conv1d(hidden_dim, fine_feats, kernel_size=1)
+                ).to(device)
+
+                # Initialize weights
+                for m in model.output_adapter:
+                    if isinstance(m, nn.Conv1d):
+                        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                        if m.bias is not None:
+                            nn.init.zeros_(m.bias)
+
+                # Count parameters
+                input_params = sum(p.numel() for p in model.input_adapter.parameters())
+                output_params = sum(p.numel() for p in model.output_adapter.parameters())
+
+                print(f"\n   ✅ Conv1D adapters created!")
+                print(f"      - Input adapter:  {input_params:,} parameters")
+                print(f"      - Output adapter: {output_params:,} parameters")
+
+            else:
+                raise ValueError(f"Unsupported fine_tuning_mode for Conv1D: '{mode}'")
+
+        else:
+            print(" no features changes, use pretrained model")
+
+
+        # Apply freeze policy
         if freeze_layers:
-            freeze_layers_with_logging(model, freeze_layers,
-                                       fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode'))
+            freeze_layers_with_logging(
+                model, freeze_layers,
+                fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode')
+            )
 
-        return model
+        return model, mode
 
-    # -------------------------------
-    # 2️⃣ Conv2D
-    # -------------------------------
+    # -------------------------------------------------------------------------
+    # Handle Conv2D
+    # -------------------------------------------------------------------------
     elif conv_type.lower() == "conv_ae2d":
+
+        mode = fine_tuning_cfg.opt.get('fine_tuning_mode', None)
         if features_changed or seq_changed:
             print("🔧 Adjusting Conv2D (features or sequence changed)")
 
-            mode = fine_tuning_cfg.opt.get('fine_tuning_mode', None)
+
+            if mode is None:
+                raise ValueError("fine_tuning_mode must be specified when dimensions change!")
+
+            # Inform about freeze policy (informative only, never blocks)
+            validate_freeze_policy(mode, freeze_layers, is_fallback=False)
+
+            # =================================================================
+            # Apply appropriate mode and get EFFECTIVE mode
+            # =================================================================
+            effective_mode = mode  # Default: effective = requested
 
             if mode == "adaptive_layer":
-                print("⚙️ Fine-tuning mode: 'adaptive_layer' (learnable resizer)")
+                model = apply_adaptive_layer_mode(
+                    model, fine_tuning_cfg, pre_feats, fine_feats,
+                    pre_seq_len, fine_seq_len, device
+                )
 
-                # INPUT adapter: fine → pre
-                adapter_in = AdaptiveLearnableResizer2D(h_in=fine_feats, h_out=pre_feats, channels=1)
-                model.input_adapter = nn.Sequential(
-                    adapter_in,
-                    nn.BatchNorm2d(1),
-                    activation_dict[fine_tuning_cfg.model.activation]
-                ).to(device)
-                print(f"🔧 Added Conv2D INPUT adapter: {fine_feats},{fine_seq_len} → {pre_feats},{pre_seq_len}")
-
-                # OUTPUT adapter: pre → fine
-                adapter_out = AdaptiveLearnableResizer2D(h_in=pre_feats, h_out=fine_feats, channels=1)
-                model.output_adapter = nn.Sequential(
-                    adapter_out,
-                    nn.BatchNorm2d(1),
-                    activation_dict[fine_tuning_cfg.model.activation]
-                ).to(device)
-                print(f"🔧 Added Conv2D OUTPUT adapter: {pre_feats},{pre_seq_len} → {fine_feats},{fine_seq_len}")
+            elif mode == "linear_proj":
+                model = apply_linear_proj_mode(
+                    model, fine_tuning_cfg, pre_feats, fine_feats,
+                    pre_seq_len, fine_seq_len, device
+                )
 
             elif mode == "latent_space":
-                # Recupera dimensione flatten vecchia e nuova
-                old_flattened = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size", None)
-                new_flattened = getattr(getattr(model, "encoder", None), "flattened_size", None)
-                compression_factor = getattr(getattr(model, "encoder", None), "compression_factor", 1)
-                new_latent_dim = int(new_flattened // compression_factor) if new_flattened is not None else None
+                model = apply_latent_space_mode(
+                    model, checkpoint, pre_feats, fine_feats,
+                    pre_seq_len, fine_seq_len
+                )
 
-                print(f"  - old_flattened: {old_flattened}")
-                print(f"  - new_flattened: {new_flattened}")
-                print(f"  - new_latent_dim (computed): {new_latent_dim}")
+            elif mode == "soft_latent_space":
+                # CRITICAL: soft_latent_space may fall back to latent_space
+                model, effective_mode = apply_soft_latent_space_mode(
+                    model, checkpoint, pre_feats, fine_feats,
+                    pre_seq_len, fine_seq_len
+                )
 
-                if old_flattened != new_flattened:
-                    print(f"🔧 Flattened size changed: {old_flattened} → {new_flattened}. Updating latent space...")
-                    model = update_latent(model, old_flattened, new_flattened, device=device)
-                else:
-                    print("✅ Flattened size unchanged — latent space update not needed")
+                # ✅ If mode changed due to AUTOMATIC fallback, inform user
+                if effective_mode != mode:
+                    mode = effective_mode
+                    print(f"\n" + "=" * 80)
+                    print(f"🔄 AUTOMATIC MODE FALLBACK")
+                    print(f"=" * 80)
+                    print(f"   Requested:  soft_latent_space")
+                    print(f"   Effective:  latent_space (due to flatten change)")
+                    print(f"   Freeze:     {freeze_layers}")
+                    print(f"\n⚙️  AUTOMATIC PROTECTION:")
+                    print(f"   → Latent layers will be PROTECTED automatically")
+                    print(f"   → Freeze will apply to backbone only")
+                    print(f"   → Latent space remains TRAINABLE (mode has precedence)")
+                    print(f"\n✅ Proceeding with automatic protection...")
+                    print(f"=" * 80 + "\n")
 
-            elif mode == "hard_latent_space":
-                # Recupera dimensione flatten vecchia e nuova
-                old_flattened = checkpoint.get('cfg', {}).get('model', {}).get("flattened_size", None)
-                new_flattened = getattr(getattr(model, "encoder", None), "flattened_size", None)
-                compression_factor = getattr(getattr(model, "encoder", None), "compression_factor", 1)
-                new_latent_dim = int(new_flattened // compression_factor) if new_flattened is not None else None
-
-                print(f"  - old_flattened: {old_flattened}")
-                print(f"  - new_flattened: {new_flattened}")
-                print(f"  - new_latent_dim (computed): {new_latent_dim}")
-
-                if old_flattened != new_flattened:
-                    print(f"🔧 Flattened size changed: {old_flattened} → {new_flattened}. Updating latent space...")
-                    model = update_latent(model, old_flattened, new_flattened, device=device)
-                else:
-                    print(f"🔧 HARD LATENT SPACE MODE: Forcing latent space update even though size unchanged")
-                    model = update_latent(model, old_flattened, new_flattened, device=device)
+                    # Inform about freeze policy with fallback context
+                    validate_freeze_policy(effective_mode, freeze_layers, is_fallback=True)
 
             else:
-                raise ValueError(f"Unsupported fine_tuning_mode for Conv2D adjustment: {mode}")
+                raise ValueError(f"Unsupported fine_tuning_mode: '{mode}'")
 
+            # =================================================================
+            # Apply freeze policy with EFFECTIVE mode
+            # Protection is handled automatically by freeze_layers_with_logging
+            # =================================================================
             if freeze_layers:
-                freeze_layers_with_logging(model, freeze_layers,
-                                           fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode'))
+                print(f"\n🧊 Applying freeze policy with mode: '{effective_mode}'")
+                freeze_layers_with_logging(
+                    model, freeze_layers,
+                    fine_tuning_mode=effective_mode
+                )
 
         else:
             print("✅ Feature and sequence dimensions identical — no adapter needed")
-            if freeze_layers:
-                freeze_layers_with_logging(model, freeze_layers,
-                                           fine_tuning_mode=fine_tuning_cfg.opt.get('fine_tuning_mode'))
 
-        return model
+            if freeze_layers:
+                freeze_layers_with_logging(
+                    model, freeze_layers,
+                    fine_tuning_mode=mode
+                )
+
+        return model, mode
 
     else:
         raise ValueError(f"Unsupported conv_type '{conv_type}' (expected 'conv_ae1d' or 'conv_ae2d')")
@@ -1500,13 +2165,14 @@ def load_pretrained_checkpoint(model, config, device):
         loaded: Boolean indicating if weights were loaded successfully
     """
     # Check if fine-tuning is enabled and checkpoint path is provided
+    mode = None
     if not config.opt.get('fine_tuning', False):
         print("ℹ️ Training from scratch (no fine-tuning)")
-        return model, False
+        return model, False, mode
 
     if not config.opt.get('checkpoint_path', False):
         print("⚠️ WARNING: fine_tuning=True but no checkpoint_path provided!")
-        return model, False
+        raise Exception("Please provide a checkpoint path")
 
     checkpoint_path = config.opt.get('checkpoint_path')
     print(f"\n{'=' * 60}")
@@ -1535,7 +2201,7 @@ def load_pretrained_checkpoint(model, config, device):
             print(f"⚠️ Dimension mismatch detected between pre-training and fine-tuning datasets!")
             strict = False
 
-            model = adjust_model_for_finetuning(
+            model, mode = adjust_model_for_finetuning(
                 config,
                 model,
                 checkpoint=checkpoint,
@@ -1606,7 +2272,7 @@ def load_pretrained_checkpoint(model, config, device):
 
         print('Model to fine tune', model)
 
-        return model, True
+        return model, True, mode
 
     except Exception as e:
         print(f"❌ Error loading checkpoint: {e}")
@@ -1671,61 +2337,1089 @@ class AdaptiveLearnableResizer2D(nn.Module):
         # deterministic resize
         x = F.interpolate(x, size=(self.h_out, x.shape[-1]), mode='bilinear', align_corners=False)
         # learnable conv
-        x = self.conv1x1(x)
+        #x = self.conv1x1(x)
         return x
-''' 
-class AdaptiveLearnableResizer2D(nn.Module):
+# models/utils/adapters.py
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from config import activation_dict
+
+
+class FeatureAdapter2D(nn.Module):
     """
-    Learnable resizer that adapts the spatial height (H_in → H_out)
-    using Conv2D or ConvTranspose2D.
-    Automatically computes padding / output_padding to reach the target size.
+    Learnable adapter for changing feature dimensions in Conv2D time series.
+
+    Automatically handles:
+    - Feature dimension change (height)
+    - Optional temporal dimension change (width)
+    - Configurable activation function
+    - Hidden channels for capacity
+    - Spatial context awareness
+    - Optional residual connection
+
+    Args:
+        h_in: Input height (number of features in fine-tuning)
+        h_out: Output height (number of features in pre-training)
+        w_in: Input width (sequence length in fine-tuning), optional
+        w_out: Output width (sequence length in pre-training), optional
+        channels: Number of input/output channels (default: 1)
+        hidden_dim: Hidden dimension for capacity (default: 32)
+        activation: Activation function (nn.Module)
+        use_residual: Add residual connection (default: True)
+        kernel_size_h: Kernel size along feature dimension (default: 3)
+        num_layers: Number of transformation layers (default: 2)
+
+    Example:
+        >>> # INPUT adapter: 19×16 → 16×16
+        >>> adapter_in = FeatureAdapter2D(
+        ...     h_in=19, h_out=16, w_in=16, w_out=16,
+        ...     channels=1, hidden_dim=32,
+        ...     activation=nn.ELU()
+        ... )
+        >>> x = torch.randn(4, 1, 19, 16)
+        >>> y = adapter_in(x)
+        >>> print(y.shape)  # torch.Size([4, 1, 16, 16])
     """
-    def __init__(self, h_in, h_out, kernel_size=3, channels=1):
+
+    def __init__(
+        self,
+        h_in,
+        h_out,
+        w_in=None,
+        w_out=None,
+        channels=1,
+        hidden_dim=32,
+        activation=None,
+        use_residual=True,
+        kernel_size_h=3,
+        num_layers=2
+    ):
         super().__init__()
+
         self.h_in = h_in
         self.h_out = h_out
-        self.kernel_size = kernel_size
+        self.w_in = w_in
+        self.w_out = w_out
         self.channels = channels
+        self.hidden_dim = hidden_dim
+        self.use_residual = use_residual
 
-        if h_in > h_out:
-            # ✅ Downsample with Conv2d
-            stride = math.ceil(h_in / h_out)
-            padding = math.ceil(((h_out - 1) * stride - h_in + kernel_size) / 2)
-            self.layer = nn.Conv2d(
-                in_channels=channels,
-                out_channels=channels,
-                kernel_size=(kernel_size, 1),
-                stride=(stride, 1),
-                padding=(padding, 0)
-            )
-            self.mode = f"conv_down (stride={stride}, pad={padding})"
+        # Default activation if not provided
+        if activation is None:
+            activation = nn.ELU()
+        self.activation = activation
 
-        elif h_in < h_out:
-            # ✅ Upsample with ConvTranspose2d
-            stride = math.floor(h_out / h_in)
-            padding = kernel_size // 2
+        # Compute padding for 'same' convolution
+        padding_h = kernel_size_h // 2
 
-            H_calc = (h_in - 1) * stride - 2 * padding + kernel_size
-            output_padding = max(0, h_out - H_calc)
+        # Build transformation layers
+        layers = []
 
-            self.layer = nn.ConvTranspose2d(
-                in_channels=channels,
-                out_channels=channels,
-                kernel_size=(kernel_size, 1),
-                stride=(stride, 1),
-                padding=(padding, 0),
-                output_padding=(output_padding, 0)
-            )
-            self.mode = f"conv_transpose_up (stride={stride}, pad={padding}, out_pad={output_padding})"
+        # First layer: expand channels + spatial context
+        layers.extend([
+            nn.Conv2d(
+                channels, hidden_dim,
+                kernel_size=(kernel_size_h, 1),
+                padding=(padding_h, 0),
+                bias=True
+            ),
+            nn.BatchNorm2d(hidden_dim),
+            activation
+        ])
 
-        else:
-            self.layer = nn.Identity()
-            self.mode = "identity"
+        # Middle layers: context refinement
+        for _ in range(num_layers - 1):
+            layers.extend([
+                nn.Conv2d(
+                    hidden_dim, hidden_dim,
+                    kernel_size=(3, 1),
+                    padding=(1, 0),
+                    bias=True
+                ),
+                nn.BatchNorm2d(hidden_dim),
+                activation
+            ])
 
-        # Init pesi (solo se layer learnable)
-        if isinstance(self.layer, (nn.Conv2d, nn.ConvTranspose2d)):
-            nn.init.kaiming_normal_(self.layer.weight, nonlinearity='relu')
+        # Final layer: project back to channels
+        layers.append(
+            nn.Conv2d(hidden_dim, channels, kernel_size=1, bias=True)
+        )
+
+        self.transform = nn.Sequential(*layers)
+
+        self._init_weights()
+
+        # Print configuration
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"\n   🔧 FeatureAdapter2D initialized:")
+        print(f"      Input:  [{channels}, {h_in}, {w_in if w_in else 'W'}]")
+        print(f"      Output: [{channels}, {h_out}, {w_out if w_out else 'W'}]")
+        print(f"      Hidden dim: {hidden_dim}")
+        print(f"      Layers: {num_layers}")
+        print(f"      Residual: {use_residual}")
+        print(f"      Params: {total_params:,}")
+
+    def _init_weights(self):
+        """Initialize weights with Kaiming normal."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
 
     def forward(self, x):
-        return self.layer(x)
-'''
+        """
+        Forward pass with interpolation + learned transformation.
+
+        Args:
+            x: Input tensor [B, C, H_in, W_in]
+
+        Returns:
+            Output tensor [B, C, H_out, W_out]
+        """
+        # Determine target size
+        if self.w_out is not None:
+            target_size = (self.h_out, self.w_out)
+        else:
+            target_size = (self.h_out, x.shape[-1])
+
+        # Interpolate to target dimensions
+        x_interp = F.interpolate(
+            x, size=target_size,
+            mode='bilinear',
+            align_corners=False
+        )
+
+        # Apply learnable transformation
+        x_transformed = self.transform(x_interp)
+
+        # Add residual connection if enabled
+        if self.use_residual:
+            output = x_interp + x_transformed
+        else:
+            output = x_transformed
+
+        return output
+
+
+# =============================================================================
+# FACTORY FUNCTION - Easy Creation from Config
+# =============================================================================
+
+def create_feature_adapter(
+    pre_feats,
+    pre_seq_len,
+    fine_feats,
+    fine_seq_len,
+    cfg,
+    adapter_type='input',
+    hidden_dim=32,
+    use_residual=True,
+    num_layers=2
+):
+    """
+    Factory function to create adapter from config.
+
+    Args:
+        pre_feats: Number of features in pre-training model
+        pre_seq_len: Sequence length in pre-training model
+        fine_feats: Number of features in fine-tuning data
+        fine_seq_len: Sequence length in fine-tuning data
+        cfg: Config object with model.activation
+        adapter_type: 'input' or 'output'
+        hidden_dim: Hidden dimension (default: 32)
+        use_residual: Use residual connection (default: True)
+        num_layers: Number of transformation layers (default: 2)
+
+    Returns:
+        FeatureAdapter2D instance
+
+    Example:
+        >>> # INPUT adapter: fine → pre (19×16 → 16×16)
+        >>> adapter_in = create_feature_adapter(
+        ...     pre_feats=16, pre_seq_len=16,
+        ...     fine_feats=19, fine_seq_len=16,
+        ...     cfg=cfg, adapter_type='input'
+        ... )
+
+        >>> # OUTPUT adapter: pre → fine (16×16 → 19×16)
+        >>> adapter_out = create_feature_adapter(
+        ...     pre_feats=16, pre_seq_len=16,
+        ...     fine_feats=19, fine_seq_len=16,
+        ...     cfg=cfg, adapter_type='output'
+        ... )
+    """
+
+    # Get activation from config
+    activation_name = cfg.model.get('activation', 'ELU')
+    activation = activation_dict.get(activation_name, nn.ELU())
+
+    # Determine input/output dimensions based on adapter type
+    if adapter_type == 'input':
+        # INPUT: fine-tuning → pre-training
+        h_in = fine_feats
+        h_out = pre_feats
+        w_in = fine_seq_len
+        w_out = pre_seq_len
+        print(f"\n🔧 Creating INPUT adapter:")
+        print(f"   Fine-tuning [{fine_feats}×{fine_seq_len}] → Pre-training [{pre_feats}×{pre_seq_len}]")
+
+    elif adapter_type == 'output':
+        # OUTPUT: pre-training → fine-tuning
+        h_in = pre_feats
+        h_out = fine_feats
+        w_in = pre_seq_len
+        w_out = fine_seq_len
+        print(f"\n🔧 Creating OUTPUT adapter:")
+        print(f"   Pre-training [{pre_feats}×{pre_seq_len}] → Fine-tuning [{fine_feats}×{fine_seq_len}]")
+
+    else:
+        raise ValueError(f"adapter_type must be 'input' or 'output', got '{adapter_type}'")
+
+    # Create adapter
+    adapter = FeatureAdapter2D(
+        h_in=h_in,
+        h_out=h_out,
+        w_in=w_in if w_in != w_out else None,  # Only specify if different
+        w_out=w_out if w_in != w_out else None,
+        channels=1,
+        hidden_dim=hidden_dim,
+        activation=activation,
+        use_residual=use_residual,
+        num_layers=num_layers
+    )
+
+    return adapter
+
+
+# =============================================================================
+# LIGHTWEIGHT VERSION - If you want minimal parameters
+# =============================================================================
+
+class LightweightFeatureAdapter2D(nn.Module):
+    """
+    Lightweight version with fewer parameters.
+    Good for quick experiments or limited GPU memory.
+    """
+
+    def __init__(self, h_in, h_out, w_in=None, w_out=None,
+                 channels=1, hidden_dim=16, activation=None):
+        super().__init__()
+
+        self.h_out = h_out
+        self.w_out = w_out
+
+        if activation is None:
+            activation = nn.ELU()
+
+        # Single transformation layer
+        self.transform = nn.Sequential(
+            nn.Conv2d(channels, hidden_dim, kernel_size=(3, 1), padding=(1, 0)),
+            nn.BatchNorm2d(hidden_dim),
+            activation,
+            nn.Conv2d(hidden_dim, channels, kernel_size=1)
+        )
+
+        self._init_weights()
+
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"\n   🔧 LightweightFeatureAdapter2D: {total_params:,} params")
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        target_size = (self.h_out, self.w_out if self.w_out else x.shape[-1])
+        x = F.interpolate(x, size=target_size, mode='bilinear', align_corners=False)
+        x = self.transform(x)
+        return x
+
+
+# =============================================================================
+# ADAPTER 1: Feature Projection (Linear/Non-linear)
+# =============================================================================
+
+class FeatureProjectionAdapter1D(nn.Module):
+    """
+    LIKE Conv2D adapter: Interpolate first, then refine
+    """
+
+    def forward(self, x):
+        """
+        Args:
+            x: [B, n_in, L]
+        Returns:
+            [B, n_out, L]
+        """
+        B, C, L = x.shape
+
+        # 1. INTERPOLATE to target dimension (baseline)
+        # [B, n_in, L] → [B, n_out, L]
+        x_interp = F.interpolate(
+            x.unsqueeze(1),  # [B, 1, n_in, L]
+            size=(self.n_out, L),
+            mode='bilinear',
+            align_corners=False
+        ).squeeze(1)  # [B, n_out, L]
+
+        # 2. TRANSFORM (refine baseline)
+        # Permute for Linear: [B, n_out, L] → [B, L, n_out]
+        x_temp = x_interp.permute(0, 2, 1)
+
+        # Apply transformation (can operate on n_out now)
+        x_temp = self.adapter_linear(x_temp)  # [B, L, n_out]
+
+        if self.use_batchnorm:
+            x_temp = x_temp.permute(0, 2, 1)
+            x_temp = self.adapter_bn(x_temp)
+            x_temp = x_temp.permute(0, 2, 1)
+
+        x_transformed = x_temp.permute(0, 2, 1)  # [B, n_out, L]
+
+        # 3. RESIDUAL (combine)
+        output = x_interp + x_transformed
+        #        └─n_out─┘   └─n_out──┘  ✅ SAME dimension!
+
+        return output
+
+
+class FeatureProjectionAdapter1D_bkp(nn.Module):
+    """
+    Feature projection adapter for Conv1D with BatchNorm.
+    Projects features along the channel dimension while preserving sequence length.
+    Uses BatchNorm1d for consistency with the base Conv1D model.
+
+    Input:  [B, n_in, L]
+    Output: [B, n_out, L]
+
+    Args:
+        n_in: Input number of features
+        n_out: Output number of features
+        use_nonlinear: If True, use non-linear projection (default: False)
+        hidden_dim: Hidden dimension for non-linear (default: 32)
+        activation: Activation function (default: GELU)
+        use_batchnorm: Use BatchNorm1d (default: True for consistency)
+    """
+
+    def __init__(self, n_in, n_out, use_nonlinear=False, hidden_dim=32,
+                 activation=None, use_batchnorm=True):
+        super().__init__()
+        self.n_in = n_in
+        self.n_out = n_out
+        self.use_nonlinear = use_nonlinear
+        self.use_batchnorm = use_batchnorm
+
+        if activation is None:
+            activation = nn.GELU()
+
+        if not use_nonlinear:
+            # Linear projection with optional BatchNorm
+            self.adapter_linear = nn.Linear(n_in, n_out)
+            if use_batchnorm:
+                self.adapter_bn = nn.BatchNorm1d(n_out)
+        else:
+            # Non-linear projection with BatchNorm
+            self.adapter_linear1 = nn.Linear(n_in, hidden_dim)
+            if use_batchnorm:
+                self.adapter_bn1 = nn.BatchNorm1d(hidden_dim)
+            self.adapter_activation = activation
+            self.adapter_linear2 = nn.Linear(hidden_dim, n_out)
+            if use_batchnorm:
+                self.adapter_bn2 = nn.BatchNorm1d(n_out)
+
+        self._init_weights()
+
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"\n   🔧 FeatureProjectionAdapter1D initialized:")
+        print(f"      Features: {n_in} → {n_out}")
+        print(f"      Type: {'Non-linear (hidden_dim={})'.format(hidden_dim) if use_nonlinear else 'Linear'}")
+        print(f"      BatchNorm: {use_batchnorm}")
+        print(f"      Parameters: {total_params:,}")
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        """
+        Forward pass with proper BatchNorm handling.
+
+        Args:
+            x: Input tensor [B, n_in, L]
+
+        Returns:
+            Output tensor [B, n_out, L]
+        """
+        B, C, L = x.shape
+        assert C == self.n_in, f"Expected {self.n_in} input features, got {C}"
+
+        # Permute to apply linear layer on features dimension
+        # [B, n_in, L] → [B, L, n_in]
+        x = x.permute(0, 2, 1)
+
+        if not self.use_nonlinear:
+            # Linear projection: [B, L, n_in] → [B, L, n_out]
+            x = self.adapter_linear(x)
+
+            if self.use_batchnorm:
+                # BatchNorm1d expects [B, C] or [B, C, L]
+                # Permute: [B, L, n_out] → [B, n_out, L]
+                x = x.permute(0, 2, 1)
+                x = self.adapter_bn(x)  # [B, n_out, L] ✅
+                x = x.permute(0, 2, 1)  # [B, L, n_out]
+        else:
+            # Non-linear projection
+            # First layer
+            x = self.adapter_linear1(x)  # [B, L, hidden]
+
+            if self.use_batchnorm:
+                x = x.permute(0, 2, 1)  # [B, hidden, L]
+                x = self.adapter_bn1(x)
+                x = x.permute(0, 2, 1)  # [B, L, hidden]
+
+            x = self.adapter_activation(x)
+
+            # Second layer
+            x = self.adapter_linear2(x)  # [B, L, n_out]
+
+            if self.use_batchnorm:
+                x = x.permute(0, 2, 1)  # [B, n_out, L]
+                x = self.adapter_bn2(x)
+                x = x.permute(0, 2, 1)  # [B, L, n_out]
+
+        # Permute back: [B, L, n_out] → [B, n_out, L]
+        x = x.permute(0, 2, 1)
+
+        return x
+
+
+class FeatureProjectionAdapter(nn.Module):
+    """
+    Linear/Non-linear projection adapter for feature dimension transformation.
+    Uses BatchNorm for consistency with the base Conv2D model.
+
+    All parameters have 'adapter' in their names for proper LR assignment.
+
+    Args:
+        n_in: Input number of features
+        n_out: Output number of features
+        use_nonlinear: If True, use non-linear projection (default: False)
+        hidden_dim: Hidden dimension for non-linear (default: 32)
+        activation: Activation function (default: GELU)
+        use_batchnorm: Use BatchNorm1d (default: True for consistency)
+    """
+
+    def __init__(
+            self,
+            n_in,
+            n_out,
+            use_nonlinear=False,
+            hidden_dim=32,
+            activation=None,
+            use_batchnorm=True
+    ):
+        super().__init__()
+
+        self.n_in = n_in
+        self.n_out = n_out
+        self.use_nonlinear = use_nonlinear
+        self.use_batchnorm = use_batchnorm
+
+        if activation is None:
+            activation = nn.GELU()
+
+        if not use_nonlinear:
+            # Linear projection with optional BatchNorm
+            self.adapter_linear = nn.Linear(n_in, n_out)
+            if use_batchnorm:
+                self.adapter_bn = nn.BatchNorm1d(n_out)
+        else:
+            # Non-linear projection with BatchNorm
+            self.adapter_linear1 = nn.Linear(n_in, hidden_dim)
+            if use_batchnorm:
+                self.adapter_bn1 = nn.BatchNorm1d(hidden_dim)
+            self.adapter_activation = activation
+            self.adapter_linear2 = nn.Linear(hidden_dim, n_out)
+            if use_batchnorm:
+                self.adapter_bn2 = nn.BatchNorm1d(n_out)
+
+        self._init_weights()
+
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"\n   🔧 FeatureProjectionAdapter initialized:")
+        print(f"      Features: {n_in} → {n_out}")
+        print(f"      Type: {'Non-linear (hidden={})'.format(hidden_dim) if use_nonlinear else 'Linear'}")
+        print(f"      BatchNorm: {use_batchnorm}")
+        print(f"      Parameters: {total_params:,}")
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        """
+        Args:
+            x: [B, C, H_in, W]
+        Returns:
+            [B, C, H_out, W]
+        """
+        B, C, H_in, W = x.shape
+        assert H_in == self.n_in, f"Expected {self.n_in} input features, got {H_in}"
+
+        # Reshape: treat each timestep independently
+        # [B, C, H_in, W] → [B*W, C*H_in]
+        x = x.permute(0, 3, 1, 2).contiguous()  # [B, W, C, H_in]
+        x = x.view(B * W, C * H_in)  # [B*W, C*H_in]
+
+        if not self.use_nonlinear:
+            # Linear projection
+            x = self.adapter_linear(x)  # [B*W, C*H_out]
+
+            if self.use_batchnorm:
+                # Reshape for BatchNorm1d: [B*W, C*H_out] → [B*W, n_out]
+                # BatchNorm1d expects [B, C] or [B, C, L]
+                # Our case: [B*W, n_out] ✅
+                x = self.adapter_bn(x)
+        else:
+            # Non-linear projection
+            x = self.adapter_linear1(x)  # [B*W, hidden]
+
+            if self.use_batchnorm:
+                x = self.adapter_bn1(x)
+
+            x = self.adapter_activation(x)
+            x = self.adapter_linear2(x)  # [B*W, C*H_out]
+
+            if self.use_batchnorm:
+                x = self.adapter_bn2(x)
+
+        # Reshape back: [B*W, C*H_out] → [B, C, H_out, W]
+        x = x.view(B, W, C, self.n_out)  # [B, W, C, H_out]
+        x = x.permute(0, 2, 3, 1).contiguous()  # [B, C, H_out, W]
+
+        return x
+
+
+# =============================================================================
+# ADAPTER 2: Conv2D Feature Mapper (with context)
+# =============================================================================
+
+class Conv2DFeatureAdapter(nn.Module):
+    """
+    Conv2D-based feature adapter with spatial context.
+
+    All parameters have 'adapter' in their names for proper LR assignment.
+
+    Args:
+        h_in: Input features
+        h_out: Output features
+        channels: Number of channels (default: 1)
+        hidden_dim: Hidden channels (default: 64)
+        kernel_size: Kernel size along features (default: 5)
+        num_layers: Number of conv layers (default: 3)
+        activation: Activation function
+        use_residual: Use residual connection (default: True)
+    """
+
+    def __init__(
+            self,
+            h_in,
+            h_out,
+            channels=1,
+            hidden_dim=64,
+            kernel_size=5,
+            num_layers=3,
+            activation=None,
+            use_residual=True
+    ):
+        super().__init__()
+
+        self.h_in = h_in
+        self.h_out = h_out
+        self.channels = channels
+        self.use_residual = use_residual
+
+        if activation is None:
+            activation = nn.GELU()
+
+        kernel_h = min(kernel_size, h_in, h_out)
+        padding_h = kernel_h // 2
+
+        layers = []
+
+        # First layer
+        layers.extend([
+            nn.Conv2d(
+                channels, hidden_dim,
+                kernel_size=(kernel_h, 1),
+                padding=(padding_h, 0),
+                bias=True
+            ),
+            nn.BatchNorm2d(hidden_dim),
+            activation
+        ])
+
+        # Middle layers
+        for _ in range(num_layers - 2):
+            layers.extend([
+                nn.Conv2d(
+                    hidden_dim, hidden_dim,
+                    kernel_size=(3, 1),
+                    padding=(1, 0),
+                    bias=True
+                ),
+                nn.BatchNorm2d(hidden_dim),
+                activation
+            ])
+
+        # Final layer
+        layers.append(
+            nn.Conv2d(hidden_dim, channels, kernel_size=1, bias=True)
+        )
+
+        # ✅ Nome include "adapter"
+        self.adapter_transform = nn.Sequential(*layers)
+
+        self._init_weights()
+
+        total_params = sum(p.numel() for p in self.parameters())
+        print(f"\n   🔧 Conv2DFeatureAdapter initialized:")
+        print(f"      Features: {h_in} → {h_out}")
+        print(f"      Hidden channels: {hidden_dim}")
+        print(f"      Kernel size: ({kernel_h}, 1)")
+        print(f"      Num layers: {num_layers}")
+        print(f"      Residual: {use_residual}")
+        print(f"      Parameters: {total_params:,}")
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        """
+        Args:
+            x: [B, C, H_in, W]
+        Returns:
+            [B, C, H_out, W]
+        """
+        B, C, H, W = x.shape
+
+        # Apply Conv2D transformation
+        x_mapped = self.adapter_transform(x)
+
+        # Resize if needed
+        if x_mapped.shape[2] != self.h_out:
+            x_mapped = F.interpolate(
+                x_mapped,
+                size=(self.h_out, W),
+                mode='bilinear',
+                align_corners=False
+            )
+
+        # Residual
+        if self.use_residual:
+            x_interp = F.interpolate(
+                x,
+                size=(self.h_out, W),
+                mode='bilinear',
+                align_corners=False
+            )
+            x_mapped = x_mapped + x_interp
+
+        return x_mapped
+
+
+# =============================================================================
+# Factory Functions
+# =============================================================================
+
+def create_projection_adapter(
+        pre_feats,
+        pre_seq_len,
+        fine_feats,
+        fine_seq_len,
+        cfg,
+        adapter_type='input',
+        use_nonlinear=False,
+        hidden_dim=32
+):
+    """Create linear/non-linear projection adapter."""
+    from config import activation_dict
+
+    activation_name = cfg.model.get('activation', 'GELU')
+    activation = activation_dict.get(activation_name, nn.GELU())
+
+    if adapter_type == 'input':
+        n_in, n_out = fine_feats, pre_feats
+        print(f"\n🔧 Creating INPUT projection adapter:")
+        print(f"   [{fine_feats}×{fine_seq_len}] → [{pre_feats}×{pre_seq_len}]")
+    elif adapter_type == 'output':
+        n_in, n_out = pre_feats, fine_feats
+        print(f"\n🔧 Creating OUTPUT projection adapter:")
+        print(f"   [{pre_feats}×{pre_seq_len}] → [{fine_feats}×{fine_seq_len}]")
+    else:
+        raise ValueError(f"adapter_type must be 'input' or 'output'")
+
+    adapter = FeatureProjectionAdapter(
+        n_in=n_in,
+        n_out=n_out,
+        use_nonlinear=use_nonlinear,
+        hidden_dim=hidden_dim,
+        activation=activation
+    )
+
+    return adapter
+
+
+def create_conv2d_adapter(
+        pre_feats,
+        pre_seq_len,
+        fine_feats,
+        fine_seq_len,
+        cfg,
+        adapter_type='input',
+        hidden_dim=64,
+        kernel_size=5,
+        num_layers=3,
+        use_residual=True
+):
+    """Create Conv2D-based feature adapter."""
+    from config import activation_dict
+
+    activation_name = cfg.model.get('activation', 'GELU')
+    activation = activation_dict.get(activation_name, nn.GELU())
+
+    if adapter_type == 'input':
+        h_in, h_out = fine_feats, pre_feats
+        print(f"\n🔧 Creating INPUT Conv2D adapter:")
+        print(f"   [{fine_feats}×{fine_seq_len}] → [{pre_feats}×{pre_seq_len}]")
+    elif adapter_type == 'output':
+        h_in, h_out = pre_feats, fine_feats
+        print(f"\n🔧 Creating OUTPUT Conv2D adapter:")
+        print(f"   [{pre_feats}×{pre_seq_len}] → [{fine_feats}×{fine_seq_len}]")
+    else:
+        raise ValueError(f"adapter_type must be 'input' or 'output'")
+
+    adapter = Conv2DFeatureAdapter(
+        h_in=h_in,
+        h_out=h_out,
+        channels=1,
+        hidden_dim=hidden_dim,
+        kernel_size=kernel_size,
+        num_layers=num_layers,
+        activation=activation,
+        use_residual=use_residual
+    )
+
+    return adapter
+
+
+
+
+
+def create_projection_adapter_1d(
+        pre_feats,
+        fine_feats,
+        cfg,
+        adapter_type='input',
+        use_nonlinear=False,
+        hidden_dim=32
+):
+    """
+    Create linear/non-linear projection adapter for Conv1D.
+
+    Args:
+        pre_feats: Pre-training features (16)
+        fine_feats: Fine-tuning features (19)
+        cfg: Config
+        adapter_type: 'input' or 'output'
+        use_nonlinear: Use non-linear projection
+        hidden_dim: Hidden dimension if non-linear
+
+    Returns:
+        FeatureProjectionAdapter1D instance
+    """
+    from config import activation_dict
+
+    activation_name = cfg.model.get('activation', 'ELU')
+    activation = activation_dict.get(activation_name, nn.ELU())
+
+    # ✅ Map adapter type to actual data flow
+    if adapter_type == 'input':
+        # INPUT adapter receives fine-tuning data, outputs to pre-trained model
+        n_in = fine_feats  # 19 - receives from dataset
+        n_out = pre_feats  # 16 - outputs to model
+        print(f"\n🔧 Creating INPUT projection adapter (Conv1D):")
+        print(f"   Fine-tuning data [{fine_feats} features] → Pre-trained model [{pre_feats} features]")
+        print(f"   Adapter: {n_in} → {n_out}")
+
+    elif adapter_type == 'output':
+        # OUTPUT adapter receives from pre-trained model, outputs fine-tuning data
+        n_in = pre_feats  # 16 - receives from model
+        n_out = fine_feats  # 19 - outputs to dataset
+        print(f"\n🔧 Creating OUTPUT projection adapter (Conv1D):")
+        print(f"   Pre-trained model [{pre_feats} features] → Fine-tuning data [{fine_feats} features]")
+        print(f"   Adapter: {n_in} → {n_out}")
+
+    else:
+        raise ValueError(f"adapter_type must be 'input' or 'output'")
+
+    # ✅ Create adapter with correct dimensions
+    adapter = FeatureProjectionAdapter1D(
+        n_in=n_in,
+        n_out=n_out,
+        use_nonlinear=use_nonlinear,
+        hidden_dim=hidden_dim,
+        activation=activation
+    )
+
+    return adapter
+
+# trainer/utils.py
+
+def get_optimizazion_objects(cfg, model, opt_metric_dict):
+    """
+    Get optimizer, scheduler, criterion, and early stopping.
+
+    Handles MULTIPLE learning rates:
+    - lr: Main learning rate (backbone)
+    - bottleneck_lr: Learning rate for bottleneck layers (0 = use main lr)
+    - adapter_lr: Learning rate for adapters (0 = use main lr)
+
+    Args:
+        cfg: Configuration object
+        model: Neural network model
+        opt_metric_dict: Dictionary containing optimization metric info
+
+    Returns:
+        tuple: (optimizer, scheduler, criterion, early_stopping)
+    """
+
+    def print_all_convs(model):
+        print("=== Encoder Convs ===")
+        for name, module in model.encoder.named_modules():
+            if isinstance(module, torch.nn.Conv2d):
+                print(f"{name}: {module} | weight shape: {tuple(module.weight.shape)}")
+
+        print("\n=== Bottleneck Convs ===")
+        if hasattr(model.encoder, "bottleneck"):
+            for name, module in model.encoder.bottleneck.named_modules():
+                if isinstance(module, torch.nn.Conv2d):
+                    print(f"{name}: {module} | weight shape: {tuple(module.weight.shape)}")
+
+        print("\n=== Decoder Convs ===")
+        for name, module in model.decoder.named_modules():
+            if isinstance(module, (torch.nn.Conv2d, torch.nn.ConvTranspose2d)):
+                conv_type = "ConvTranspose2d" if isinstance(module, torch.nn.ConvTranspose2d) else "Conv2d"
+                print(f"{name}: {conv_type} | weight shape: {tuple(module.weight.shape)}")
+
+    # Esempio di uso
+    print_all_convs(model)
+
+    # ============================================================
+    # HELPER: Robust numeric conversion
+    # ============================================================
+    def to_float(value, default=0.0, param_name="parameter"):
+        """Convert parameter to float, handle string/None cases."""
+        if value is None or value == "":
+            return default
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            print(f"⚠️  Warning: Invalid {param_name} value '{value}', using {default}")
+            return default
+
+    # ============================================================
+    # CONVERT ALL NUMERIC PARAMETERS
+    # ============================================================
+    lr = to_float(cfg.opt.lr, default=0.001, param_name="lr")
+
+    bottleneck_lr = to_float(
+        getattr(cfg.opt, "bottleneck_lr", 0),
+        default=0.0,
+        param_name="bottleneck_lr"
+    )
+
+    adapter_lr = to_float(
+        getattr(cfg.opt, "adapter_lr", 0),
+        default=0.0,
+        param_name="adapter_lr"
+    )
+
+    lr_patience = int(to_float(
+        cfg.opt.lr_patience,
+        default=10,
+        param_name="lr_patience"
+    ))
+
+    es_patience = int(to_float(
+        cfg.opt.es_patience,
+        default=15,
+        param_name="es_patience"
+    )) if hasattr(cfg.opt, 'es_patience') else None
+
+    print("\n=================== OPTIMIZER SETUP ===================")
+    print(f"Main LR:          {lr}")
+    print(f"Bottleneck LR:    {bottleneck_lr}  (0 → use main LR)")
+    print(f"Adapter LR:       {adapter_lr}  (0 → use main LR)")
+    print(f"LR Patience:      {lr_patience}")
+    print(f"ES Patience:      {es_patience}")
+    print("--------------------------------------------------------")
+
+    # ============================================================
+    # IDENTIFY PARAMETER GROUPS
+    # ============================================================
+    adapter_params = []
+    bottleneck_params = []
+    main_params = []
+
+    for name, param in model.named_parameters():
+        # Check for adapter first (highest priority)
+        if "adapter" in name.lower():
+            adapter_params.append(param)
+            print(f"   → Adapter param found: {name}")
+
+        # Check for bottleneck
+        elif "bottleneck" in name.lower():
+            bottleneck_params.append(param)
+            print(f"   → Bottleneck param found: {name}")
+
+        # Everything else is main
+        else:
+            print(f"   → Main param found: {name}")
+            main_params.append(param)
+
+    # ============================================================
+    # STATISTICS
+    # ============================================================
+    print("\n📊 Parameter Groups:")
+    print(f"   - Adapter params:    {len(adapter_params):4d}")
+    print(f"   - Bottleneck params: {len(bottleneck_params):4d}")
+    print(f"   - Main params:       {len(main_params):4d}")
+    print(f"   - Total:             {len(adapter_params) + len(bottleneck_params) + len(main_params):4d}")
+
+    # ============================================================
+    # BUILD PARAMETER GROUPS FOR OPTIMIZER
+    # ============================================================
+    param_groups = []
+
+    # ✅ MAIN PARAMS: Always add (may include adapter/bottleneck if their lr=0)
+    if len(main_params) > 0:
+        param_groups.append({"params": main_params, "lr": lr, "name": "main"})
+        print(f"\n✓ Main params: LR = {lr}")
+
+    # ✅ BOTTLENECK PARAMS
+    if len(bottleneck_params) > 0:
+        if bottleneck_lr > 0:
+            # Separate LR for bottleneck
+            param_groups.append({
+                "params": bottleneck_params,
+                "lr": bottleneck_lr,
+                "name": "bottleneck"
+            })
+            print(f"✓ Bottleneck params: LR = {bottleneck_lr}  (separate)")
+        else:
+            # Use main LR (add to main group)
+            if len(param_groups) > 0 and param_groups[0]["name"] == "main":
+                param_groups[0]["params"].extend(bottleneck_params)
+                print(f"✓ Bottleneck params: LR = {lr}  (same as main)")
+            else:
+                param_groups.append({
+                    "params": bottleneck_params,
+                    "lr": lr,
+                    "name": "bottleneck_with_main"
+                })
+                print(f"✓ Bottleneck params: LR = {lr}  (same as main)")
+
+    # ✅ ADAPTER PARAMS
+    if len(adapter_params) > 0:
+        if adapter_lr > 0:
+            # Separate LR for adapter
+            param_groups.append({
+                "params": adapter_params,
+                "lr": adapter_lr,
+                "name": "adapter"
+            })
+            print(f"✓ Adapter params: LR = {adapter_lr}  🔥 (separate, HIGH for random init!)")
+        else:
+            # Use main LR (add to main group)
+            if len(param_groups) > 0 and param_groups[0]["name"] == "main":
+                param_groups[0]["params"].extend(adapter_params)
+                print(f"✓ Adapter params: LR = {lr}  (same as main)")
+            else:
+                param_groups.append({
+                    "params": adapter_params,
+                    "lr": lr,
+                    "name": "adapter_with_main"
+                })
+                print(f"✓ Adapter params: LR = {lr}  (same as main)")
+
+    # ============================================================
+    # WARNINGS & RECOMMENDATIONS
+    # ============================================================
+    if len(adapter_params) > 0:
+        if adapter_lr == 0:
+            print(f"\n⚠️  Adapter found but adapter_lr=0 → using MAIN lr={lr}")
+            print(f"   ⚠️  Adapters are RANDOM INIT and may converge SLOWLY with low LR!")
+            print(f"   💡 Recommendation: Set adapter_lr={lr * 100:.4f} (100x main lr)")
+        elif adapter_lr < lr * 5:
+            print(f"\n⚠️  adapter_lr={adapter_lr} is only {adapter_lr / lr:.1f}x main lr")
+            print(f"   💡 Recommendation: adapter_lr should be 10-100x for random init adapters")
+
+    if len(bottleneck_params) > 0 and bottleneck_lr == 0:
+        print(f"\n✓ Bottleneck found, using main lr={lr} (bottleneck_lr=0)")
+
+    # ============================================================
+    # CREATE OPTIMIZER
+    # ============================================================
+    print(f"\n>>> Creating optimizer with {len(param_groups)} parameter group(s)")
+
+    optimizer = torch.optim.Adam(param_groups)
+
+    # ============================================================
+    # SCHEDULER, CRITERION, EARLY STOPPING
+    # ============================================================
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode=opt_metric_dict["mode"],
+        factor=0.8,
+        patience=lr_patience,
+        threshold=0.0001,
+        threshold_mode='rel',
+        cooldown=0,
+        min_lr=9e-8,
+        verbose=True
+    )
+
+    criterion = nn.MSELoss()
+    min_delta = 1e-6 if opt_metric_dict["mode"] == "min" else 3e-3
+
+    early_stopping = EarlyStopping(
+        patience=es_patience,
+        min_delta=min_delta,
+        opt_metric_dict=opt_metric_dict
+    ) if es_patience else None
+
+    print("========================================================\n")
+    return optimizer, scheduler, criterion, early_stopping
