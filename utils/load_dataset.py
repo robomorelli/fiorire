@@ -244,6 +244,59 @@ def create_train_val_df_indexes(
 
     def get_anomaly_windows_with_labels(anomalous_idx, df, ano_col, seq_len, total_len):
         """
+        Versione ottimizzata con operazioni vettorizzate.
+        """
+        if len(anomalous_idx) == 0:
+            return np.array([], dtype=np.int64), np.array([], dtype=np.float32).reshape(0, seq_len), set()
+
+        # Pre-estrai le labels come array NumPy una volta sola
+        all_labels = df[ano_col].values.astype(np.float32)
+
+        # Calcola range di start validi per TUTTE le anomalie insieme
+        earliest_starts = np.maximum(0, anomalous_idx - seq_len + 1)
+        latest_starts = np.minimum(anomalous_idx, total_len - seq_len)
+
+        # Filtra anomalie che non possono avere window valide
+        valid_mask = latest_starts >= 0
+        anomalous_idx = anomalous_idx[valid_mask]
+        earliest_starts = earliest_starts[valid_mask]
+        latest_starts = latest_starts[valid_mask]
+
+        if len(anomalous_idx) == 0:
+            return np.array([], dtype=np.int64), np.array([], dtype=np.float32).reshape(0, seq_len), set()
+
+        # Trova tutti i possibili window starts
+        start_ranges = [np.arange(e, l + 1) for e, l in zip(earliest_starts, latest_starts)]
+        all_starts = np.concatenate(start_ranges)
+
+        # Rimuovi duplicati e ordina
+        window_start_indices = np.unique(all_starts)
+
+        # Filtra windows che eccedono il dataframe (safety check, dovrebbe essere già ok)
+        window_start_indices = window_start_indices[window_start_indices + seq_len <= total_len]
+
+        if len(window_start_indices) == 0:
+            return np.array([], dtype=np.int64), np.array([], dtype=np.float32).reshape(0, seq_len), set()
+
+        # Crea label array usando advanced indexing
+        indices = window_start_indices[:, None] + np.arange(seq_len)[None, :]
+        window_labels = all_labels[indices]
+
+        # CORRETTO: window_indices_set come nella versione originale
+        # Vettorizzato per evitare loop Python
+        #all_window_indices = []
+        #for start_idx in window_start_indices:
+        #    all_window_indices.extend(range(start_idx, min(start_idx + seq_len, total_len)))
+        #window_indices_set = set(all_window_indices)
+
+        indices_per_window = [np.arange(start, min(start + seq_len, total_len))
+                              for start in window_start_indices]
+        window_indices_set = set(np.concatenate(indices_per_window))
+
+        return window_start_indices, window_labels, window_indices_set
+
+    def get_anomaly_windows_with_labels_bkp(anomalous_idx, df, ano_col, seq_len, total_len):
+        """
         Create windows around anomalous points and extract labels for each window.
 
         Args:
@@ -707,7 +760,7 @@ def prepare_shared_configuration(cfg):
             print(f"   ✓ Average anomaly density: {avg_density:.2%}")
 
     # 3. Fit scaler on CLEAN train data
-    print("\n3️⃣ Fitting scaler on CLEAN train data...")
+    print("\n3️⃣ Fitting scaler on CLEAN train data...and transform the entire dataset (included anomalous windows)")
     scaler, df_scaled, scaler_params = get_scaler(
         cfg=cfg,
         df_fit=train_df_for_scaling,
