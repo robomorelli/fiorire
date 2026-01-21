@@ -389,7 +389,7 @@ if __name__ == "__main__":
                             help="Ray head node address (default: None for local cluster)")
         parser.add_argument("--password", default=None,
                             help="Ray cluster password")
-        parser.add_argument("--config_file", "-c", default='conv_ae2D_ESA',
+        parser.add_argument("--config_file", "-c", default='conv_ae1D_ESA',
                             help="Config file name")
         parser.add_argument("--trials_per_node", default=1, type=int,
                             help="trial per node")
@@ -401,7 +401,7 @@ if __name__ == "__main__":
                             help="Number of trials to run")
         parser.add_argument("--wandb", default=0, type=int,
                             help="Enable W&B logging (0/1)")
-        parser.add_argument("--project_name", default='conv_ae2D',
+        parser.add_argument("--project_name", default='conv_ae1D',
                             help="W&B project name")
         parser.add_argument("--entity", default='robmorelli',
                             help="W&B entity name")

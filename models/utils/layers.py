@@ -191,10 +191,10 @@ def deconv_block1D(
                                 dilation=conv_dilation,
                                 *args, **kwargs))
 
-    if batch_norm:
-        layers.append(nn.BatchNorm1d(out_f))
-    if activation:
-        layers.append(activation)
+        if batch_norm:
+            layers.append(nn.BatchNorm1d(out_f))
+        if activation:
+            layers.append(activation)
 
     return nn.Sequential(*layers)
 
@@ -292,30 +292,82 @@ def bottleneck1D(in_channels, out_channels, activation=nn.ReLU(), bottleneck_act
 '''
 
 
-def bottleneck1D(bottleneck_conv, activation=nn.ReLU(),
-                 flattened=True, flattened_size=None, latent_dim=None,
-                 bottleneck_activation=nn.ReLU(), batch_norm=True, bottleneck_batch_norm=False):
+def bottleneck1D_fc(doubling_conv, activation=nn.ReLU(),
+                    flattened_size=None, latent_dim=None,
+                    bottleneck_activation=nn.ReLU(), batch_norm=True, bottleneck_batch_norm=False):
     """
-    Creates a 1D bottleneck with optional 1x1 conv, BatchNorm and activation.
+    Creates a 1D FC bottleneck.
+
+    Architecture:
+        [Optional Doubling Conv1x1] → Flatten → Linear → [BatchNorm] → [Activation]
+
+    Args:
+        doubling_conv: Optional nn.Conv1d (1x1 conv that doubles channels)
+        activation: Activation after doubling conv
+        flattened_size: Size after flattening
+        latent_dim: Target latent dimension
+        bottleneck_activation: Final activation (after FC)
+        batch_norm: BatchNorm after doubling conv
+        bottleneck_batch_norm: BatchNorm after FC
+
+    Returns:
+        nn.Sequential bottleneck module
     """
     layers = OrderedDict()
 
-    if bottleneck_conv is not None:
-        layers["bottleneck_conv"] = bottleneck_conv
+    # Optional 1x1 doubling conv
+    if doubling_conv is not None:
+        layers["doubling_conv"] = doubling_conv
         if batch_norm:
-            layers["bottleneck_bn"] = nn.BatchNorm1d(bottleneck_conv.out_channels)
+            layers["doubling_bn"] = nn.BatchNorm1d(doubling_conv.out_channels)
         if activation is not None:
-            layers["act1"] = activation
+            layers["act_doubling"] = activation
 
-    if flattened:
-        layers["flatten"] = nn.Flatten()
-        layers["to_latent"] = nn.Linear(flattened_size, latent_dim)
-        if bottleneck_batch_norm:
-            layers["batch_norm_latent"] = nn.BatchNorm1d(latent_dim)
-        if bottleneck_activation is not None:
-            layers["act"] = bottleneck_activation
-    else:
-        raise NotImplementedError("Non-flattened bottleneck not implemented yet.")
+    # FC compression
+    layers["flatten"] = nn.Flatten()
+    layers["to_latent"] = nn.Linear(flattened_size, latent_dim)
+    if bottleneck_batch_norm:
+        layers["batch_norm_latent"] = nn.BatchNorm1d(latent_dim)
+    if bottleneck_activation is not None:
+        layers["act_final"] = bottleneck_activation
+
+    return nn.Sequential(layers)
+
+
+def bottleneck1D_convolutional(doubling_conv, compression_conv, activation=nn.ReLU(),
+                               bottleneck_activation=nn.ReLU(), batch_norm=True):
+    """
+    Creates a 1D convolutional bottleneck (no FC).
+
+    Architecture:
+        [Optional Doubling Conv1x1] → Compression Conv1x1 → [BatchNorm] → [Activation]
+
+    Args:
+        doubling_conv: Optional nn.Conv1d (1x1 conv that doubles channels)
+        compression_conv: nn.Conv1d (1x1 conv that compresses channels)
+        activation: Activation after doubling conv
+        bottleneck_activation: Final activation (after compression conv)
+        batch_norm: BatchNorm after each conv
+
+    Returns:
+        nn.Sequential bottleneck module
+    """
+    layers = OrderedDict()
+
+    # Optional 1x1 doubling conv
+    if doubling_conv is not None:
+        layers["doubling_conv"] = doubling_conv
+        if batch_norm:
+            layers["doubling_bn"] = nn.BatchNorm1d(doubling_conv.out_channels)
+        if activation is not None:
+            layers["act_doubling"] = activation
+
+    # Compression conv (mandatory for convolutional bottleneck)
+    layers["compression_conv"] = compression_conv
+    if batch_norm:
+        layers["compression_bn"] = nn.BatchNorm1d(compression_conv.out_channels)
+    if bottleneck_activation is not None:
+        layers["act_final"] = bottleneck_activation
 
     return nn.Sequential(layers)
 
@@ -443,11 +495,11 @@ def deconv_block(in_f, out_f,
             dilation=conv_dilation
         )
 
-    # BatchNorm and activation after deconv
-    if batch_norm:
-        layers['batch_norm'] = nn.BatchNorm2d(out_f)
-    if activation is not None:
-        layers['activation'] = activation
+        # BatchNorm and activation after deconv
+        if batch_norm:
+            layers['batch_norm'] = nn.BatchNorm2d(out_f)
+        if activation is not None:
+            layers['activation'] = activation
 
     return nn.Sequential(layers)
 

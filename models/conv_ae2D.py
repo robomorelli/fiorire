@@ -312,7 +312,7 @@ class CONV_AE2D(nn.Module):
         self.num_layers = model_cfg.num_layers
         self.act = activation_dict.get(model_cfg.get("activation", None), None)
         self.bottleneck_act = activation_dict.get(model_cfg.get("bottleneck_activation", None), None)
-        self.bottleneck_conv = model_cfg.get('bottleneck_conv', True)  # Default
+        self.bottleneck_conv = model_cfg.get('bottleneck_conv', False)  # Default
         self.pool = model_cfg.pool
         self.flattened = model_cfg.flattened
         self.compression_factor = model_cfg.compression_factor if model_cfg.get('compression_factor_on_inputs', None) is None else model_cfg.get('compression_factor_on_inputs', None)
