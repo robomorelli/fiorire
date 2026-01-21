@@ -462,14 +462,14 @@ class Decoder1D(nn.Module):
         if self.decoder_mode == 'mirror':
             # Mirror mode: decoder_head is optional (refinement layer)
             if self.decoder_head:
-                self.decoder_out = nn.Conv1d(in_channels, in_channels, kernel_size=1)
+                self.decoder_out = nn.Conv1d(in_channels, in_channels, kernel_size=self.conv_kernel_size, padding=self.conv_padding)
                 print(f"Decoder1D: Mirror mode with decoder_head - refinement layer ({in_channels}→{in_channels})")
             else:
                 self.decoder_out = None
                 print(f"Decoder1D: Mirror mode without decoder_head - direct reconstruction")
         else:
             # Progressive/base_filters: decoder_head is mandatory
-            self.decoder_out = nn.Conv1d(out_f, in_channels, kernel_size=1)
+            self.decoder_out = nn.Conv1d(out_f, in_channels, kernel_size=self.conv_kernel_size, padding=self.conv_padding)
             print(f"Decoder1D: {self.decoder_mode} mode - mandatory decoder_head ({out_f}→{in_channels})")
 
         self._init_weights()
