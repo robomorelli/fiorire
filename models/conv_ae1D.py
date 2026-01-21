@@ -439,13 +439,17 @@ class Decoder1D(nn.Module):
             else:
                 raise ValueError(f"Unknown decoder_mode: '{self.decoder_mode}'")
 
+            # Determine if this is the last layer AND no decoder_head
+            is_final_layer = (i == num_layers - 1)
+            use_activation = self.act if not (is_final_layer and not self.decoder_head) else None
+
             layers.append((
                 f'dec_lay_{i + 1}',
                 deconv_block1D(
                     in_f, out_f,
                     kernel_size=self.kernel_size,
                     stride=stride,
-                    activation=self.act,
+                    activation=use_activation,  # ⬅️ None if last layer without decoder_head
                     double_deconv=self.double_deconv,
                     output_padding=output_padding[i],
                     conv_kernel_size=self.conv_kernel_size,
