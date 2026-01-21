@@ -401,14 +401,14 @@ if __name__ == "__main__":
                             help="Number of trials to run")
         parser.add_argument("--wandb", default=0, type=int,
                             help="Enable W&B logging (0/1)")
-        parser.add_argument("--project_name", default='conv_ae2D',
+        parser.add_argument("--project_name", default='conv_ae2D_AOC',
                             help="W&B project name")
         parser.add_argument("--entity", default='robmorelli',
                             help="W&B entity name")
         parser.add_argument("--wandb_key",
                             default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
                             help="W&B API key")
-        parser.add_argument("--debug_mode", default=1, type=int,
+        parser.add_argument("--debug_mode", default=0, type=int,
                             help="Run single trial for debugging (0/1)")
 
         parser.add_argument("--ray_memory_gb", default=10, type=int,
