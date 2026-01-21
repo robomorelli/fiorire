@@ -191,10 +191,10 @@ def deconv_block1D(
                                 dilation=conv_dilation,
                                 *args, **kwargs))
 
-    if batch_norm:
-        layers.append(nn.BatchNorm1d(out_f))
-    if activation:
-        layers.append(activation)
+        if batch_norm:
+            layers.append(nn.BatchNorm1d(out_f))
+        if activation:
+            layers.append(activation)
 
     return nn.Sequential(*layers)
 
@@ -443,11 +443,11 @@ def deconv_block(in_f, out_f,
             dilation=conv_dilation
         )
 
-    # BatchNorm and activation after deconv
-    if batch_norm:
-        layers['batch_norm'] = nn.BatchNorm2d(out_f)
-    if activation is not None:
-        layers['activation'] = activation
+        # BatchNorm and activation after deconv
+        if batch_norm:
+            layers['batch_norm'] = nn.BatchNorm2d(out_f)
+        if activation is not None:
+            layers['activation'] = activation
 
     return nn.Sequential(layers)
 
