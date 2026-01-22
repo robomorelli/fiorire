@@ -1,55 +1,66 @@
 import torch
-from torch.utils.data import Dataset
-import pandas as pd
+from numpy.typing import NDArray
 import numpy as np
+from torch.utils.data import Dataset
+from typing import Optional
+from sklearn.preprocessing import StandardScaler
+from robustness.dataset.wombats import AnomalyConfig, apply_random_wombats_anomaly
+
 
 class TimeSeriesDataset(Dataset):
     def __init__(
         self,
-        csv_path,
-        seq_len,
-        stride=1,
-        mean=None,
-        std=None
+        data: np.ndarray,                  # [T, F]
+        seq_len: int,
+        stride: int,
+        scaler: Optional[StandardScaler] = None,
+        anomaly_cfg: Optional[AnomalyConfig] = None,
+        Xok_ref: Optional[np.ndarray] = None,  # [N, W]
     ):
-        """
-        CSV shape: [T, N]
-        Output: [1, N, seq_len]
-        """
+        self.data = data
         self.seq_len = seq_len
         self.stride = stride
+        self.scaler = scaler
+        self.anomaly_cfg = anomaly_cfg
+        self.Xok_ref = Xok_ref
 
-        # Load CSV
-        data = pd.read_csv(csv_path).values.astype(np.float32)
-        # data: [T, N]
+        self.indices = list(range(0, len(data) - seq_len + 1, stride))
 
-        if mean is None:
-            self.mean = data.mean(axis=0, keepdims=True)
-            self.std = data.std(axis=0, keepdims=True) + 1e-8
-        else:
-            self.mean = mean
-            self.std = std
-
-        data = (data - self.mean) / self.std
-        self.data = data
-
-        self.indices = list(
-            range(0, len(data) - seq_len + 1, stride)
-        )
-
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.indices)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> torch.Tensor:
         i = self.indices[idx]
+        window = self.data[i : i + self.seq_len]  # [W, F]
 
-        # [L, N]
-        window = self.data[i:i + self.seq_len]
+        if self.scaler is not None:
+            window = self.scaler.transform(window)
 
-        # → [N, L]
-        window = window.T
+        if self.anomaly_cfg is not None:
+            window = self._inject_anomaly(window)
 
-        # → [1, N, L]
-        window = np.expand_dims(window, axis=0)
+        # [W, F] → [1, F, W]
+        window = torch.from_numpy(window.T).unsqueeze(0)
+        return window.float()
 
-        return torch.from_numpy(window)
+    def _inject_anomaly(self, window: np.ndarray) -> np.ndarray:
+        """
+        Applica una anomalia WOMBATS canale-wise con probabilità anomaly_cfg["ratio"]
+        """
+        # guard obbligatori (per pylance)
+        if self.anomaly_cfg is None or self.Xok_ref is None:
+            return window
+
+        if np.random.rand() > self.anomaly_cfg["ratio"]:
+            return window
+
+        W, F = window.shape
+        channel = np.random.randint(F)
+
+        window[:, channel] = apply_random_wombats_anomaly(
+            signal=window[:, channel],
+            Xok_ref=self.Xok_ref,
+            delta_range=self.anomaly_cfg["delta_range"],
+        )
+
+        return window

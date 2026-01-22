@@ -5,24 +5,24 @@ import fire
 import torch
 
 from robustness.lightning_module.lit_module import LitAutoEncoder
+from robustness.dataset.data_types import Config
 from robustness.dataset.data_module import DataModule
 
 
-
 def main(config_path: str | Path, mode: str = "train"):
-    """
-    Avvia training o test a seconda del parametro 'mode'.
-    mode = "train" -> addestra il modello da zero
-    mode = "test"  -> carica checkpoint (.pt o .ckpt) e valuta sul validation set
-    """
-    cfg = OmegaConf.load(config_path)
+    cfg_default = OmegaConf.structured(Config)   # crea config tipizzata
+    yaml_cfg = OmegaConf.load(config_path)
+    cfg_merged = OmegaConf.merge(cfg_default, yaml_cfg)
 
-    # Inizializza DataModule
-    datamodule = DataModule(cfg)
-    datamodule.setup()  # prepara i dataset
+    # qui cfg_merged è ancora DictConfig/structuredConfig ma compatibile
+    cfg: Config = OmegaConf.to_object(cfg_merged)  #type: ignore
+
+    datamodule = DataModule(cfg, mode=mode)
+    datamodule.setup()
 
     if mode == "train":
-        print("Training from scratch")
+        print("Training: architettura da checkpoint, pesi random")
+
         model = LitAutoEncoder(cfg)
 
         trainer = pl.Trainer(
@@ -31,44 +31,30 @@ def main(config_path: str | Path, mode: str = "train"):
             max_epochs=cfg.trainer.epochs,
             precision=cfg.trainer.precision,
             default_root_dir=cfg.trainer.out_dir,
-            deterministic=True,
-            log_every_n_steps=10
         )
 
         trainer.fit(model, datamodule=datamodule)
 
-
     elif mode == "test":
-        print("Modalità test: carico checkpoint e valuto sul validation set")
+        print("Test: carico modello CON pesi")
+
+        ckpt = cfg.opt.checkpoint_path
         model = LitAutoEncoder(cfg)
 
-        # Carico checkpoint: supporta sia .pt (state_dict) sia .ckpt Lightning
-        checkpoint_path = cfg.opt.get("checkpoint_path")
-        if checkpoint_path is None:
-            raise ValueError("Per test serve un checkpoint nel config.yaml: opt.checkpoint_path")
-
-        if checkpoint_path.endswith(".ckpt"):
-            # Lightning checkpoint
-            model = LitAutoEncoder.load_from_checkpoint(checkpoint_path)
-        elif checkpoint_path.endswith(".pt"):
-            # PyTorch state_dict
-            state_dict = torch.load(checkpoint_path, map_location='cpu')
-            model.load_state_dict(state_dict)
-        else:
-            raise ValueError("Checkpoint deve essere .ckpt o .pt")
-
-        model.eval()  # importantissimo per inference
+        state_dict = torch.load(ckpt, map_location="cpu")
+        model.load_state_dict(state_dict)
+        model.eval()
 
         trainer = pl.Trainer(
             accelerator=cfg.trainer.accelerator,
             devices=cfg.trainer.devices,
         )
 
-        # usa validation loader per test
-        trainer.validate(model, dataloaders=datamodule.val_dataloader())
+        trainer.test(model, datamodule=datamodule)
 
     else:
-        raise ValueError("mode deve essere 'train' oppure 'test'")
+        raise ValueError("mode deve essere 'train' o 'test'")
+
 
 
 if __name__ == "__main__":
