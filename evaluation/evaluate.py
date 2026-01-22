@@ -1,6 +1,7 @@
 """
-Evaluate script: visualize reconstruction errors from a trained model.
-Groups contiguous sequences into blocks and creates one HTML per block.
+Evaluate script: visualize reconstruction errors by concatenating sequences.
+Creates plots with normal sequences (top) and anomalous sequences (bottom) for each channel.
+Divides into blocks of max 500 sequences per plot.
 """
 
 import torch
@@ -45,6 +46,10 @@ def load_metric_dataset(metric_dataset_path, batch_size=32):
     print(f"   ✓ Standardized: {metadata.get('is_standardized', 'N/A')}")
     print(f"   ✓ Strategy: {metadata.get('strategy', 'N/A')}")
 
+    # Print corruption info
+    corruption_config = metadata.get('corruption_config', {})
+    print(f"   ✓ Corruption ratio: {corruption_config.get('corruption_ratio', 'N/A')}")
+
     # Create DataLoader
     metric_loader = DataLoader(
         metric_dataset,
@@ -55,84 +60,52 @@ def load_metric_dataset(metric_dataset_path, batch_size=32):
     return metric_loader, metadata, metric_dataset
 
 
-def identify_contiguous_blocks(indices, seq_len, perc_overlap=0):
-    """
-    Identify contiguous blocks of sequences based on their indices.
-
-    Args:
-        indices: Array of starting indices for sequences
-        seq_len: Sequence length
-        perc_overlap: Percentage overlap between consecutive sequences
-
-    Returns:
-        blocks: List of lists, each containing indices of sequences in a contiguous block
-    """
-    if len(indices) == 0:
-        return []
-
-    # Calculate expected step between consecutive sequences
-    if perc_overlap == 0:
-        expected_step = seq_len
-    else:
-        expected_step = int(seq_len * (1 - perc_overlap))
-
-    # Sort indices
-    sorted_indices = np.sort(indices)
-
-    # Identify blocks
-    blocks = []
-    current_block = [0]  # Start with first sequence index (in sorted array)
-
-    for i in range(1, len(sorted_indices)):
-        actual_step = sorted_indices[i] - sorted_indices[i-1]
-
-        # Check if this sequence is contiguous with previous
-        # Allow some tolerance (±20% of expected_step)
-        tolerance = max(1, int(expected_step * 0.2))
-
-        if abs(actual_step - expected_step) <= tolerance:
-            # Contiguous - add to current block
-            current_block.append(i)
-        else:
-            # Gap detected - start new block
-            blocks.append(current_block)
-            current_block = [i]
-
-    # Add last block
-    if current_block:
-        blocks.append(current_block)
-
-    print(f"\n🔍 Block Analysis:")
-    print(f"   ✓ Total sequences: {len(indices)}")
-    print(f"   ✓ Expected step: {expected_step}")
-    print(f"   ✓ Identified blocks: {len(blocks)}")
-
-    # Print block details
-    for block_idx, block in enumerate(blocks):
-        block_indices = sorted_indices[block]
-        print(f"   → Block {block_idx}: {len(block)} sequences "
-              f"(indices {block_indices[0]} to {block_indices[-1]})")
-
-    return blocks, sorted_indices
-
-
 def compute_reconstruction_errors(model, dataloader, device='cpu', use_error='abs',
-                                   weighting_factor=False, epsilon=1e-3):
+                                  weighting_factor=False, epsilon=1e-3,
+                                  metric_dataset_path=None):
     """
     Compute reconstruction errors for all sequences.
-    Separates normal and anomalous sequences.
+    Uses corruption_mapping from dataset to properly pair sequences.
     """
+    import os  # ← Aggiungi qui se non è già in cima al file
+
     model.eval()
     model.to(device)
 
-    normal_inputs, normal_targets, normal_recons, normal_errors = [], [], [], []
-    anom_inputs, anom_targets, anom_recons, anom_errors, anom_masks = [], [], [], [], []
+    # Detect last layer type
+    last_layer_name = None
+    for name, module in model.named_modules():
+        last_layer_name = type(module).__name__
+    is_conv2d = (last_layer_name == "Conv2d")
 
-    print(f"\n🔍 Computing reconstructions (weighting_factor={weighting_factor})...")
+    print(f"\n🔍 Computing reconstructions...")
+    print(f"   - Last layer type: {last_layer_name}")
+    print(f"   - Will squeeze dimension 1: {is_conv2d}")
+    print(f"   - Weighting factor: {weighting_factor}")
+
+    # Load corruption mapping from dataset file
+    corruption_mapping = None
+    if metric_dataset_path and os.path.exists(metric_dataset_path):
+        print(f"\n   📂 Loading corruption mapping from dataset...")
+        saved_dict = torch.load(metric_dataset_path, map_location='cpu')
+        dataset = saved_dict['dataset']
+
+        if hasattr(dataset, 'corruption_mapping'):
+            corruption_mapping = dataset.corruption_mapping
+            print(f"      ✓ Corruption mapping found:")
+            print(f"         - Clean sequences: {corruption_mapping['n_clean']}")
+            print(f"         - Corrupted sequences: {corruption_mapping['n_corrupted']}")
+            print(f"         - Mapping pairs: {len(corruption_mapping['original_indices'])}")
+        else:
+            print(f"      ⚠️  No corruption_mapping found in dataset!")
+
+    # Store ALL sequences in order
+    all_inputs, all_targets, all_recons, all_errors, all_masks = [], [], [], [], []
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Processing batches"):
             x, target, mask, *_ = batch
+
             x = x.to(device)
             target = target.to(device)
 
@@ -141,42 +114,114 @@ def compute_reconstruction_errors(model, dataloader, device='cpu', use_error='ab
 
             # Compute errors
             if use_error == 'abs':
-                err = torch.abs(target - recon)
+                err = torch.abs(recon.detach() - target)
             else:  # 'se'
-                err = (target - recon) ** 2
+                err = (recon.detach() - target) ** 2
 
-            # Separate normal and anomalous
-            is_anom = mask.view(mask.size(0), -1).sum(dim=1) > 0
-            is_norm = ~is_anom
+            # Squeeze if necessary
+            if is_conv2d and err.dim() == 4 and err.shape[1] == 1:
+                err = err.squeeze(1)
 
-            # Store normals
-            if is_norm.any():
-                normal_inputs.append(x[is_norm].cpu())
-                normal_targets.append(target[is_norm].cpu())
-                normal_recons.append(recon[is_norm].cpu())
-                normal_errors.append(err[is_norm].cpu())
+            # Store everything
+            all_inputs.append(x.cpu())
+            all_targets.append(target.cpu())
+            all_recons.append(recon.cpu())
+            all_errors.append(err.cpu())
+            all_masks.append(mask.cpu())
 
-            # Store anomalies
-            if is_anom.any():
-                anom_inputs.append(x[is_anom].cpu())
-                anom_targets.append(target[is_anom].cpu())
-                anom_recons.append(recon[is_anom].cpu())
-                anom_errors.append(err[is_anom].cpu())
-                anom_masks.append(mask[is_anom].cpu())
+    # Concatenate all
+    all_inputs = torch.cat(all_inputs, dim=0)
+    all_targets = torch.cat(all_targets, dim=0)
+    all_recons = torch.cat(all_recons, dim=0)
+    all_errors = torch.cat(all_errors, dim=0)
+    all_masks = torch.cat(all_masks, dim=0)
 
-    # Concatenate
-    normal_errors_tensor = torch.cat(normal_errors, dim=0) if normal_errors else torch.tensor([])
-    anomaly_errors_tensor = torch.cat(anom_errors, dim=0) if anom_errors else torch.tensor([])
+    N_total = all_errors.shape[0]
+    print(f"\n   ✓ Total sequences processed: {N_total}")
+
+    # Use corruption mapping if available
+    if corruption_mapping is not None:
+        n_clean = corruption_mapping['n_clean']
+        n_corrupted = corruption_mapping['n_corrupted']
+        original_indices = corruption_mapping['original_indices']
+
+        print(f"\n   🔗 Using corruption mapping for pairing:")
+        print(f"      - Clean sequences: 0-{n_clean - 1}")
+        print(f"      - Corrupted sequences: {n_clean}-{n_clean + n_corrupted - 1}")
+
+        # Extract clean sequences that were corrupted (DERANDOMIZZAZIONE!)
+        normal_data_paired = {
+            'inputs': all_inputs[original_indices],
+            'targets': all_targets[original_indices],
+            'reconstructions': all_recons[original_indices],
+            'errors': all_errors[original_indices],
+            'errors_normalized': None
+        }
+
+        # Extract corresponding corrupted sequences
+        anomaly_data_paired = {
+            'inputs': all_inputs[n_clean:n_clean + n_corrupted],
+            'targets': all_targets[n_clean:n_clean + n_corrupted],
+            'reconstructions': all_recons[n_clean:n_clean + n_corrupted],
+            'errors': all_errors[n_clean:n_clean + n_corrupted],
+            'errors_normalized': None,
+            'masks': all_masks[n_clean:n_clean + n_corrupted],
+        }
+
+        # Verify pairing
+        idx_check = 0
+        input_diff = torch.abs(normal_data_paired['inputs'][idx_check] -
+                               anomaly_data_paired['inputs'][idx_check]).sum().item()
+        target_diff_per_channel = torch.abs(normal_data_paired['targets'][idx_check] -
+                                            anomaly_data_paired['targets'][idx_check]).sum(dim=1)
+        n_diff_channels = (target_diff_per_channel > 1e-3).sum().item()
+
+        print(f"\n      Pairing verification (pair {idx_check}):")
+        print(f"      - Original index: {original_indices[idx_check]}")
+        print(f"      - Input difference: {input_diff:.6f} (should be 0)")
+        print(f"      - Channels with differences: {n_diff_channels} (should be 1)")
+
+        normal_data = normal_data_paired
+        anomaly_data = anomaly_data_paired
+
+    else:
+        # Fallback: assume block organization
+        print(f"\n   ⚠️  No corruption mapping - using block split (may be incorrect!)")
+        N_half = N_total // 2
+
+        normal_data = {
+            'inputs': all_inputs[:N_half],
+            'targets': all_targets[:N_half],
+            'reconstructions': all_recons[:N_half],
+            'errors': all_errors[:N_half],
+            'errors_normalized': None
+        }
+
+        anomaly_data = {
+            'inputs': all_inputs[N_half:],
+            'targets': all_targets[N_half:],
+            'reconstructions': all_recons[N_half:],
+            'errors': all_errors[N_half:],
+            'errors_normalized': None,
+            'masks': all_masks[N_half:],
+        }
+
+    # Compute mean errors
+    normal_mean = normal_data['errors'].mean().item()
+    anomaly_mean = anomaly_data['errors'].mean().item()
+
+    print(f"\n   ✓ Final mean errors:")
+    print(f"      - Normal:  {normal_mean:.6f}")
+    print(f"      - Anomaly: {anomaly_mean:.6f}")
+    print(
+        f"      - Difference: {anomaly_mean - normal_mean:.6f} ({100 * (anomaly_mean - normal_mean) / normal_mean:.2f}%)")
 
     # Apply weighting_factor (normalization)
     normalization_factor = None
-    normal_errors_normalized = None
-    anomaly_errors_normalized = None
-
-    if weighting_factor and normal_errors_tensor.numel() > 0:
+    if weighting_factor and normal_data['errors'].numel() > 0:
         print(f"\n🔧 Applying weighting_factor (normalization with median)...")
 
-        normal_perm = normal_errors_tensor.permute(0, 2, 1)  # [N, C, T] → [N, T, C]
+        normal_perm = normal_data['errors'].permute(0, 2, 1)  # [N, C, T] → [N, T, C]
 
         C = normal_perm.shape[2]
         flat_norm = normal_perm.reshape(-1, C).float()
@@ -188,229 +233,402 @@ def compute_reconstruction_errors(model, dataloader, device='cpu', use_error='ab
         print(f"      - Max:   {normalization_factor.max():.6f}")
         print(f"      - Mean:  {normalization_factor.mean():.6f}")
 
+        epsilon = float(epsilon)
         norm = normalization_factor.view(1, 1, C) + epsilon
-        normal_errors_normalized = (normal_perm / norm).permute(0, 2, 1)
+        normal_data['errors_normalized'] = (normal_perm / norm).permute(0, 2, 1)
 
-        if anomaly_errors_tensor.numel() > 0:
-            anomaly_perm = anomaly_errors_tensor.permute(0, 2, 1)
-            anomaly_errors_normalized = (anomaly_perm / norm).permute(0, 2, 1)
+        if anomaly_data['errors'].numel() > 0:
+            anomaly_perm = anomaly_data['errors'].permute(0, 2, 1)
+            anomaly_data['errors_normalized'] = (anomaly_perm / norm).permute(0, 2, 1)
 
         print(f"   ✓ Errors normalized")
 
-    # Build return dictionaries
-    normal_data = {
-        'inputs': torch.cat(normal_inputs, dim=0) if normal_inputs else torch.tensor([]),
-        'targets': torch.cat(normal_targets, dim=0) if normal_targets else torch.tensor([]),
-        'reconstructions': torch.cat(normal_recons, dim=0) if normal_recons else torch.tensor([]),
-        'errors': normal_errors_tensor,
-        'errors_normalized': normal_errors_normalized
-    }
-
-    anomaly_data = {
-        'inputs': torch.cat(anom_inputs, dim=0) if anom_inputs else torch.tensor([]),
-        'targets': torch.cat(anom_targets, dim=0) if anom_targets else torch.tensor([]),
-        'reconstructions': torch.cat(anom_recons, dim=0) if anom_recons else torch.tensor([]),
-        'errors': anomaly_errors_tensor,
-        'errors_normalized': anomaly_errors_normalized,
-        'masks': torch.cat(anom_masks, dim=0) if anom_masks else torch.tensor([]),
-    }
-
-    print(f"   ✓ Normal sequences: {normal_data['inputs'].shape[0]}")
+    print(f"\n   ✓ Normal sequences: {normal_data['inputs'].shape[0]}")
     print(f"   ✓ Anomalous sequences: {anomaly_data['inputs'].shape[0]}")
 
     return normal_data, anomaly_data, normalization_factor
 
 
-def plot_contiguous_block(block_idx, block_seq_indices, targets, recons, errors, errors_normalized,
-                          sorted_indices, output_dir, feature_names=None, weighting_factor=False):
+def concatenate_sequences(data_dict, max_sequences=None, n_features=None):
     """
-    Create interactive Plotly plot for a contiguous block of sequences.
-    Shows all sequences in the block stacked vertically.
+    Concatenate sequences along time dimension.
 
     Args:
-        block_idx: Block index
-        block_seq_indices: Indices of sequences in this block (positions in sorted array)
-        targets: All target sequences [N, C, T]
-        recons: All reconstructed sequences [N, C, T]
-        errors: All error sequences [N, C, T]
-        errors_normalized: Normalized errors (if weighting_factor=True)
-        sorted_indices: Sorted array of dataset indices
-        output_dir: Output directory
-        feature_names: List of feature names
-        weighting_factor: If True, show normalized errors
+        data_dict: Dict with 'targets', 'reconstructions', 'errors', etc.
+        max_sequences: Max number of sequences to use (for memory)
+        n_features: Expected number of features/channels (from config)
     """
-    n_sequences = len(block_seq_indices)
+    targets = data_dict['targets']
+    recons = data_dict['reconstructions']
+    errors = data_dict['errors']
 
-    # Get actual dataset indices for this block
-    dataset_indices = sorted_indices[block_seq_indices]
+    if targets.numel() == 0:
+        return None
 
-    # Extract data for all sequences in block
-    block_targets = targets[block_seq_indices]  # [n_seq, C, T]
-    block_recons = recons[block_seq_indices]
-    block_errors = errors[block_seq_indices]
+    # Handle shape: ensure [N, C, T]
+    if targets.dim() == 4:  # [N, 1, C, T]
+        targets = targets.squeeze(1)
+        recons = recons.squeeze(1)
+        errors = errors.squeeze(1)
 
-    if errors_normalized is not None:
-        block_errors_normalized = errors_normalized[block_seq_indices]
+    # ← FIX: Verifica il formato usando n_features
+    N = targets.shape[0]
+    if n_features is not None:
+        # Se shape[1] == n_features → [N, C, T] (già corretto)
+        # Se shape[2] == n_features → [N, T, C] (devi permutare)
+        if targets.shape[2] == n_features:
+            targets = targets.permute(0, 2, 1)  # [N, T, C] → [N, C, T]
+            recons = recons.permute(0, 2, 1)
+            errors = errors.permute(0, 2, 1)
+        # Altrimenti assume che shape[1] == n_features (già corretto)
     else:
-        block_errors_normalized = None
+        # Fallback alla vecchia logica (non affidabile!)
+        if targets.shape[1] < targets.shape[2]:
+            targets = targets.permute(0, 2, 1)
+            recons = recons.permute(0, 2, 1)
+            errors = errors.permute(0, 2, 1)
 
-    # Handle shape
-    if block_targets.dim() == 4:  # [n_seq, 1, C, T]
-        block_targets = block_targets.squeeze(1)
-        block_recons = block_recons.squeeze(1)
-        block_errors = block_errors.squeeze(1)
-        if block_errors_normalized is not None:
-            block_errors_normalized = block_errors_normalized.squeeze(1)
+    # Ora targets è [N, C, T]
+    N, C, T = targets.shape
 
-    # Transpose to [n_seq, T, C]
-    if block_targets.shape[1] < block_targets.shape[2]:
-        block_targets = block_targets.permute(0, 2, 1)
-        block_recons = block_recons.permute(0, 2, 1)
-        block_errors = block_errors.permute(0, 2, 1)
-        if block_errors_normalized is not None:
-            block_errors_normalized = block_errors_normalized.permute(0, 2, 1)
+    # Limit sequences
+    if max_sequences is not None and N > max_sequences:
+        targets = targets[:max_sequences]
+        recons = recons[:max_sequences]
+        errors = errors[:max_sequences]
+        N = max_sequences
 
-    n_seq, T, C = block_targets.shape
+    # Reshape: [N, C, T] → [C, N, T] → [C, N*T]
+    targets_concat = targets.permute(1, 0, 2).reshape(C, N * T).numpy()
+    recons_concat = recons.permute(1, 0, 2).reshape(C, N * T).numpy()
+    errors_concat = errors.permute(1, 0, 2).reshape(C, N * T).numpy()
 
-    if feature_names is None:
-        feature_names = [f"Feature {i+1}" for i in range(C)]
+    # Handle normalized errors
+    errors_norm_concat = None
+    if data_dict.get('errors_normalized') is not None:
+        errors_norm = data_dict['errors_normalized']
+        if errors_norm.dim() == 4:
+            errors_norm = errors_norm.squeeze(1)
+        if n_features is not None and errors_norm.shape[2] == n_features:
+            errors_norm = errors_norm.permute(0, 2, 1)
+        elif n_features is None and errors_norm.shape[1] < errors_norm.shape[2]:
+            errors_norm = errors_norm.permute(0, 2, 1)
+        if max_sequences is not None:
+            errors_norm = errors_norm[:N]
+        errors_norm_concat = errors_norm.permute(1, 0, 2).reshape(C, N * T).numpy()
 
-    # Create subplots: one row per sequence, showing all features + error
-    n_rows = n_sequences
-    n_cols = C + (2 if weighting_factor else 1)  # Features + error plots
+    return {
+        'targets': targets_concat,
+        'reconstructions': recons_concat,
+        'errors': errors_concat,
+        'errors_normalized': errors_norm_concat,
+        'n_sequences': N,
+        'seq_length': T,
+        'n_features': C
+    }
+
+
+def plot_block(block_idx, normal_concat, anomaly_concat, feature_names,
+               output_dir, max_timesteps_per_plot=None, weighting_factor=False):
+    """
+    Create interactive Plotly plot for a block.
+    Shows normal (top) and anomalous (bottom) concatenated sequences for each channel.
+    Includes global error (averaged across channels) at the end.
+    """
+    C = normal_concat['n_features']
+
+    # Determine timestep range for this block
+    if max_timesteps_per_plot is not None:
+        start_t = block_idx * max_timesteps_per_plot
+        end_t = start_t + max_timesteps_per_plot
+
+        # Slice data
+        normal_targets = normal_concat['targets'][:, start_t:end_t]
+        normal_recons = normal_concat['reconstructions'][:, start_t:end_t]
+        normal_errors = normal_concat['errors'][:, start_t:end_t]
+
+        anom_targets = anomaly_concat['targets'][:, start_t:end_t]
+        anom_recons = anomaly_concat['reconstructions'][:, start_t:end_t]
+        anom_errors = anomaly_concat['errors'][:, start_t:end_t]
+
+        T_normal = normal_targets.shape[1]
+        T_anom = anom_targets.shape[1]
+    else:
+        normal_targets = normal_concat['targets']
+        normal_recons = normal_concat['reconstructions']
+        normal_errors = normal_concat['errors']
+
+        anom_targets = anomaly_concat['targets']
+        anom_recons = anomaly_concat['reconstructions']
+        anom_errors = anomaly_concat['errors']
+
+        T_normal = normal_targets.shape[1]
+        T_anom = anom_targets.shape[1]
+        start_t = 0
+
+    # ============================================
+    # COMPUTE GLOBAL ERROR (averaged over channels)
+    # ============================================
+    # Shape: [C, T] → mean over C → [T]
+    normal_global_error = normal_errors.mean(axis=0)  # [T]
+    anomaly_global_error = anom_errors.mean(axis=0)  # [T]
+
+    # Compute 95th percentile threshold on normal global error
+    threshold_95 = np.percentile(normal_global_error, 95)
+
+    # ============================================
+    # COMPUTE SHARED Y-AXIS LIMITS PER CHANNEL
+    # ============================================
+    value_ranges = []
+    error_ranges = []
+
+    for feat_idx in range(C):
+        # Values
+        all_values = np.concatenate([
+            normal_targets[feat_idx],
+            normal_recons[feat_idx],
+            anom_targets[feat_idx],
+            anom_recons[feat_idx]
+        ])
+        value_min = np.min(all_values)
+        value_max = np.max(all_values)
+        value_margin = (value_max - value_min) * 0.05
+        value_ranges.append((value_min - value_margin, value_max + value_margin))
+
+        # Errors
+        all_errors = np.concatenate([
+            normal_errors[feat_idx],
+            anom_errors[feat_idx]
+        ])
+        error_min = np.min(all_errors)
+        error_max = np.max(all_errors)
+        error_margin = (error_max - error_min) * 0.05
+        error_ranges.append((error_min - error_margin, error_max + error_margin))
+
+    # Compute range for global error
+    all_global_errors = np.concatenate([normal_global_error, anomaly_global_error])
+    global_error_min = np.min(all_global_errors)
+    global_error_max = np.max([all_global_errors.max(), threshold_95])
+    global_error_margin = (global_error_max - global_error_min) * 0.05
+    global_error_range = (global_error_min - global_error_margin, global_error_max + global_error_margin)
+
+    # ============================================
+    # CREATE SUBPLOTS: Channels + Global Error
+    # ============================================
+    n_channel_rows = 2 * C  # Normal + Anomaly per channel
+    n_global_rows = 1  # One plot for global error (overlaid)
+    n_rows = n_channel_rows + n_global_rows
+    n_cols = 1
 
     subplot_titles = []
-    for seq_idx in range(n_sequences):
-        ds_idx = dataset_indices[seq_idx]
-        for feat_idx in range(C):
-            subplot_titles.append(f"Seq {seq_idx} (idx={ds_idx}): {feature_names[feat_idx]}")
-        subplot_titles.append(f"Seq {seq_idx}: Total Error (Raw)")
-        if weighting_factor:
-            subplot_titles.append(f"Seq {seq_idx}: Total Error (Norm)")
+    for feat_name in feature_names:
+        subplot_titles.append(f"{feat_name} - NORMAL")
+        subplot_titles.append(f"{feat_name} - ANOMALY")
+
+    # Add title for global error plot
+    subplot_titles.append("GLOBAL ERROR (averaged across all channels)")
+
+    # Specs: secondary_y for channel plots, no secondary for global
+    specs = [[{"secondary_y": True}]] * n_channel_rows + [[{"secondary_y": False}]]
+
+    # Row heights
+    row_heights = [400] * n_channel_rows + [400]
 
     fig = make_subplots(
         rows=n_rows,
         cols=n_cols,
         subplot_titles=subplot_titles,
-        vertical_spacing=0.02,
-        horizontal_spacing=0.05
+        vertical_spacing=0.01,
+        specs=specs,
+        row_heights=row_heights
     )
 
-    time_steps = np.arange(T)
+    # Time steps
+    time_normal = np.arange(start_t, start_t + T_normal)
+    time_anom = np.arange(start_t, start_t + T_anom)
 
-    # Plot each sequence
-    for seq_idx in range(n_sequences):
-        row = seq_idx + 1
+    # ============================================
+    # PLOT CHANNELS (same as before)
+    # ============================================
+    for feat_idx in range(C):
+        row_normal = feat_idx * 2 + 1
+        row_anom = feat_idx * 2 + 2
 
-        # Plot each feature
-        for feat_idx in range(C):
-            col = feat_idx + 1
-
-            # Input (target)
-            fig.add_trace(
-                go.Scatter(
-                    x=time_steps,
-                    y=block_targets[seq_idx, :, feat_idx],
-                    mode='lines',
-                    name='Input',
-                    line=dict(color='blue', width=1.5),
-                    showlegend=(seq_idx == 0 and feat_idx == 0),
-                    legendgroup='input'
-                ),
-                row=row, col=col
-            )
-
-            # Reconstruction
-            fig.add_trace(
-                go.Scatter(
-                    x=time_steps,
-                    y=block_recons[seq_idx, :, feat_idx],
-                    mode='lines',
-                    name='Reconstruction',
-                    line=dict(color='red', width=1.5, dash='dash'),
-                    showlegend=(seq_idx == 0 and feat_idx == 0),
-                    legendgroup='recon'
-                ),
-                row=row, col=col
-            )
-
-        # Plot total error (raw)
-        total_error = block_errors[seq_idx].sum(axis=1)  # Sum over features
-        col = C + 1
+        # === NORMAL ===
+        fig.add_trace(
+            go.Scatter(
+                x=time_normal, y=normal_targets[feat_idx],
+                mode='lines', name='Target',
+                line=dict(color='blue', width=1),
+                showlegend=(feat_idx == 0), legendgroup='target'
+            ),
+            row=row_normal, col=1, secondary_y=False
+        )
 
         fig.add_trace(
             go.Scatter(
-                x=time_steps,
-                y=total_error,
-                mode='lines',
-                name='Error (Raw)',
-                line=dict(color='orange', width=1.5),
-                fill='tozeroy',
-                fillcolor='rgba(255, 165, 0, 0.2)',
-                showlegend=(seq_idx == 0),
-                legendgroup='error_raw'
+                x=time_normal, y=normal_recons[feat_idx],
+                mode='lines', name='Reconstruction',
+                line=dict(color='cyan', width=1, dash='dash'),
+                showlegend=(feat_idx == 0), legendgroup='recon'
             ),
-            row=row, col=col
+            row=row_normal, col=1, secondary_y=False
         )
 
-        # Plot total error (normalized) if enabled
-        if weighting_factor and block_errors_normalized is not None:
-            total_error_norm = block_errors_normalized[seq_idx].sum(axis=1)
-            col = C + 2
+        fig.add_trace(
+            go.Scatter(
+                x=time_normal, y=normal_errors[feat_idx],
+                mode='lines', name='Error',
+                line=dict(color='orange', width=0.5),
+                fill='tozeroy', fillcolor='rgba(255, 165, 0, 0.2)',
+                showlegend=(feat_idx == 0), legendgroup='error'
+            ),
+            row=row_normal, col=1, secondary_y=True
+        )
 
-            fig.add_trace(
-                go.Scatter(
-                    x=time_steps,
-                    y=total_error_norm,
-                    mode='lines',
-                    name='Error (Norm)',
-                    line=dict(color='purple', width=1.5),
-                    fill='tozeroy',
-                    fillcolor='rgba(128, 0, 128, 0.2)',
-                    showlegend=(seq_idx == 0),
-                    legendgroup='error_norm'
-                ),
-                row=row, col=col
-            )
+        # === ANOMALY ===
+        fig.add_trace(
+            go.Scatter(
+                x=time_anom, y=anom_targets[feat_idx],
+                mode='lines', name='Target',
+                line=dict(color='blue', width=1),
+                showlegend=False, legendgroup='target'
+            ),
+            row=row_anom, col=1, secondary_y=False
+        )
 
-    # Update layout
+        fig.add_trace(
+            go.Scatter(
+                x=time_anom, y=anom_recons[feat_idx],
+                mode='lines', name='Reconstruction',
+                line=dict(color='cyan', width=1, dash='dash'),
+                showlegend=False, legendgroup='recon'
+            ),
+            row=row_anom, col=1, secondary_y=False
+        )
+
+        fig.add_trace(
+            go.Scatter(
+                x=time_anom, y=anom_errors[feat_idx],
+                mode='lines', name='Error',
+                line=dict(color='orange', width=0.5),
+                fill='tozeroy', fillcolor='rgba(255, 165, 0, 0.2)',
+                showlegend=False, legendgroup='error'
+            ),
+            row=row_anom, col=1, secondary_y=True
+        )
+
+        # Update axes for channels
+        value_range = value_ranges[feat_idx]
+        error_range = error_ranges[feat_idx]
+
+        fig.update_yaxes(title_text="Value", row=row_normal, col=1, secondary_y=False, range=value_range)
+        fig.update_yaxes(title_text="Error", row=row_normal, col=1, secondary_y=True, range=error_range)
+        fig.update_yaxes(title_text="Value", row=row_anom, col=1, secondary_y=False, range=value_range)
+        fig.update_yaxes(title_text="Error", row=row_anom, col=1, secondary_y=True, range=error_range)
+
+        if feat_idx == C - 1:
+            fig.update_xaxes(title_text="Timestep", row=row_anom, col=1)
+
+    # ============================================
+    # PLOT GLOBAL ERROR (OVERLAID)
+    # ============================================
+    row_global = n_rows
+
+    # Normal global error
+    fig.add_trace(
+        go.Scatter(
+            x=time_normal,
+            y=normal_global_error,
+            mode='lines',
+            name='Normal Global Error',
+            line=dict(color='lightblue', width=2),
+            fill='tozeroy',
+            fillcolor='rgba(173, 216, 230, 0.3)',
+            legendgroup='global'
+        ),
+        row=row_global, col=1
+    )
+
+    # Anomaly global error
+    fig.add_trace(
+        go.Scatter(
+            x=time_anom,
+            y=anomaly_global_error,
+            mode='lines',
+            name='Anomaly Global Error',
+            line=dict(color='coral', width=2),
+            fill='tozeroy',
+            fillcolor='rgba(255, 127, 80, 0.3)',
+            legendgroup='global'
+        ),
+        row=row_global, col=1
+    )
+
+    # Threshold line
+    fig.add_hline(
+        y=threshold_95,
+        line_dash="dash",
+        line_color="red",
+        line_width=2,
+        annotation_text=f"95th percentile = {threshold_95:.4f}",
+        annotation_position="right",
+        row=row_global, col=1
+    )
+
+    # Update axes for global error
+    fig.update_xaxes(title_text="Timestep", row=row_global, col=1)
+    fig.update_yaxes(
+        title_text="Global Error (mean across channels)",
+        row=row_global, col=1,
+        range=global_error_range
+    )
+
+    # ============================================
+    # UPDATE LAYOUT
+    # ============================================
+    n_seqs_normal = normal_concat['n_sequences']
+    n_seqs_anom = anomaly_concat['n_sequences']
+
+    # Compute statistics for title
+    normal_above = (normal_global_error > threshold_95).sum()
+    anomaly_above = (anomaly_global_error > threshold_95).sum()
+
     fig.update_layout(
-        title=f"Block {block_idx} - {n_sequences} Contiguous Sequences (indices {dataset_indices[0]}-{dataset_indices[-1]})",
-        height=250 * n_rows,
+        title=f"Block {block_idx} - Normal: {n_seqs_normal} seqs ({T_normal} timesteps) | Anomaly: {n_seqs_anom} seqs ({T_anom} timesteps)<br>"
+              f"Global: Normal above threshold: {normal_above}/{T_normal} ({100 * normal_above / T_normal:.1f}%) | "
+              f"Anomaly above threshold: {anomaly_above}/{T_anom} ({100 * anomaly_above / T_anom:.1f}%)",
+        height=sum(row_heights),
         showlegend=True,
         legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.01,
-            xanchor="right",
-            x=1
+            orientation="h", yanchor="bottom",
+            y=1.01, xanchor="right", x=1
         ),
         hovermode='x unified'
     )
-
-    # Update axes
-    for row in range(1, n_rows + 1):
-        for col in range(1, n_cols + 1):
-            if col <= C:
-                fig.update_yaxes(title_text="Value", row=row, col=col)
-            else:
-                fig.update_yaxes(title_text="Error", row=row, col=col)
-
-            if row == n_rows:
-                fig.update_xaxes(title_text="Time Step", row=row, col=col)
 
     # Save
     output_path = output_dir / f"block_{block_idx:04d}.html"
     fig.write_html(str(output_path))
 
+    print(f"   ✓ Saved block {block_idx}: {output_path}")
+    print(
+        f"      Global error - Normal mean: {normal_global_error.mean():.6f}, Anomaly mean: {anomaly_global_error.mean():.6f}")
+    print(f"      Threshold (95th): {threshold_95:.6f}")
+    print(f"      Above threshold: Normal {normal_above}/{T_normal} ({100 * normal_above / T_normal:.1f}%), "
+          f"Anomaly {anomaly_above}/{T_anom} ({100 * anomaly_above / T_anom:.1f}%)")
+
     return output_path
+
+
 
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate reconstruction errors from checkpoint')
-    parser.add_argument('--config', type=str, default='evaluation.yaml',
+    parser.add_argument('--config', type=str, default='./evaluation/evaluation.yaml',
                        help='Path to config YAML file (default: evaluation.yaml)')
     args = parser.parse_args()
+
 
     # Load config
     print(f"\n📋 Loading config: {args.config}")
@@ -418,22 +636,24 @@ def main():
         config = yaml.safe_load(f)
 
     checkpoint_path = config['checkpoint_path']
-    perc_plot = config.get('perc_plot', 0.05)
     metric_dataset_path = config.get('metric_dataset_path', None)
     weighting_factor = config.get('weighting_factor', False)
     epsilon = config.get('epsilon', 1e-3)
 
-    print(f"   ✓ checkpoint_path: {checkpoint_path}")
-    print(f"   ✓ perc_plot: {perc_plot}")
-    print(f"   ✓ weighting_factor: {weighting_factor}")
 
     # Load checkpoint
     checkpoint, cfg, checkpoint_metric_path, scaler_params = load_checkpoint(checkpoint_path)
+    max_sequences_per_block = cfg.dataset.get('seq_in_length_into_chunk', 200)
+
+    print(f"   ✓ checkpoint_path: {checkpoint_path}")
+    print(f"   ✓ weighting_factor: {weighting_factor}")
+    print(f"   ✓ max_sequences_per_block: {max_sequences_per_block}")
 
     # Use metric_dataset_path from config, fallback to checkpoint
     if metric_dataset_path is None:
         metric_dataset_path = checkpoint_metric_path
         print(f"   → Using metric_dataset_path from checkpoint")
+
 
     if metric_dataset_path is None:
         raise ValueError("❌ metric_dataset_path not found in config or checkpoint!")
@@ -444,28 +664,10 @@ def main():
         batch_size=cfg.opt.get('batch_size', 32)
     )
 
-    # Extract indices from dataset
-    if hasattr(metric_dataset, 'indices'):
-        dataset_indices = np.array(metric_dataset.indices)
-    else:
-        # Fallback: assume sequential indices
-        dataset_indices = np.arange(len(metric_dataset))
-        print(f"   ⚠️  Dataset has no 'indices' attribute, using sequential indices")
-
-    # Get sequence parameters
-    seq_len = cfg.dataset.seq_in_length
-    perc_overlap = cfg.dataset.get('perc_overlap', 0)
-
-    print(f"\n🔍 Sequence parameters:")
-    print(f"   ✓ seq_len: {seq_len}")
-    print(f"   ✓ perc_overlap: {perc_overlap}")
-
-    # Identify contiguous blocks
-    blocks, sorted_indices = identify_contiguous_blocks(
-        dataset_indices,
-        seq_len=seq_len,
-        perc_overlap=perc_overlap
-    )
+    # Add transform if missing
+    if not hasattr(metric_dataset, 'transform') or metric_dataset.transform is None:
+        from utils.load_dataset import get_transform
+        metric_dataset.transform = get_transform(cfg)
 
     # Load model
     print(f"\n🤖 Loading model...")
@@ -482,53 +684,54 @@ def main():
         device=device,
         use_error=cfg.opt.get('use_error', 'abs'),
         weighting_factor=weighting_factor,
-        epsilon=epsilon
+        epsilon=epsilon,
+        metric_dataset_path=metric_dataset_path  #
     )
-
     # Get feature names
     feature_names = cfg.dataset.get('feats', None)
     if feature_names is None:
         feature_names = [f"Feature {i+1}" for i in range(cfg.dataset.n_features)]
 
-    # Determine how many blocks to plot
-    n_blocks = len(blocks)
-    n_blocks_to_plot = max(1, math.ceil(n_blocks * perc_plot))
+    # Concatenate sequences
+    print(f"\n🔗 Concatenating sequences...")
+    n_features = cfg.dataset.n_features
+    normal_concat = concatenate_sequences(normal_data, max_sequences=None)
+    anomaly_concat = concatenate_sequences(anomaly_data, max_sequences=None)
 
-    print(f"\n📊 Creating plots for {n_blocks_to_plot}/{n_blocks} blocks ({perc_plot*100:.1f}%)")
+    if normal_concat is None or anomaly_concat is None:
+        raise ValueError("❌ No data to plot!")
+
+    print(f"   ✓ Normal: {normal_concat['n_sequences']} sequences × {normal_concat['seq_length']} timesteps = {normal_concat['targets'].shape[1]} total timesteps")
+    print(f"   ✓ Anomaly: {anomaly_concat['n_sequences']} sequences × {anomaly_concat['seq_length']} timesteps = {anomaly_concat['targets'].shape[1]} total timesteps")
 
     # Create output directory
     output_dir = Path(checkpoint_path).parent / "reconstruction_plots"
     output_dir.mkdir(exist_ok=True)
     print(f"   → Output directory: {output_dir}")
 
-    # Sample blocks to plot
-    np.random.seed(42)
-    if n_blocks_to_plot < n_blocks:
-        blocks_to_plot_indices = np.random.choice(n_blocks, size=n_blocks_to_plot, replace=False)
-        blocks_to_plot_indices = np.sort(blocks_to_plot_indices)
-    else:
-        blocks_to_plot_indices = np.arange(n_blocks)
+    # Determine how many blocks needed
+    seq_len = normal_concat['seq_length']
+    max_timesteps_per_block = max_sequences_per_block * seq_len
+
+    total_timesteps = max(normal_concat['targets'].shape[1], anomaly_concat['targets'].shape[1])
+    n_blocks = math.ceil(total_timesteps / max_timesteps_per_block)
+
+    print(f"\n📊 Creating {n_blocks} plot blocks (max {max_sequences_per_block} sequences per block)...")
 
     # Create plots
-    for block_plot_idx, block_idx in enumerate(tqdm(blocks_to_plot_indices, desc="Creating block plots")):
-        block = blocks[block_idx]
-
-        # Create plot for this block
-        output_path = plot_contiguous_block(
+    for block_idx in tqdm(range(n_blocks), desc="Creating plots"):
+        plot_block(
             block_idx=block_idx,
-            block_seq_indices=block,
-            targets=normal_data['targets'].numpy(),
-            recons=normal_data['reconstructions'].numpy(),
-            errors=normal_data['errors'].numpy(),
-            errors_normalized=normal_data['errors_normalized'].numpy() if normal_data['errors_normalized'] is not None else None,
-            sorted_indices=sorted_indices,
-            output_dir=output_dir,
+            normal_concat=normal_concat,
+            anomaly_concat=anomaly_concat,
             feature_names=feature_names,
+            output_dir=output_dir,
+            max_timesteps_per_plot=max_timesteps_per_block,
             weighting_factor=weighting_factor
         )
 
     print(f"\n✅ Done! Plots saved to: {output_dir}")
-    print(f"   → {n_blocks_to_plot} block HTML files created")
+    print(f"   → {n_blocks} block HTML files created")
     print(f"   → Open any block_XXXX.html file in a browser to view")
 
     # Print summary statistics
@@ -540,13 +743,29 @@ def main():
     print(f"      - Min total error:  {total_errors.min():.6f}")
     print(f"      - Max total error:  {total_errors.max():.6f}")
 
+    print(f"\n   Anomalous sequences:")
+    if anomaly_data['errors'].numel() > 0:
+        total_errors_anom = anomaly_data['errors'].sum(dim=(1, 2))
+        print(f"      - Mean total error: {total_errors_anom.mean():.6f}")
+        print(f"      - Std total error:  {total_errors_anom.std():.6f}")
+        print(f"      - Min total error:  {total_errors_anom.min():.6f}")
+        print(f"      - Max total error:  {total_errors_anom.max():.6f}")
+
     if weighting_factor and normal_data['errors_normalized'] is not None:
         total_errors_norm = normal_data['errors_normalized'].sum(dim=(1, 2))
-        print(f"      [Normalized]")
+        print(f"\n   Normal sequences [Normalized]:")
         print(f"      - Mean total error: {total_errors_norm.mean():.6f}")
         print(f"      - Std total error:  {total_errors_norm.std():.6f}")
         print(f"      - Min total error:  {total_errors_norm.min():.6f}")
         print(f"      - Max total error:  {total_errors_norm.max():.6f}")
+
+        if anomaly_data['errors_normalized'] is not None:
+            total_errors_anom_norm = anomaly_data['errors_normalized'].sum(dim=(1, 2))
+            print(f"\n   Anomalous sequences [Normalized]:")
+            print(f"      - Mean total error: {total_errors_anom_norm.mean():.6f}")
+            print(f"      - Std total error:  {total_errors_anom_norm.std():.6f}")
+            print(f"      - Min total error:  {total_errors_anom_norm.min():.6f}")
+            print(f"      - Max total error:  {total_errors_anom_norm.max():.6f}")
 
 
 if __name__ == "__main__":
