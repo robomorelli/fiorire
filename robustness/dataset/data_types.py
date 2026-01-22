@@ -8,7 +8,9 @@ class DatasetConfig:
     test_chunk_ratio: float
     val_ratio: float
     seq_in_length: int
-    stride: int
+    seq_stride_train: int
+    seq_stride_val: int
+    seq_stride_test: int  
     batch_size: int
     num_workers: int
     val_anomaly_ratio: float

@@ -46,19 +46,18 @@ class DataModule(pl.LightningDataModule):
         idx = np.random.choice(len(train_data) - W, size=256, replace=False)
         Xok_ref = np.stack([train_data[i : i + W, 0] for i in idx])
 
-        # ===== TRAIN =====
         if self.mode == "train":
             self.train_ds = TimeSeriesDataset(
                 train_data,
                 W,
-                self.cfg.dataset.stride,
+                self.cfg.dataset.seq_stride_train,  # <--- stride train
                 scaler=self.scaler,
             )
 
             val_clean = TimeSeriesDataset(
                 val_data,
                 W,
-                self.cfg.dataset.stride,
+                self.cfg.dataset.seq_stride_val,    # <--- stride validation
                 scaler=self.scaler,
             )
 
@@ -73,26 +72,24 @@ class DataModule(pl.LightningDataModule):
             val_anom = TimeSeriesDataset(
                 val_data,
                 W,
-                self.cfg.dataset.stride,
+                self.cfg.dataset.seq_stride_val,    # <--- stride validation
                 scaler=self.scaler,
                 anomaly_cfg=anomaly_cfg,
                 Xok_ref=Xok_ref,
             )
 
             self.val_ds = ConcatDataset([val_clean, val_anom])
-
             self.val_sampler = (
                 RandomSampler(self.val_ds)
                 if self.cfg.dataset.val_shuffle_augmented
                 else None
             )
 
-        # ===== TEST =====
         elif self.mode == "test":
             self.test_ds = TimeSeriesDataset(
                 test_data,
                 W,
-                self.cfg.dataset.stride,
+                self.cfg.dataset.seq_stride_test,  # <--- stride dedicato al test
                 scaler=self.scaler,
             )
 
