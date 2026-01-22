@@ -24,7 +24,7 @@ class TimeSeriesDataset(Dataset):
         self.anomaly_cfg = anomaly_cfg
         self.Xok_ref = Xok_ref
 
-        self.indices = list(range(0, len(data) - seq_len + 1, stride))
+        self.indices = list(range(0, len(data) - self.seq_len + 1, self.stride))
 
     def __len__(self) -> int:
         return len(self.indices)
