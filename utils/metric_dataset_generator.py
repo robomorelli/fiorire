@@ -96,7 +96,8 @@ def generate_and_save_metric_dataset(
 
     # Build filename with suffix
     scale_suffix = "" if predicted_is_standardized else "_original"
-    filename = f"metric_{model_name}_{exp_name}_{dataset_name}_{seq_len}_{strategy}_seed{seed}{scale_suffix}_{cfg.opt.corruption_config.delta_mean}.pt"
+    anomalies = '_'.join([x for x in list(cfg.opt.corruption_config.get('anomalies_type', []))])
+    filename = f"metric_{model_name}_{exp_name}_{dataset_name}_{seq_len}_{strategy}_{anomalies}_seed{seed}{scale_suffix}_{cfg.opt.corruption_config.delta_mean}.pt"
     filepath = os.path.join(output_dir, filename)
 
     # ✅ Check if already exists
