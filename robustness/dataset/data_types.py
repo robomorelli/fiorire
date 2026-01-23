@@ -2,6 +2,19 @@ from dataclasses import dataclass
 from typing import Literal
 
 @dataclass
+class ModelConfig:
+    kernel_size: int
+    base_filters: int
+    num_layers: int
+    flattened: bool
+    compression_factor: int
+    bottleneck_conv: bool
+    decoder_mode: str
+    activation: str
+    bottleneck_activation: str
+
+
+@dataclass
 class DatasetConfig:
     csv_path: str
     n_chunks: int
@@ -28,10 +41,12 @@ class TrainerConfig:
 
 @dataclass
 class OptConfig:
+    lr: float
     checkpoint_path: str
 
 @dataclass
 class Config:
+    model: ModelConfig
     dataset: DatasetConfig
     trainer: TrainerConfig
     opt: OptConfig

@@ -1,4 +1,4 @@
-import pytorch_lightning as pl
+from pytorch_lightning import Trainer
 from omegaconf import OmegaConf
 from pathlib import Path
 import fire
@@ -25,7 +25,7 @@ def main(config_path: str | Path, mode: str = "train"):
 
         model = LitAutoEncoder(cfg)
 
-        trainer = pl.Trainer(
+        trainer = Trainer(
             accelerator=cfg.trainer.accelerator,
             devices=cfg.trainer.devices,
             max_epochs=cfg.trainer.epochs,
@@ -45,7 +45,7 @@ def main(config_path: str | Path, mode: str = "train"):
         model.load_state_dict(state_dict)
         model.eval()
 
-        trainer = pl.Trainer(
+        trainer = Trainer(
             accelerator=cfg.trainer.accelerator,
             devices=cfg.trainer.devices,
         )

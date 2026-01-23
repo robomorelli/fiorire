@@ -2,10 +2,11 @@ import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 
+from robustness.dataset.data_types import Config
 from models.conv_ae2D import CONV_AE2D
 
 class LitAutoEncoder(pl.LightningModule):
-    def __init__(self, cfg):
+    def __init__(self, cfg: Config):
         super().__init__()
 
         # salva config nel checkpoint
@@ -13,7 +14,6 @@ class LitAutoEncoder(pl.LightningModule):
 
         self.cfg = cfg
         self.model = CONV_AE2D(cfg)
-
         self.lr = cfg.opt.lr
 
     def forward(self, x):
