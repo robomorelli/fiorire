@@ -15,7 +15,7 @@ class TimeSeriesDataset(Dataset):
         stride: int,
         scaler: Optional[StandardScaler] = None,
         anomaly_cfg: Optional[AnomalyConfig] = None,
-        Xok_ref: Optional[np.ndarray] = None,  # [N, W]
+        Xok_ref: Optional[NDArray] = None,  # [N, W]
     ):
         self.data = data
         self.seq_len = seq_len
@@ -43,7 +43,7 @@ class TimeSeriesDataset(Dataset):
         window = torch.from_numpy(window.T).unsqueeze(0)
         return window.float()
 
-    def _inject_anomaly(self, window: np.ndarray) -> np.ndarray:
+    def _inject_anomaly(self, window: NDArray) -> NDArray:
         """
         Applica una anomalia WOMBATS canale-wise con probabilità anomaly_cfg["ratio"]
         """

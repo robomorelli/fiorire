@@ -31,6 +31,8 @@ class LitAutoEncoder(pl.LightningModule):
         x_hat = self(x)
         loss = F.mse_loss(x_hat, x)
         self.log("val_loss", loss, prog_bar=True)
+    
+    # def test_step()
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
