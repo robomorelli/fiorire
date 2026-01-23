@@ -42,6 +42,9 @@ class TrainerConfig:
 @dataclass
 class OptConfig:
     lr: float
+    batch_size: int
+    lr_patience: int
+    es_patience: int
     checkpoint_path: str
 
 @dataclass

@@ -5,6 +5,7 @@ import fire
 import torch
 
 from robustness.lightning_module.lit_module import LitAutoEncoder
+from robustness.utils import inject_training_hparams_from_ckpt
 from robustness.dataset.data_types import Config
 from robustness.dataset.data_module import DataModule
 
@@ -16,6 +17,11 @@ def main(config_path: str | Path, mode: str = "train"):
 
     # qui cfg_merged è ancora DictConfig/structuredConfig ma compatibile
     cfg: Config = OmegaConf.to_object(cfg_merged)  #type: ignore
+
+    ckpt = cfg.opt.checkpoint_path
+    ckpt_dict = torch.load(ckpt, map_location="cpu", weights_only=False)
+
+    cfg = inject_training_hparams_from_ckpt(cfg, ckpt_dict)
 
     datamodule = DataModule(cfg, mode=mode)
     datamodule.setup()
@@ -38,11 +44,10 @@ def main(config_path: str | Path, mode: str = "train"):
     elif mode == "test":
         print("Test: carico modello CON pesi")
 
-        ckpt = cfg.opt.checkpoint_path
+        # carichiamo a mano il modello perché non è un checkpoint Lightning
+        # non possiamo usare: LitAutoEncoder.load_from_checkpoint(...)
         model = LitAutoEncoder(cfg)
-
-        state_dict = torch.load(ckpt, map_location="cpu")
-        model.load_state_dict(state_dict)
+        model.load_state_dict(ckpt_dict["model_state_dict"], strict=True)
         model.eval()
 
         trainer = Trainer(
