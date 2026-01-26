@@ -4,6 +4,8 @@ from pathlib import Path
 import fire
 import torch
 
+from pytorch_lightning.callbacks import EarlyStopping
+
 from robustness.lightning_module.lit_module import LitAutoEncoder
 from robustness.utils import inject_training_hparams_from_ckpt
 from robustness.dataset.data_types import Config
@@ -29,12 +31,20 @@ def main(config_path: str | Path, mode: str = "train"):
     if mode == "train":
         print("Training: architettura da checkpoint, pesi random")
 
+        early_stopping = EarlyStopping(
+            monitor="val_loss",
+            patience=cfg.opt.es_patience,
+            mode="min",
+            verbose=True,
+        )
+
         trainer = Trainer(
             accelerator=cfg.trainer.accelerator,
             devices=cfg.trainer.devices,
             max_epochs=cfg.trainer.epochs,
             precision=cfg.trainer.precision,
             default_root_dir=cfg.trainer.out_dir,
+            callbacks=[early_stopping],
         )
 
         trainer.fit(model, datamodule=datamodule)

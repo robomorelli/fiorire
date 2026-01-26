@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from robustness.dataset.data_types import Config
 from models.conv_ae2D import CONV_AE2D
+from scheduler import build_scheduler
 
 class LitAutoEncoder(pl.LightningModule):
     def __init__(self, cfg: Config):
@@ -35,4 +36,12 @@ class LitAutoEncoder(pl.LightningModule):
     # def test_step()
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+
+        # restituisce direttamente il dict pronto per Lightning
+        scheduler_dict = build_scheduler(optimizer, self.cfg.opt)
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": scheduler_dict,
+        }

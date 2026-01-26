@@ -45,6 +45,8 @@ class OptConfig:
     lr: float
     batch_size: int
     lr_patience: int
+    lr_factor: float        # fattore per ReduceLROnPlateau
+    lr_min: float           # lr minimo
     es_patience: int
     checkpoint_path: str
 
