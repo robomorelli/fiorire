@@ -4,7 +4,7 @@ import numpy as np
 from torch.utils.data import Dataset
 from typing import Optional
 from sklearn.preprocessing import StandardScaler
-from robustness.dataset.wombats import AnomalyConfig, apply_random_wombats_anomaly
+from robustness.dataset.wombats import apply_random_wombats_anomaly
 
 
 class TimeSeriesDataset(Dataset):
@@ -14,14 +14,14 @@ class TimeSeriesDataset(Dataset):
         seq_len: int,
         stride: int,
         scaler: Optional[StandardScaler] = None,
-        anomaly_cfg: Optional[AnomalyConfig] = None,
+        delta_range: Optional[tuple[float, float]] = None,
         Xok_ref: Optional[NDArray] = None,  # [N, W]
     ):
         self.data = data
         self.seq_len = seq_len
         self.stride = stride
         self.scaler = scaler
-        self.anomaly_cfg = anomaly_cfg
+        self.delta_range = delta_range
         self.Xok_ref = Xok_ref
 
         self.indices = list(range(0, len(data) - self.seq_len + 1, self.stride))
@@ -36,7 +36,7 @@ class TimeSeriesDataset(Dataset):
         if self.scaler is not None:
             window = self.scaler.transform(window)
 
-        if self.anomaly_cfg is not None:
+        if self.delta_range is not None:
             window = self._inject_anomaly(window)
 
         # [W, F] → [1, F, W]
@@ -45,10 +45,10 @@ class TimeSeriesDataset(Dataset):
 
     def _inject_anomaly(self, window: NDArray) -> NDArray:
         """
-        Applica una anomalia WOMBATS canale-wise con probabilità anomaly_cfg["ratio"]
+        Applica una anomalia WOMBATS canale-wise
         """
         # guard obbligatori (per pylance)
-        if self.anomaly_cfg is None or self.Xok_ref is None:
+        if self.delta_range is None or self.Xok_ref is None:
             return window
 
         W, F = window.shape
@@ -57,7 +57,7 @@ class TimeSeriesDataset(Dataset):
         window[:, channel] = apply_random_wombats_anomaly(
             signal=window[:, channel],
             Xok_ref=self.Xok_ref[:, :, channel],
-            delta_range=self.anomaly_cfg["delta_range"],
+            delta_range=self.delta_range,
         )
 
         return window

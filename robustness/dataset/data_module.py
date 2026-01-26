@@ -8,7 +8,6 @@ from sklearn.preprocessing import StandardScaler
 
 from robustness.dataset.dataset import TimeSeriesDataset
 from robustness.dataset.data_types import Config
-from robustness.dataset.wombats import AnomalyConfig
 
 
 class DataModule(pl.LightningDataModule):
@@ -84,19 +83,13 @@ class DataModule(pl.LightningDataModule):
                 scaler=self.scaler,
             )
 
-            anomaly_cfg: AnomalyConfig = {
-                "delta_range": (
-                    self.cfg.dataset.delta_min,
-                    self.cfg.dataset.delta_max,
-                ),
-            }
-
             val_anom = TimeSeriesDataset(
                 val_data,
                 W,
                 self.cfg.dataset.seq_stride_val,
                 scaler=self.scaler,
-                anomaly_cfg=anomaly_cfg,
+                delta_range=(self.cfg.dataset.delta_min,
+                    self.cfg.dataset.delta_max),
                 Xok_ref=Xok_ref,
             )
 

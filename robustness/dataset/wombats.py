@@ -6,7 +6,6 @@ from wombats.anomalies.increasing import (
     GWN, Impulse, Step, Constant
 )
 
-
 ALL_ANOMALIES = [
     GWN,
     Impulse,
@@ -35,9 +34,3 @@ def apply_random_wombats_anomaly(
         pass
 
     return anomaly.distort(signal)
-
-
-from typing import TypedDict
-
-class AnomalyConfig(TypedDict):
-    delta_range: tuple[float, float]
