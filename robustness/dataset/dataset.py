@@ -59,8 +59,9 @@ class TimeSeriesDataset(Dataset):
 
         window[:, channel] = apply_random_wombats_anomaly(
             signal=window[:, channel],
-            Xok_ref=self.Xok_ref,
+            Xok_ref=self.Xok_ref[:, :, channel],
             delta_range=self.anomaly_cfg["delta_range"],
         )
 
         return window
+

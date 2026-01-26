@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-from omegaconf import DictConfig, ListConfig
 import pytorch_lightning as pl
 
 from torch.utils.data import DataLoader, ConcatDataset, RandomSampler
@@ -19,45 +18,68 @@ class DataModule(pl.LightningDataModule):
 
     def setup(self, stage: str | None = None) -> None:
         data = pd.read_csv(self.cfg.dataset.csv_path).values.astype(np.float32)
+        T, F = data.shape
 
-        # chunk temporali
-        chunks = np.array_split(data, self.cfg.dataset.n_chunks)
+        W = self.cfg.dataset.seq_in_length
+        n_seq_chunk = self.cfg.dataset.n_seq_chunk
 
-        n_test = int(len(chunks) * self.cfg.dataset.test_chunk_ratio)
+        # stride = 1 per definire le sequenze "canoniche"
+        sequences = np.stack(
+            [data[i : i + W] for i in range(0, T - W + 1)]
+        )  # [N_seq, W, F]
+
+        n_total_seq = len(sequences)
+        n_chunks = n_total_seq // n_seq_chunk
+
+        # tronchiamo per avere chunk completi
+        sequences = sequences[: n_chunks * n_seq_chunk]
+
+        chunks = np.split(sequences, n_chunks)
+        # list[NDArray] con shape [n_seq_chunk, W, F]
+
+        n_test = int(n_chunks * self.cfg.dataset.test_chunk_ratio)
+
         test_chunks = chunks[-n_test:]
         trainval_chunks = chunks[:-n_test]
 
-        np.random.shuffle(trainval_chunks)
-
         n_val = int(len(trainval_chunks) * self.cfg.dataset.val_ratio)
+
         val_chunks = trainval_chunks[:n_val]
         train_chunks = trainval_chunks[n_val:]
 
-        train_data = np.concatenate(train_chunks)
-        val_data = np.concatenate(val_chunks)
-        test_data = np.concatenate(test_chunks)
+        # shuffle solo il validation
+        np.random.shuffle(val_chunks)
 
-        # scaler SOLO su train
+        # torniamo a una shape (W, F)
+        train_data = np.concatenate(train_chunks, axis=0).reshape(-1, F)
+        val_data   = np.concatenate(val_chunks, axis=0).reshape(-1, F)
+        test_data  = np.concatenate(test_chunks, axis=0).reshape(-1, F)
+
         self.scaler = StandardScaler().fit(train_data)
 
         W = self.cfg.dataset.seq_in_length
-
-        # riferimento WOMBATS
-        idx = np.random.choice(len(train_data) - W, size=256, replace=False)
-        Xok_ref = np.stack([train_data[i : i + W, 0] for i in idx])
+        n_ref = min(
+            self.cfg.dataset.n_wombats_ref,
+            len(val_data) - W
+        )
+        idx = np.random.choice(len(val_data) - W, size=n_ref, replace=False)
+        Xok_ref = np.stack([
+            val_data[i : i + W]
+            for i in idx
+        ])  # shape: [n_ref, W, F]
 
         if self.mode == "train":
             self.train_ds = TimeSeriesDataset(
                 train_data,
                 W,
-                self.cfg.dataset.seq_stride_train,  # <--- stride train
+                self.cfg.dataset.seq_stride_train,
                 scaler=self.scaler,
             )
 
             val_clean = TimeSeriesDataset(
                 val_data,
                 W,
-                self.cfg.dataset.seq_stride_val,    # <--- stride validation
+                self.cfg.dataset.seq_stride_val,
                 scaler=self.scaler,
             )
 
@@ -72,13 +94,14 @@ class DataModule(pl.LightningDataModule):
             val_anom = TimeSeriesDataset(
                 val_data,
                 W,
-                self.cfg.dataset.seq_stride_val,    # <--- stride validation
+                self.cfg.dataset.seq_stride_val,
                 scaler=self.scaler,
                 anomaly_cfg=anomaly_cfg,
                 Xok_ref=Xok_ref,
             )
 
             self.val_ds = ConcatDataset([val_clean, val_anom])
+
             self.val_sampler = (
                 RandomSampler(self.val_ds)
                 if self.cfg.dataset.val_shuffle_augmented
@@ -89,7 +112,7 @@ class DataModule(pl.LightningDataModule):
             self.test_ds = TimeSeriesDataset(
                 test_data,
                 W,
-                self.cfg.dataset.seq_stride_test,  # <--- stride dedicato al test
+                self.cfg.dataset.seq_stride_test,
                 scaler=self.scaler,
             )
 

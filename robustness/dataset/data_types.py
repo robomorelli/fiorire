@@ -17,7 +17,8 @@ class ModelConfig:
 @dataclass
 class DatasetConfig:
     csv_path: str
-    n_chunks: int
+    n_seq_chunk: int
+    n_wombats_ref: int
     test_chunk_ratio: float
     val_ratio: float
     seq_in_length: int
