@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
+import torch
 
 from torch.utils.data import DataLoader, ConcatDataset, RandomSampler
 from sklearn.preprocessing import StandardScaler
@@ -84,7 +85,6 @@ class DataModule(pl.LightningDataModule):
             )
 
             anomaly_cfg: AnomalyConfig = {
-                "ratio": self.cfg.dataset.val_anomaly_ratio,
                 "delta_range": (
                     self.cfg.dataset.delta_min,
                     self.cfg.dataset.delta_max,
@@ -100,12 +100,19 @@ class DataModule(pl.LightningDataModule):
                 Xok_ref=Xok_ref,
             )
 
+            # 3. prendi una percentuale CASUALE
+            ratio = self.cfg.dataset.val_anomaly_ratio  # 0.3
+            n_anom = int(ratio * len(val_clean))
+            idx = np.random.choice(len(val_anom), size=n_anom, replace=False).tolist()
+            val_anom = torch.utils.data.Subset(val_anom, idx)
+
             self.val_ds = ConcatDataset([val_clean, val_anom])
 
-            self.val_sampler = (
-                RandomSampler(self.val_ds)
-                if self.cfg.dataset.val_shuffle_augmented
-                else None
+            # RandomSampler riproducibile
+            self.val_sampler = RandomSampler(
+                self.val_ds,
+                replacement=False,
+                generator=torch.Generator().manual_seed(42),
             )
 
         elif self.mode == "test":
@@ -123,7 +130,7 @@ class DataModule(pl.LightningDataModule):
         return DataLoader(
             self.train_ds,
             batch_size=self.cfg.dataset.batch_size,
-            shuffle=True,
+            shuffle=False,
             num_workers=self.cfg.dataset.num_workers,
             pin_memory=True,
         )
@@ -136,7 +143,7 @@ class DataModule(pl.LightningDataModule):
             self.val_ds,
             batch_size=self.cfg.dataset.batch_size,
             sampler=self.val_sampler,
-            shuffle=self.val_sampler is None,
+            shuffle = False,
             num_workers=self.cfg.dataset.num_workers,
             pin_memory=True,
         )

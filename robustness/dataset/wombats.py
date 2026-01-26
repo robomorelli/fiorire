@@ -40,5 +40,4 @@ def apply_random_wombats_anomaly(
 from typing import TypedDict
 
 class AnomalyConfig(TypedDict):
-    ratio: float
     delta_range: tuple[float, float]

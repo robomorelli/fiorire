@@ -51,9 +51,6 @@ class TimeSeriesDataset(Dataset):
         if self.anomaly_cfg is None or self.Xok_ref is None:
             return window
 
-        if np.random.rand() > self.anomaly_cfg["ratio"]:
-            return window
-
         W, F = window.shape
         channel = np.random.randint(F)
 
