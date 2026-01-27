@@ -249,14 +249,13 @@ def compute_reconstruction_errors(model, dataloader, device='cpu', use_error='ab
     return normal_data, anomaly_data, normalization_factor
 
 
-def concatenate_sequences(data_dict, max_sequences=None, n_features=None):
+def concatenate_sequences(data_dict, max_sequences=None, n_features=None, model_name=None):
     """
     Concatenate sequences along time dimension.
 
-    Args:
-        data_dict: Dict with 'targets', 'reconstructions', 'errors', etc.
-        max_sequences: Max number of sequences to use (for memory)
-        n_features: Expected number of features/channels (from config)
+    Expected formats from model:
+    - conv_ae1D: [B, C, T] where C=features (6), T=time (64)
+    - conv_ae2D: [B, 1, C, T] where C=features (6), T=time (64)
     """
     targets = data_dict['targets']
     recons = data_dict['reconstructions']
@@ -265,31 +264,64 @@ def concatenate_sequences(data_dict, max_sequences=None, n_features=None):
     if targets.numel() == 0:
         return None
 
-    # Handle shape: ensure [N, C, T]
-    if targets.dim() == 4:  # [N, 1, C, T]
+    print(f"\n   📐 Initial shape: {targets.shape}")
+    print(f"   📐 Model: {model_name}")
+    print(f"   📐 Expected n_features: {n_features}")
+
+    # ============================================
+    # STEP 1: Remove extra dimensions if present
+    # ============================================
+    # conv_ae2D has shape [B, 1, C, T] - squeeze the channel dim
+    if targets.dim() == 4 and targets.shape[1] == 1:
+        print(f"   ✓ Squeezing dim 1: [B, 1, C, T] → [B, C, T]")
         targets = targets.squeeze(1)
         recons = recons.squeeze(1)
         errors = errors.squeeze(1)
+    elif targets.dim() == 4:
+        print(f"   ⚠️  4D tensor but dim 1 is not 1: shape={targets.shape}")
 
-    # ← FIX: Verifica il formato usando n_features
-    N = targets.shape[0]
-    if n_features is not None:
-        # Se shape[1] == n_features → [N, C, T] (già corretto)
-        # Se shape[2] == n_features → [N, T, C] (devi permutare)
-        if targets.shape[2] == n_features:
-            targets = targets.permute(0, 2, 1)  # [N, T, C] → [N, C, T]
-            recons = recons.permute(0, 2, 1)
-            errors = errors.permute(0, 2, 1)
-        # Altrimenti assume che shape[1] == n_features (già corretto)
+    # ============================================
+    # STEP 2: Verify we have [B, C, T] format
+    # ============================================
+    # At this point, both conv_ae1D and conv_ae2D should be [B, C, T]
+    # where C should equal n_features
+
+    if targets.dim() != 3:
+        raise ValueError(f"Expected 3D tensor [B, C, T], got shape {targets.shape}")
+
+    N, dim1, dim2 = targets.shape
+
+    print(f"   📐 Current 3D shape: [B={N}, dim1={dim1}, dim2={dim2}]")
+
+    # Check which dimension matches n_features
+    if dim1 == n_features:
+        # Already [B, C, T] ✓
+        C, T = dim1, dim2
+        print(f"   ✓ Correct format: [B, C={C}, T={T}]")
+    elif dim2 == n_features:
+        # Wrong format: [B, T, C] - need to permute
+        print(f"   ⚠️  Wrong format: [B, T={dim1}, C={dim2}]")
+        print(f"   🔧 Permuting to [B, C, T]")
+        targets = targets.permute(0, 2, 1)
+        recons = recons.permute(0, 2, 1)
+        errors = errors.permute(0, 2, 1)
+        C, T = dim2, dim1
     else:
-        # Fallback alla vecchia logica (non affidabile!)
-        if targets.shape[1] < targets.shape[2]:
+        # Neither dimension matches n_features!
+        print(f"   ⚠️  WARNING: Neither dimension matches n_features={n_features}")
+        print(f"      dim1={dim1}, dim2={dim2}")
+        # Use heuristic: smaller dimension is usually channels
+        if dim1 < dim2:
+            C, T = dim1, dim2
+            print(f"   → Assuming [B, C={C}, T={T}] (dim1 < dim2)")
+        else:
+            C, T = dim2, dim1
             targets = targets.permute(0, 2, 1)
             recons = recons.permute(0, 2, 1)
             errors = errors.permute(0, 2, 1)
+            print(f"   → Permuted to [B, C={C}, T={T}] (dim1 >= dim2)")
 
-    # Ora targets è [N, C, T]
-    N, C, T = targets.shape
+    print(f"   ✓ Final verified shape: [B={N}, C={C}, T={T}]")
 
     # Limit sequences
     if max_sequences is not None and N > max_sequences:
@@ -298,7 +330,10 @@ def concatenate_sequences(data_dict, max_sequences=None, n_features=None):
         errors = errors[:max_sequences]
         N = max_sequences
 
-    # Reshape: [N, C, T] → [C, N, T] → [C, N*T]
+    # ============================================
+    # STEP 3: Reshape to [C, N*T] for plotting
+    # ============================================
+    # [B, C, T] → [C, B, T] → [C, B*T]
     targets_concat = targets.permute(1, 0, 2).reshape(C, N * T).numpy()
     recons_concat = recons.permute(1, 0, 2).reshape(C, N * T).numpy()
     errors_concat = errors.permute(1, 0, 2).reshape(C, N * T).numpy()
@@ -307,12 +342,21 @@ def concatenate_sequences(data_dict, max_sequences=None, n_features=None):
     errors_norm_concat = None
     if data_dict.get('errors_normalized') is not None:
         errors_norm = data_dict['errors_normalized']
-        if errors_norm.dim() == 4:
+
+        # Apply same transformations
+        if errors_norm.dim() == 4 and errors_norm.shape[1] == 1:
             errors_norm = errors_norm.squeeze(1)
-        if n_features is not None and errors_norm.shape[2] == n_features:
+
+        # Check format
+        if errors_norm.shape[1] == n_features:
+            pass  # Already [B, C, T]
+        elif errors_norm.shape[2] == n_features:
+            errors_norm = errors_norm.permute(0, 2, 1)  # [B, T, C] → [B, C, T]
+        elif errors_norm.shape[1] < errors_norm.shape[2]:
+            pass  # Assume [B, C, T]
+        else:
             errors_norm = errors_norm.permute(0, 2, 1)
-        elif n_features is None and errors_norm.shape[1] < errors_norm.shape[2]:
-            errors_norm = errors_norm.permute(0, 2, 1)
+
         if max_sequences is not None:
             errors_norm = errors_norm[:N]
         errors_norm_concat = errors_norm.permute(1, 0, 2).reshape(C, N * T).numpy()
@@ -334,8 +378,10 @@ def plot_block(block_idx, normal_concat, anomaly_concat, feature_names,
     Create interactive Plotly plot for a block.
     Shows normal (top) and anomalous (bottom) concatenated sequences for each channel.
     Includes global error (averaged across channels) at the end.
+    Adds vertical lines to separate sequences.
     """
     C = normal_concat['n_features']
+    seq_length = normal_concat['seq_length']  # Get sequence length
 
     # Determine timestep range for this block
     if max_timesteps_per_plot is not None:
@@ -413,6 +459,22 @@ def plot_block(block_idx, normal_concat, anomaly_concat, feature_names,
     global_error_range = (global_error_min - global_error_margin, global_error_max + global_error_margin)
 
     # ============================================
+    # CALCULATE SEQUENCE BOUNDARIES
+    # ============================================
+    # Compute where sequence boundaries are (every seq_length timesteps)
+    # Relative to start_t
+    sequence_boundaries = []
+    current_boundary = seq_length
+    while current_boundary < max(T_normal, T_anom):
+        # Absolute timestep
+        absolute_timestep = start_t + current_boundary
+        sequence_boundaries.append(absolute_timestep)
+        current_boundary += seq_length
+
+    print(
+        f"   📏 Sequence boundaries at timesteps: {sequence_boundaries[:5]}{'...' if len(sequence_boundaries) > 5 else ''}")
+
+    # ============================================
     # CREATE SUBPLOTS: Channels + Global Error
     # ============================================
     n_channel_rows = 2 * C  # Normal + Anomaly per channel
@@ -448,7 +510,7 @@ def plot_block(block_idx, normal_concat, anomaly_concat, feature_names,
     time_anom = np.arange(start_t, start_t + T_anom)
 
     # ============================================
-    # PLOT CHANNELS (same as before)
+    # PLOT CHANNELS
     # ============================================
     for feat_idx in range(C):
         row_normal = feat_idx * 2 + 1
@@ -518,6 +580,30 @@ def plot_block(block_idx, normal_concat, anomaly_concat, feature_names,
             row=row_anom, col=1, secondary_y=True
         )
 
+        # ✅ ADD: Vertical lines for sequence boundaries (NORMAL)
+        for boundary in sequence_boundaries:
+            if start_t <= boundary < start_t + T_normal:
+                fig.add_vline(
+                    x=boundary,
+                    line_dash="dot",
+                    line_color="gray",
+                    line_width=1,
+                    opacity=0.5,
+                    row=row_normal, col=1
+                )
+
+        # ✅ ADD: Vertical lines for sequence boundaries (ANOMALY)
+        for boundary in sequence_boundaries:
+            if start_t <= boundary < start_t + T_anom:
+                fig.add_vline(
+                    x=boundary,
+                    line_dash="dot",
+                    line_color="gray",
+                    line_width=1,
+                    opacity=0.5,
+                    row=row_anom, col=1
+                )
+
         # Update axes for channels
         value_range = value_ranges[feat_idx]
         error_range = error_ranges[feat_idx]
@@ -565,6 +651,18 @@ def plot_block(block_idx, normal_concat, anomaly_concat, feature_names,
         row=row_global, col=1
     )
 
+    # ✅ ADD: Vertical lines for sequence boundaries (GLOBAL ERROR)
+    for boundary in sequence_boundaries:
+        if start_t <= boundary < start_t + max(T_normal, T_anom):
+            fig.add_vline(
+                x=boundary,
+                line_dash="dot",
+                line_color="gray",
+                line_width=1,
+                opacity=0.5,
+                row=row_global, col=1
+            )
+
     # Threshold line
     fig.add_hline(
         y=threshold_95,
@@ -596,6 +694,7 @@ def plot_block(block_idx, normal_concat, anomaly_concat, feature_names,
 
     fig.update_layout(
         title=f"Block {block_idx} - Normal: {n_seqs_normal} seqs ({T_normal} timesteps) | Anomaly: {n_seqs_anom} seqs ({T_anom} timesteps)<br>"
+              f"Seq length: {seq_length} | Boundaries every {seq_length} timesteps<br>"
               f"Global: Normal above threshold: {normal_above}/{T_normal} ({100 * normal_above / T_normal:.1f}%) | "
               f"Anomaly above threshold: {anomaly_above}/{T_anom} ({100 * anomaly_above / T_anom:.1f}%)",
         height=sum(row_heights),
@@ -612,6 +711,7 @@ def plot_block(block_idx, normal_concat, anomaly_concat, feature_names,
     fig.write_html(str(output_path))
 
     print(f"   ✓ Saved block {block_idx}: {output_path}")
+    print(f"      Sequence length: {seq_length} | Boundaries added: {len(sequence_boundaries)}")
     print(
         f"      Global error - Normal mean: {normal_global_error.mean():.6f}, Anomaly mean: {anomaly_global_error.mean():.6f}")
     print(f"      Threshold (95th): {threshold_95:.6f}")
@@ -619,7 +719,6 @@ def plot_block(block_idx, normal_concat, anomaly_concat, feature_names,
           f"Anomaly {anomaly_above}/{T_anom} ({100 * anomaly_above / T_anom:.1f}%)")
 
     return output_path
-
 
 
 
@@ -643,7 +742,7 @@ def main():
 
     # Load checkpoint
     checkpoint, cfg, checkpoint_metric_path, scaler_params = load_checkpoint(checkpoint_path)
-    max_sequences_per_block = cfg.dataset.get('seq_in_length_into_chunk', 200)
+    max_sequences_per_block = int(cfg.dataset.get('seq_in_length_into_chunk', 200)/config.get('seq_in_length_factor', 200))
 
     print(f"   ✓ checkpoint_path: {checkpoint_path}")
     print(f"   ✓ weighting_factor: {weighting_factor}")

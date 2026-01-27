@@ -77,6 +77,10 @@ def get_tune_value(tune_string, default=None):
     # Se non matcha nessun pattern, ritorna default
     return default
 
+
+
+
+
 def load_and_preprocess_dataframe(cfg, data_path=None):
     """
     Load DataFrame and apply preprocessing:
@@ -163,7 +167,20 @@ def load_and_preprocess_dataframe(cfg, data_path=None):
         print(f"   🔧 Using subset: first {dataset_subset} samples")
         df = df.iloc[:dataset_subset, :]
 
-    # 7. Optional upsampling
+    # 7. Optional smoothing (supporta liste multiple)
+    smooth_cfg = cfg.dataset.get('smooth', None)
+    if smooth_cfg is not None:
+        print(f"   🔧 Applying smoothing...")
+
+        # Supporta sia singolo dict che lista di dict
+        if isinstance(smooth_cfg, dict):
+            smooth_configs = [smooth_cfg]
+        else:
+            smooth_configs = list(smooth_cfg)
+
+        df = apply_smoothing_groups(df, smooth_configs, cfg.dataset.feats, ano_col)
+
+    # 8. Optional upsampling
     if cfg.dataset.get('upsample_factor', 0) > 1:
         print(f"   🔧 Upsampling by factor {cfg.dataset.upsample_factor}")
         up_factor = cfg.dataset.get('upsample_factor')
@@ -1286,13 +1303,13 @@ def get_samplers_from_index_sets(index_sets: dict, seed=42):
         dict: Dictionary with same keys, values are SubsetRandomSampler objects.
 
     Example:
-        >>> index_sets = {
-        ...     'train': {'indices': [0,1,2,...,1000], 'shuffle': True},
-        ...     'val': {'indices': [1001,1002,...,1200], 'shuffle': False}
-        ... }
-        >>> samplers = get_samplers_from_index_sets(index_sets, seed=42)
-        >>> train_sampler = samplers['train']  # Shuffled indices
-        >>> val_sampler = samplers['val']      # Sequential indices
+    >>> index_sets = {
+    ...     'train': {'indices': [0,1,2,...,1000], 'shuffle': True},
+    ...     'val': {'indices': [1001,1002,...,1200], 'shuffle': False}
+    ... }
+    >>> samplers = get_samplers_from_index_sets(index_sets, seed=42)
+    >>> train_sampler = samplers['train']  # Shuffled indices
+    >>> val_sampler = samplers['val']      # Sequential indices
     """
     import numpy as np
     from torch.utils.data import SubsetRandomSampler
@@ -1535,3 +1552,194 @@ def check_existing_file(cfg, dataset_path, seq_len):
         is_fine_tuning = False  # Fallback to regenerate
 
         return False
+
+
+
+
+def apply_smoothing_groups(df, smooth_configs, feature_cols, ano_col=None):
+    """
+    Apply different smoothing to different feature groups.
+
+    Args:
+        df: DataFrame to smooth
+        smooth_configs: List of smoothing config dicts, each with:
+            - mode: smoothing method
+            - features: 'all' or list of columns
+            - kernel_size: window size
+            - pad_mode: 'drop', 'forward_fill', 'reflect', 'edge' (default: 'drop')
+            - ... (method-specific params)
+        feature_cols: List of feature column names
+        ano_col: Anomaly column name
+
+    Returns:
+        df: DataFrame with smoothed features
+    """
+    df_smoothed = df.copy()
+    smoothed_cols = set()  # Track which columns have been smoothed
+
+    for i, smooth_cfg in enumerate(smooth_configs):
+        print(f"\n   📦 Smoothing group {i + 1}/{len(smooth_configs)}:")
+
+        mode = smooth_cfg.get('mode', 'mean')
+        features = smooth_cfg.get('features', 'all')
+        kernel_size = smooth_cfg.get('kernel_size', 10)
+        pad_mode = smooth_cfg.get('pad_mode', 'drop')  # 'drop', 'ffill', 'reflect', 'edge'
+
+        # Determine columns for this group
+        if features == 'all' or features == ['all']:
+            # All features not yet smoothed
+            cols_to_smooth = [c for c in feature_cols if c not in smoothed_cols]
+        elif isinstance(features, (list, ListConfig)):
+            cols_to_smooth = [f for f in features if f in df.columns and f not in smoothed_cols]
+        else:
+            cols_to_smooth = [features] if features in df.columns and features not in smoothed_cols else []
+
+        # Remove anomaly column
+        if ano_col and ano_col in cols_to_smooth:
+            cols_to_smooth.remove(ano_col)
+
+        if not cols_to_smooth:
+            print(f"      ⚠️  No columns to smooth in this group")
+            continue
+
+        print(f"      - Mode: {mode}")
+        print(f"      - Kernel: {kernel_size}")
+        print(f"      - Pad mode: {pad_mode}")
+        print(f"      - Columns: {cols_to_smooth}")
+
+        # Apply smoothing with padding strategy
+        df_smoothed = apply_smoothing_with_padding(
+            df_smoothed,
+            cols_to_smooth,
+            mode,
+            kernel_size,
+            pad_mode,
+            smooth_cfg
+        )
+
+        # Mark as smoothed
+        smoothed_cols.update(cols_to_smooth)
+
+    # Check for unsmoothed features
+    unsmoothed = [c for c in feature_cols if c not in smoothed_cols and c != ano_col]
+    if unsmoothed:
+        print(f"\n   ℹ️  Unsmoothed features: {unsmoothed}")
+
+    return df_smoothed
+
+
+def apply_smoothing_with_padding(df, cols_to_smooth, mode, kernel_size, pad_mode, smooth_cfg):
+    """
+    Apply smoothing with different padding strategies to avoid data loss.
+    """
+    from scipy.signal import savgol_filter
+    from scipy.ndimage import median_filter, gaussian_filter1d
+    import numpy as np
+
+    df_smoothed = df.copy()
+
+    # ✅ FIX: Map pad_mode to scipy mode correctly
+    pad_mode_to_scipy = {
+        'reflect': 'mirror',  # ← FIX: scipy usa 'mirror' non 'reflect'
+        'edge': 'nearest',
+        'constant': 'constant',
+        'wrap': 'wrap',
+        'mirror': 'mirror',
+        'nearest': 'nearest',
+        'drop': 'nearest',  # Use nearest then drop NaN
+        'ffill': 'nearest'  # Use nearest then ffill
+    }
+
+    scipy_mode = pad_mode_to_scipy.get(pad_mode, 'nearest')
+
+    print(f"         - Padding: {pad_mode} → scipy mode: {scipy_mode}")
+
+    for col in cols_to_smooth:
+        signal = df[col].values
+
+        try:
+            # Apply smoothing based on mode
+            if mode == 'mean':
+                # Rolling mean with padding
+                if pad_mode == 'ffill':
+                    smoothed = df[col].rolling(
+                        window=kernel_size,
+                        min_periods=1,
+                        center=True
+                    ).mean()
+                elif pad_mode == 'drop':
+                    smoothed = df[col].rolling(
+                        window=kernel_size,
+                        min_periods=kernel_size,
+                        center=True
+                    ).mean()
+                else:  # reflect, edge, etc.
+                    pad_width = kernel_size // 2
+                    if pad_mode == 'reflect' or pad_mode == 'mirror':
+                        padded = np.pad(signal, pad_width, mode='reflect')
+                    elif pad_mode == 'edge' or pad_mode == 'nearest':
+                        padded = np.pad(signal, pad_width, mode='edge')
+                    elif pad_mode == 'wrap':
+                        padded = np.pad(signal, pad_width, mode='wrap')
+                    else:
+                        padded = np.pad(signal, pad_width, mode='edge')
+
+                    smoothed = pd.Series(padded).rolling(
+                        window=kernel_size,
+                        min_periods=kernel_size,
+                        center=True
+                    ).mean().values[pad_width:-pad_width]
+
+            elif mode == 'median':
+                # Scipy median filter
+                smoothed = median_filter(signal, size=kernel_size, mode=scipy_mode)
+
+            elif mode == 'gaussian':
+                sigma = kernel_size / 6
+                smoothed = gaussian_filter1d(signal, sigma, mode=scipy_mode)
+
+            elif mode == 'savgol':
+                polyorder = min(3, kernel_size - 1)
+                if kernel_size % 2 == 0:
+                    kernel_size += 1
+                    print(f"         - Adjusted kernel_size to {kernel_size} (must be odd for savgol)")
+
+                # ✅ FIX: Use correct scipy mode
+                smoothed = savgol_filter(signal, kernel_size, polyorder, mode=scipy_mode)
+
+            elif mode == 'ewm':
+                # EWM doesn't lose data at edges
+                smoothed = df[col].ewm(span=kernel_size, min_periods=1).mean()
+
+            else:
+                print(f"         ⚠️  Unknown mode '{mode}', using mean")
+                smoothed = df[col].rolling(window=kernel_size, min_periods=1, center=True).mean()
+
+            df_smoothed[col] = smoothed
+
+        except Exception as e:
+            print(f"         ❌ Error smoothing column '{col}': {e}")
+            print(f"         → Keeping original values for this column")
+            # Keep original values on error
+            df_smoothed[col] = df[col]
+
+    # Handle NaN based on pad_mode
+    if pad_mode == 'drop':
+        initial_rows = len(df_smoothed)
+        df_smoothed = df_smoothed.dropna()
+        dropped = initial_rows - len(df_smoothed)
+        if dropped > 0:
+            print(f"         → Dropped {dropped} rows with NaN ({100 * dropped / initial_rows:.4f}%)")
+    elif pad_mode == 'ffill':
+        # Forward fill then backward fill to handle all NaN
+        df_smoothed = df_smoothed.fillna(method='ffill').fillna(method='bfill')
+        print(f"         → Forward/backward filled NaN values")
+    # For scipy modes (mirror, nearest, etc.), no NaN should be present
+    else:
+        # Check if there are any NaN (shouldn't be with proper scipy modes)
+        nan_count = df_smoothed[cols_to_smooth].isnull().sum().sum()
+        if nan_count > 0:
+            print(f"         ⚠️  Found {nan_count} NaN values, forward filling...")
+            df_smoothed = df_smoothed.fillna(method='ffill').fillna(method='bfill')
+
+    return df_smoothed
