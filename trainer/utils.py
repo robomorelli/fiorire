@@ -3423,3 +3423,283 @@ def get_optimizazion_objects(cfg, model, opt_metric_dict):
 
     print("========================================================\n")
     return optimizer, scheduler, criterion, early_stopping
+
+
+class TemporalFeatureProjectionAdapter(nn.Module):
+    """
+    Adapter che mescola informazione feature E temporale.
+    Ispirato da TSMixer: prima mescola tempo, poi mescola features.
+    """
+
+    def __init__(
+            self,
+            n_in,
+            n_out,
+            seq_len,  # Lunghezza sequenza (W)
+            use_temporal=True,
+            temporal_kernel=3,
+            use_layernorm=True
+    ):
+        super().__init__()
+
+        self.n_in = n_in
+        self.n_out = n_out
+        self.seq_len = seq_len
+        self.use_temporal = use_temporal
+
+        if use_temporal:
+            # STEP 1: Temporal mixing (lungo dimensione tempo)
+            # Conv1D che guarda kernel_size timesteps consecutivi
+            self.temporal_conv = nn.Conv1d(
+                in_channels=n_in,
+                out_channels=n_in,
+                kernel_size=temporal_kernel,
+                padding=temporal_kernel // 2,  # Same padding
+                groups=n_in  # Depthwise: ogni feature indipendente
+            )
+
+            if use_layernorm:
+                self.temporal_ln = nn.LayerNorm(n_in)
+
+            # STEP 2: Feature mixing (lungo dimensione features)
+            self.feature_linear = nn.Linear(n_in, n_out)
+
+            if use_layernorm:
+                self.feature_ln = nn.LayerNorm(n_out)
+        else:
+            # Fallback: solo feature projection
+            self.feature_linear = nn.Linear(n_in, n_out)
+            if use_layernorm:
+                self.feature_ln = nn.LayerNorm(n_out)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Linear, nn.Conv1d)):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        """
+        Args:
+            x: [B, C, H_in, W]
+        Returns:
+            [B, C, H_out, W]
+        """
+        B, C, H_in, W = x.shape
+
+        if self.use_temporal:
+            # TEMPORAL MIXING
+            # Reshape per applicare Conv1D lungo tempo
+            # [B, C, H_in, W] → [B*C, H_in, W]
+            x = x.view(B * C, H_in, W)
+
+            # Conv1D lungo dimensione temporale W
+            # Ogni feature vede temporal_kernel timesteps consecutivi
+            x = self.temporal_conv(x)  # [B*C, H_in, W]
+
+            # Reshape per LayerNorm
+            x = x.permute(0, 2, 1)  # [B*C, W, H_in]
+            if hasattr(self, 'temporal_ln'):
+                x = self.temporal_ln(x)  # Normalizza su features
+
+            # FEATURE MIXING
+            # Ora applica linear su features (con context temporale!)
+            x = self.feature_linear(x)  # [B*C, W, H_out]
+
+            if hasattr(self, 'feature_ln'):
+                x = self.feature_ln(x)
+
+            # Reshape back
+            x = x.permute(0, 2, 1)  # [B*C, H_out, W]
+            x = x.view(B, C, self.n_out, W)  # [B, C, H_out, W]
+
+        else:
+            # Solo feature projection (tuo approccio attuale)
+            x = x.permute(0, 3, 1, 2)  # [B, W, C, H_in]
+            x = x.reshape(B * W, C * H_in)
+            x = self.feature_linear(x)
+            if hasattr(self, 'feature_ln'):
+                x = self.feature_ln(x)
+            x = x.view(B, W, C, self.n_out)
+            x = x.permute(0, 2, 3, 1)  # [B, C, H_out, W]
+
+        return x
+
+
+class TSMixerAdapter(nn.Module):
+    """
+    Ispirato a TSMixer: alterna mixing temporale e feature mixing.
+    Molto efficiente e performante per time series.
+    """
+
+    def __init__(
+            self,
+            n_in,
+            n_out,
+            seq_len,
+            hidden_dim=None,
+            dropout=0.1
+    ):
+        super().__init__()
+
+        if hidden_dim is None:
+            hidden_dim = max(n_in, n_out)
+
+        self.n_in = n_in
+        self.n_out = n_out
+        self.seq_len = seq_len
+
+        # Time-mixing MLP
+        self.time_mixing = nn.Sequential(
+            nn.Linear(seq_len, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, seq_len),
+            nn.Dropout(dropout)
+        )
+
+        self.ln1 = nn.LayerNorm(n_in)
+
+        # Feature-mixing MLP
+        self.feature_mixing = nn.Sequential(
+            nn.Linear(n_in, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, n_out),
+            nn.Dropout(dropout)
+        )
+
+        self.ln2 = nn.LayerNorm(n_out)
+
+    def forward(self, x):
+        """
+        Args:
+            x: [B, C, H_in, W]
+        Returns:
+            [B, C, H_out, W]
+        """
+        B, C, H_in, W = x.shape
+
+        # Reshape: [B, C, H_in, W] → [B*C, H_in, W]
+        x = x.view(B * C, H_in, W)
+
+        # Time-mixing: MLP lungo dimensione temporale
+        # [B*C, H_in, W] → transpose → [B*C, W, H_in]
+        residual = x
+        x = x.transpose(1, 2)  # [B*C, W, H_in]
+
+        # Per ogni feature, applica MLP su dimensione tempo
+        # Processa ogni feature separatamente
+        x_time = []
+        for i in range(H_in):
+            # [B*C, W] → MLP → [B*C, W]
+            x_feat = self.time_mixing(x[..., i])
+            x_time.append(x_feat)
+
+        x = torch.stack(x_time, dim=-1)  # [B*C, W, H_in]
+        x = x.transpose(1, 2)  # [B*C, H_in, W]
+
+        # Residual + LayerNorm
+        x = x + residual
+        x = x.transpose(1, 2)  # [B*C, W, H_in]
+        x = self.ln1(x)
+
+        # Feature-mixing: MLP lungo dimensione features
+        residual = x
+        x = self.feature_mixing(x)  # [B*C, W, H_out]
+
+        # Se dimensioni compatibili, aggiungi residual
+        if H_in == self.n_out:
+            x = x + residual
+
+        x = self.ln2(x)
+
+        # Reshape back
+        x = x.transpose(1, 2)  # [B*C, H_out, W]
+        x = x.view(B, C, self.n_out, W)
+
+        return x
+
+    class AttentionFeatureProjectionAdapter(nn.Module):
+        """
+        Usa attention per catturare dipendenze temporali long-range.
+        Poi proietta le features.
+        """
+
+        def __init__(
+                self,
+                n_in,
+                n_out,
+                seq_len,
+                n_heads=4,
+                use_layernorm=True
+        ):
+            super().__init__()
+
+            self.n_in = n_in
+            self.n_out = n_out
+            self.seq_len = seq_len
+
+            # Temporal self-attention
+            self.temporal_attention = nn.MultiheadAttention(
+                embed_dim=n_in,
+                num_heads=n_heads,
+                batch_first=False  # Usa (seq, batch, feature)
+            )
+
+            if use_layernorm:
+                self.ln1 = nn.LayerNorm(n_in)
+
+            # Feature projection
+            self.feature_linear = nn.Linear(n_in, n_out)
+
+            if use_layernorm:
+                self.ln2 = nn.LayerNorm(n_out)
+
+            self._init_weights()
+
+        def _init_weights(self):
+            for m in self.modules():
+                if isinstance(m, nn.Linear):
+                    nn.init.kaiming_normal_(m.weight)
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
+
+        def forward(self, x):
+            """
+            Args:
+                x: [B, C, H_in, W]
+            Returns:
+                [B, C, H_out, W]
+            """
+            B, C, H_in, W = x.shape
+
+            # Reshape per attention: [B*C, W, H_in] → [W, B*C, H_in]
+            x = x.permute(3, 0, 1, 2).contiguous()  # [W, B, C, H_in]
+            x = x.view(W, B * C, H_in)  # [W, B*C, H_in]
+
+            # Self-attention lungo dimensione temporale
+            # Ogni timestep "guarda" tutti gli altri timesteps
+            attn_out, _ = self.temporal_attention(x, x, x)  # [W, B*C, H_in]
+
+            # Residual connection
+            x = x + attn_out
+
+            if hasattr(self, 'ln1'):
+                x = self.ln1(x)
+
+            # Feature projection
+            x = self.feature_linear(x)  # [W, B*C, H_out]
+
+            if hasattr(self, 'ln2'):
+                x = self.ln2(x)
+
+            # Reshape back
+            x = x.view(W, B, C, self.n_out)
+            x = x.permute(1, 2, 3, 0).contiguous()  # [B, C, H_out, W]
+
+            return x
+
