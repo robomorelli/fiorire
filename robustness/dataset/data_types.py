@@ -51,8 +51,14 @@ class OptConfig:
     checkpoint_path: str
 
 @dataclass
+class DefenseConfig:
+    alpha: float
+    num_iter: int
+
+@dataclass
 class Config:
     model: ModelConfig
     dataset: DatasetConfig
     trainer: TrainerConfig
     opt: OptConfig
+    defense: DefenseConfig

@@ -5,6 +5,7 @@ import fire
 import torch
 
 from pytorch_lightning.callbacks import EarlyStopping
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 from robustness.lightning_module.lit_module import LitAutoEncoder
 from robustness.utils import inject_training_hparams_from_ckpt
@@ -37,6 +38,14 @@ def main(config_path: str | Path, mode: str = "train"):
             mode="min",
             verbose=True,
         )
+        checkpoint_cb = ModelCheckpoint(
+            dirpath=cfg.trainer.out_dir,
+            filename="best-{epoch:03d}-{val_loss:.4f}",
+            monitor="val_loss",      # metrica da ottimizzare
+            mode="min",
+            save_top_k=1,            # salva SOLO il migliore
+            save_last=False,         # opzionale
+        )
 
         trainer = Trainer(
             accelerator=cfg.trainer.accelerator,
@@ -44,7 +53,7 @@ def main(config_path: str | Path, mode: str = "train"):
             max_epochs=cfg.trainer.epochs,
             precision=cfg.trainer.precision,
             default_root_dir=cfg.trainer.out_dir,
-            callbacks=[early_stopping],
+            callbacks=[early_stopping, checkpoint_cb],
         )
 
         trainer.fit(model, datamodule=datamodule)
@@ -54,7 +63,6 @@ def main(config_path: str | Path, mode: str = "train"):
 
         # carichiamo a mano il modello perché non è un checkpoint Lightning
         # non possiamo usare: LitAutoEncoder.load_from_checkpoint(...)
-        
         model.load_state_dict(ckpt_dict["model_state_dict"], strict=True)
         model.eval()
 
