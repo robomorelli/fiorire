@@ -1,11 +1,11 @@
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
-import warnings
 
 from robustness.dataset.data_types import Config
 from models.conv_ae2D import CONV_AE2D
 from scheduler import build_scheduler
+from defenses import approximate_projection, apply_feature_weighting
 
 class LitAutoEncoder(pl.LightningModule):
     def __init__(self, cfg: Config):
@@ -63,48 +63,27 @@ class LitAutoEncoder(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         x = batch
 
-        # ---------- encode ----------
-        with torch.no_grad():
-            enc = self.model.encoder(x)
+        x_rec, _ = approximate_projection(
+            encoder=self.model.encoder,
+            decoder=self.model.decoder,
+            x=x,
+            alpha=self.cfg.defense.alpha,
+            num_iter=self.cfg.defense.num_iter,
+        )
 
-        enc = enc.detach().clone().requires_grad_(True)
-
-        loss_fn = torch.nn.SmoothL1Loss(reduction="sum")
-        alpha = self.cfg.defense.alpha
-        num_iter = self.cfg.defense.num_iter
-
-        # ---------- approximate projection ----------
-        for _ in range(num_iter):
-            x_rec = self.model.decoder(enc)
-            loss = loss_fn(x_rec, x)
-
-            loss.backward()
-            enc.data -= alpha * enc.grad
-            enc.grad.zero_()
-
-        # ---------- reconstruction error ----------
-        # per-feature error: [B, F]
         rec_err_feat = (x_rec - x).pow(2).mean(dim=1)
 
-        # ---------- feature weighting ----------
-        if self.train_feat_median is not None:
-            weights = 1.0 / (
-                1e-4 + self.train_feat_median.to(rec_err_feat.device)
-            )
-            rec_err = (rec_err_feat * weights).sum(dim=1)
-        else:
-            if batch_idx == 0:
-                warnings.warn(
-                    "Train feature errors not found: "
-                    "feature weighting DISABLED during test."
-                )
-            rec_err = rec_err_feat.sum(dim=1)
+        rec_err = apply_feature_weighting(
+            rec_err_feat,
+            self.train_feat_median,
+            epsilon=1e-4,
+            batch_idx=batch_idx,
+        )
 
         self.log(
             "test_rec_error",
             rec_err.mean(),
             prog_bar=True,
-            on_step=False,
             on_epoch=True,
         )
 
@@ -121,6 +100,7 @@ class LitAutoEncoder(pl.LightningModule):
             "lr_scheduler": scheduler_dict,
         }
     
+    # called when a lightning checkpoint is saved or loaded
     def on_save_checkpoint(self, checkpoint):
         if hasattr(self, "train_feat_median"):
             checkpoint["train_feat_median"] = self.train_feat_median
