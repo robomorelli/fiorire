@@ -166,8 +166,8 @@ def get_scaler(cfg, df_fit=None, df_transform=None):
             q1 = float(parts[1])
             q2 = float(parts[2])
         else:
-            q1, q2 = 0.25, 0.75  # default
-        scaler = RobustScaler(quantile_range=(q1 * 100, q2 * 100))
+            q1, q2 = 25,75  # default
+        scaler = RobustScaler(quantile_range=(q1, q2))
     else:
         raise ValueError(f"Scaler '{scaler_name}' not supported.")
 
@@ -191,6 +191,8 @@ def get_scaler(cfg, df_fit=None, df_transform=None):
 
         # Serialize parameters (if you have a helper)
         scaler_params = serialize_scaler(scaler)
+        print(f"   ✓ Scaled  features")
+        print(df_scaled.describe())
         return scaler, df_scaled, scaler_params
     else:
         return scaler, None, None
