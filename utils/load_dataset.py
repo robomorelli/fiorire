@@ -78,10 +78,7 @@ def get_tune_value(tune_string, default=None):
     return default
 
 
-
-
-
-def load_and_preprocess_dataframe(cfg, data_path=None):
+def load_and_preprocess_dataframe(cfg, data_path=None, apply_smoothing=True):
     """
     Load DataFrame and apply preprocessing:
     - Feature selection
@@ -89,10 +86,13 @@ def load_and_preprocess_dataframe(cfg, data_path=None):
     - Column removal
     - NaN removal
     - Optional upsampling
+    - Optional smoothing (controlled by apply_smoothing flag)
 
     Args:
         cfg: Configuration
         data_path: Optional path override (if None, uses cfg.dataset.data_path)
+        apply_smoothing: If True, apply smoothing as configured (default: True for backward compatibility)
+                        If False, skip smoothing (used for two-scaler pipeline)
 
     Returns:
         df: Preprocessed DataFrame
@@ -167,9 +167,11 @@ def load_and_preprocess_dataframe(cfg, data_path=None):
         print(f"   🔧 Using subset: first {dataset_subset} samples")
         df = df.iloc[:dataset_subset, :]
 
-    # 7. Optional smoothing (supporta liste multiple)
+    # 7. Optional smoothing (CONTROLLATO DA apply_smoothing FLAG)
     smooth_cfg = cfg.dataset.get('smooth', None)
-    if smooth_cfg is not None:
+
+    if smooth_cfg is not None and apply_smoothing:
+        # Smoothing richiesto E flag attivo
         print(f"   🔧 Applying smoothing...")
 
         # Supporta sia singolo dict che lista di dict
@@ -179,6 +181,15 @@ def load_and_preprocess_dataframe(cfg, data_path=None):
             smooth_configs = list(smooth_cfg)
 
         df = apply_smoothing_groups(df, smooth_configs, cfg.dataset.feats, ano_col)
+
+    elif smooth_cfg is not None and not apply_smoothing:
+        # Smoothing configurato MA flag disattivo
+        print(f"   ℹ️  Smoothing configured but skipped (apply_smoothing=False)")
+        print(f"      → Smoothing will be applied later in the pipeline")
+
+    elif smooth_cfg is None:
+        # Nessun smoothing configurato
+        print(f"   ℹ️  No smoothing configured")
 
     # 8. Optional upsampling
     if cfg.dataset.get('upsample_factor', 0) > 1:
@@ -653,12 +664,16 @@ def parse_metadata_file(metadata_path):
 
     return metadata
 
+
 def prepare_shared_configuration(cfg):
     """
     Prepare shared configuration by saving indices to disk.
+    NOW WITH TWO-SCALER PIPELINE for proper anomaly smoothing.
 
-    - If fine_tuning=1 AND paths exist: REUSE existing files (read from metadata.txt)
-    - Otherwise: REGENERATE (delete old if exists)
+    Key features:
+    - Automatically forces regeneration when preprocessing is configured
+    - Supports both raw-only and smoothed+raw dual-scaler pipelines
+    - Conditional smoothing based on dataset.smooth configuration
     """
     import torch
     import os
@@ -666,6 +681,7 @@ def prepare_shared_configuration(cfg):
     from pathlib import Path
     import pickle
     import shutil
+    import json
 
     print("\n" + "=" * 80)
     print("📦 PREPARING SHARED CONFIGURATION (Disk-based)")
@@ -677,6 +693,22 @@ def prepare_shared_configuration(cfg):
     is_anomaly_column = cfg.dataset.get('is_anomaly_column', None)
     dataset_path = cfg.dataset.data_path
     seq_len = cfg.dataset.seq_in_length
+    force_regenerate = cfg.opt.get('force_regenerate', False)
+
+    # Check if preprocessing (smoothing) is configured
+    smooth_cfg = cfg.dataset.get('smooth', None)
+    has_preprocessing = smooth_cfg is not None
+
+    # ✅ FORCE REGENERATE if preprocessing is configured
+    if has_preprocessing:
+        print(f"   ✓ Preprocessing configured: {smooth_cfg}")
+        print(f"   🔄 Forcing regeneration due to preprocessing")
+        force_regenerate = True
+    else:
+        print(f"   ⚠️  No preprocessing configured - will use raw data only")
+
+    if force_regenerate:
+        print(f"   ✅ force_regenerate = True")
 
     # Build experiment identifier
     model_name = cfg.model.get('name', 'unknown_model')
@@ -695,11 +727,14 @@ def prepare_shared_configuration(cfg):
     print(f"\n🔍 Mode: {'FINE-TUNING' if is_fine_tuning else 'TRAINING FROM SCRATCH'}")
 
     # ============================================================
-    # Try to reuse existing files
+    # Try to reuse existing files (unless force_regenerate is True)
     # ============================================================
-    shared_config = check_existing_file(cfg, dataset_path, seq_len)
-    if shared_config:
-        return shared_config
+    if not force_regenerate:
+        shared_config = check_existing_file(cfg, dataset_path, seq_len)
+        if shared_config:
+            return shared_config
+    else:
+        print(f"\n   🔄 force_regenerate=True - will regenerate all files")
 
     # ============================================================
     # TRAINING FROM SCRATCH MODE: Regenerate everything
@@ -709,52 +744,63 @@ def prepare_shared_configuration(cfg):
 
     # Add filter_anomalies suffix
     filter_anomalies_suffix = "filtered" if filter_anomalies else "unfiltered"
+    preprocessing_suffix = "smoothed" if has_preprocessing else "raw"
 
     # Base directory for ALL indices
     base_indices_dir = Path('./train_val_indices/')
     base_indices_dir.mkdir(exist_ok=True)
 
-    # Experiment-specific subdirectory with filter suffix
-    exp_subdir_name = f"{model_name}_{exp_name}_{dataset_name}_seed{seed}_{filter_anomalies_suffix}"
+    # Experiment-specific subdirectory with filter and preprocessing suffix
+    exp_subdir_name = f"{model_name}_{exp_name}_{dataset_name}_seed{seed}_{filter_anomalies_suffix}_{preprocessing_suffix}"
     exp_indices_dir = base_indices_dir / exp_subdir_name
 
-    # Delete existing directory if present
+
+    # Delete existing directory if present (and force_regenerate is True)
     if exp_indices_dir.exists():
-        print(f"\n   ⚠️  Experiment directory already exists: {exp_indices_dir}")
-        print(f"   🗑️  Deleting existing directory...")
-        try:
-            shutil.rmtree(exp_indices_dir)
-            print(f"   ✓ Deleted successfully")
-        except Exception as e:
-            print(f"   ❌ ERROR deleting directory: {e}")
-            raise
+        if force_regenerate:
+            print(f"\n   ⚠️  Experiment directory already exists: {exp_indices_dir}")
+            print(f"   🗑️  Deleting existing directory (force_regenerate=True)...")
+            try:
+                shutil.rmtree(exp_indices_dir)
+                print(f"   ✓ Deleted successfully")
+            except Exception as e:
+                print(f"   ❌ ERROR deleting directory: {e}")
+                raise
+        else:
+            print(f"\n   ✓ Using existing directory: {exp_indices_dir}")
 
     # Create fresh directory
     exp_indices_dir.mkdir(exist_ok=True)
-    print(f"   ✓ Created fresh experiment directory: {exp_indices_dir}")
+    print(f"   ✓ Directory ready: {exp_indices_dir}")
 
     # Define file paths
     indices_filename = 'train_val_indices.npz'
     scaler_filename = 'scaler.pkl'
+    scaler_raw_filename = 'scaler_raw.pkl' if has_preprocessing else None
     metadata_filename = 'metadata.txt'
 
     indices_path = exp_indices_dir / indices_filename
     scaler_path = exp_indices_dir / scaler_filename
+    scaler_raw_path = exp_indices_dir / scaler_raw_filename if has_preprocessing else None
     metadata_path = exp_indices_dir / metadata_filename
 
-    # 1. Load data
-    print("\n1️⃣ Loading dataset...")
-    df = load_and_preprocess_dataframe(cfg)
+    # ============================================================
+    # 1. LOAD RAW DATA
+    # ============================================================
+    print("\n1️⃣ Loading RAW dataset...")
+    df_raw = load_and_preprocess_dataframe(cfg, apply_smoothing=False)
     feature_columns = cfg.dataset.feats
-    print(f"   ✓ Loaded: {df.shape}")
+    print(f"   ✓ Loaded RAW: {df_raw.shape}")
     print(f"   ✓ Features: {len(feature_columns)}")
 
-    # 2. Split indices (NO OVERLAP - base indices only)
+    # ============================================================
+    # 2. SPLIT INDICES
+    # ============================================================
     print("\n2️⃣ Splitting train/val indices (no overlap)...")
     train_indexes, val_indexes, train_df_for_scaling, anomalous_data = (
         create_train_val_df_indexes(
             cfg=cfg,
-            df=df,
+            df=df_raw,
             return_anomalies=filter_anomalies,
             ano_col=is_anomaly_column,
             seed=seed
@@ -776,18 +822,106 @@ def prepare_shared_configuration(cfg):
             avg_density = anomaly_window_labels.mean()
             print(f"   ✓ Average anomaly density: {avg_density:.2%}")
 
-    # 3. Fit scaler on CLEAN train data
-    print("\n3️⃣ Fitting scaler on CLEAN train data...and transform the entire dataset (included anomalous windows)")
-    scaler, df_scaled, scaler_params = get_scaler(
-        cfg=cfg,
-        df_fit=train_df_for_scaling,
-        df_transform=df
-    )
-    print(f"   ✓ Scaler fitted: {scaler.__class__.__name__}")
-    print(f"   ✓ Scaler params: {scaler_params}")
+    # ============================================================
+    # 3. CONDITIONAL PREPROCESSING
+    # ============================================================
+    if has_preprocessing:
+        print("\n3️⃣ Applying smoothing to TRAINING data...")
+        df_train_smoothed = apply_smoothing_to_dataframe(
+            df=df_raw.iloc[train_indexes].copy(),
+            cfg=cfg,
+            feature_columns=feature_columns
+        )
+        print(f"   ✓ Training data smoothed: {df_train_smoothed.shape}")
+    else:
+        print("\n3️⃣ Skipping smoothing (no preprocessing configured)")
+        df_train_smoothed = df_raw.iloc[train_indexes].copy()
 
-    # 4. Generate and save metric dataset
-    print("\n4️⃣ Generating metric dataset...")
+    # ============================================================
+    # 4. FIT SCALERS (ONE OR TWO depending on preprocessing)
+    # ============================================================
+    print(f"\n4️⃣ Fitting {'TWO' if has_preprocessing else 'ONE'} scaler(s)...")
+
+    scaler_raw = None
+    scaler_raw_params = None
+
+    if has_preprocessing:
+        # 4a. Scaler on RAW training (for metric generation pipeline)
+        print("   a) Fitting scaler on RAW training data...")
+        df_train_raw = df_raw.iloc[train_indexes].copy()
+
+        if filter_anomalies and is_anomaly_column:
+            train_df_raw_clean = df_train_raw[df_train_raw[is_anomaly_column] == 0].copy()
+            print(f"      - Filtered anomalies: {len(df_train_raw)} → {len(train_df_raw_clean)}")
+        else:
+            train_df_raw_clean = df_train_raw.copy()
+
+        scaler_raw, scaler_raw_params = get_scaler_fitted(
+            cfg=cfg,
+            df_fit=train_df_raw_clean,
+            feature_columns=feature_columns
+        )
+        print(f"      ✓ Scaler RAW fitted: {scaler_raw.__class__.__name__}")
+
+        # 4b. Scaler on SMOOTHED training (for training/evaluation)
+        print("   b) Fitting scaler on SMOOTHED training data...")
+    else:
+        print("   a) Fitting scaler on RAW training data (no preprocessing)...")
+
+    # Fit main scaler (on smoothed or raw depending on preprocessing)
+    if filter_anomalies and is_anomaly_column:
+        train_df_clean = df_train_smoothed[
+            df_train_smoothed[is_anomaly_column] == 0
+            ].copy()
+        print(f"      - Filtered anomalies: {len(df_train_smoothed)} → {len(train_df_clean)}")
+    else:
+        train_df_clean = df_train_smoothed.copy()
+
+    scaler_main, scaler_main_params = get_scaler_fitted(
+        cfg=cfg,
+        df_fit=train_df_clean,
+        feature_columns=feature_columns
+    )
+    scaler_label = "SMOOTHED" if has_preprocessing else "RAW"
+    print(f"      ✓ Scaler {scaler_label} fitted: {scaler_main.__class__.__name__}")
+
+    # Compare scaler statistics (only if two scalers)
+    if has_preprocessing and scaler_raw is not None:
+        if hasattr(scaler_raw, 'mean_') and hasattr(scaler_main, 'mean_'):
+            mean_diff = np.abs(scaler_raw.mean_ - scaler_main.mean_).max()
+            std_ratio = (scaler_main.scale_ / scaler_raw.scale_).mean()
+            print(f"\n      📊 Scaler Comparison:")
+            print(f"         - Max mean difference: {mean_diff:.6f}")
+            print(f"         - Avg std ratio (smooth/raw): {std_ratio:.4f}")
+            print(f"         → Smoothed data has ~{(1 - std_ratio) * 100:.1f}% less variance")
+
+    # ============================================================
+    # 5. PROCESS ENTIRE DATASET
+    # ============================================================
+    if has_preprocessing:
+        print("\n5️⃣ Applying smoothing to ENTIRE dataset...")
+        df_full_processed = apply_smoothing_to_dataframe(
+            df=df_raw.copy(),
+            cfg=cfg,
+            feature_columns=feature_columns
+        )
+        print(f"   ✓ Full dataset smoothed: {df_full_processed.shape}")
+    else:
+        print("\n5️⃣ Using RAW data for entire dataset...")
+        df_full_processed = df_raw.copy()
+
+    # Standardize with main scaler
+    df_scaled, _ = transform_dataframe_with_scaler(
+        df=df_full_processed,
+        scaler=scaler_main,
+        feature_columns=feature_columns
+    )
+    print(f"   ✓ Full dataset standardized")
+
+    # ============================================================
+    # 6. GENERATE METRIC DATASET WITH APPROPRIATE PIPELINE
+    # ============================================================
+    print("\n6️⃣ Generating metric dataset...")
     metric_dataset_path = None
     anomaly_strategy = cfg.opt.get('anomaly_strategy', 'none')
 
@@ -807,16 +941,15 @@ def prepare_shared_configuration(cfg):
         print(f"   ✓ Metric overlap: {metric_seq_overlap}")
         print(f"   ✓ Val indices for metric: {len(val_indices_for_metric)} (from {len(val_indexes)} base)")
 
-        # Extract clean sequences
-        print(f"   - Extracting clean sequences for metric dataset...")
-        clean_sequences = extract_sequences_from_indices(
-            df=df_scaled,
+        # Extract RAW validation sequences
+        print(f"\n   🔑 Extracting VALIDATION sequences from RAW data...")
+        val_sequences_raw = extract_sequences_from_indices(
+            df=df_raw,
             indices=val_indices_for_metric,
             seq_len=seq_len,
             feature_columns=feature_columns
         )
-
-        print(f"   ✓ Clean sequences extracted: {clean_sequences.shape}")
+        print(f"   ✓ Raw validation sequences: {val_sequences_raw.shape}")
 
         # Extract original anomaly sequences if needed
         original_anomaly_sequences = None
@@ -834,19 +967,37 @@ def prepare_shared_configuration(cfg):
 
                 print(f"   ✓ Anomalous indices for metric: {len(anomalous_indices_for_metric)}")
 
-                original_anomaly_sequences = extract_sequences_from_indices(
-                    df=df_scaled,
+                # Extract from RAW data
+                original_anomaly_sequences_raw = extract_sequences_from_indices(
+                    df=df_raw,
                     indices=anomalous_indices_for_metric,
                     seq_len=seq_len,
                     feature_columns=feature_columns,
                 )
 
-                # Extract labels
-                if is_anomaly_column and is_anomaly_column in df.columns:
+                # Apply preprocessing if configured
+                if has_preprocessing:
+                    original_anomaly_sequences_processed = apply_smoothing_to_sequences(
+                        sequences=original_anomaly_sequences_raw,
+                        cfg=cfg,
+                        feature_columns=feature_columns
+                    )
+                else:
+                    original_anomaly_sequences_processed = original_anomaly_sequences_raw
+
+                # Standardize with main scaler
+                original_anomaly_sequences = standardize_sequences(
+                    sequences=original_anomaly_sequences_processed,
+                    scaler=scaler_main,
+                    feature_columns=feature_columns
+                )
+
+                # Extract labels from raw data
+                if is_anomaly_column and is_anomaly_column in df_raw.columns:
                     original_anomaly_labels = []
                     for idx in anomalous_indices_for_metric:
-                        if idx + seq_len <= len(df):
-                            label_seq = df[is_anomaly_column].iloc[idx:idx + seq_len].values
+                        if idx + seq_len <= len(df_raw):
+                            label_seq = df_raw[is_anomaly_column].iloc[idx:idx + seq_len].values
                             original_anomaly_labels.append(label_seq)
 
                     original_anomaly_labels = np.array(original_anomaly_labels)
@@ -855,24 +1006,26 @@ def prepare_shared_configuration(cfg):
                     print(f"   ✓ Original anomaly sequences: {original_anomaly_sequences.shape}")
                     print(f"   ✓ Original anomaly labels: {original_anomaly_labels.shape}")
                 else:
-                    print(f"   ⚠️  Anomaly column '{is_anomaly_column}' not found in DataFrame!")
+                    print(f"   ⚠️  Anomaly column '{is_anomaly_column}' not found!")
                     original_anomaly_sequences = None
                     original_anomaly_labels = None
             else:
-                print(f"   ⚠️  No anomalous indices found! Cannot use '{anomaly_strategy}' strategy")
+                print(f"   ⚠️  No anomalous indices found!")
                 print(f"       Falling back to 'corrupt_validation' strategy")
                 anomaly_strategy = 'corrupt_validation'
 
-        # Generate metric dataset
+        # Generate metric dataset with appropriate scalers
         metric_dataset_path = generate_and_save_metric_dataset(
             cfg=cfg,
-            clean_sequences=clean_sequences,
+            val_sequences_raw=val_sequences_raw,
             feature_columns=feature_columns,
-            scaler=scaler,
+            scaler_raw=scaler_raw if has_preprocessing else scaler_main,  # Use appropriate scaler
+            scaler_smoothed=scaler_main,
+            anomaly_strategy=anomaly_strategy,
             original_anomaly_sequences=original_anomaly_sequences,
             original_anomaly_labels=original_anomaly_labels,
             output_dir='./metric_datasets/',
-            force_regenerate=cfg.opt.get('force_regenerate', False),
+            force_regenerate=force_regenerate,  # Pass force_regenerate flag
             plot_samples=cfg.opt.get('plot_metric_samples', False),
             plot_percentage=cfg.opt.get('plot_metric_percentage', 0.05)
         )
@@ -889,10 +1042,12 @@ def prepare_shared_configuration(cfg):
     else:
         print(f"   - Anomaly strategy is 'none' - skipping metric dataset")
 
-    # 5. Save indices and scaler to disk
-    print("\n5️⃣ Saving indices and scaler to disk...")
+    # ============================================================
+    # 7. SAVE INDICES AND SCALER(S) TO DISK
+    # ============================================================
+    print(f"\n7️⃣ Saving indices and scaler(s) to disk...")
 
-    # Save indices (compressed NPZ)
+    # Save indices
     np.savez_compressed(
         indices_path,
         train_indices=train_indexes,
@@ -905,15 +1060,26 @@ def prepare_shared_configuration(cfg):
     print(f"   ✓ Train indices: {len(train_indexes):,}")
     print(f"   ✓ Val indices: {len(val_indexes):,}")
 
-    # Save scaler
+    # Save MAIN scaler (smoothed if preprocessing enabled, raw otherwise)
     with open(scaler_path, 'wb') as f:
-        pickle.dump(scaler, f)
+        pickle.dump(scaler_main, f)
 
     scaler_size = os.path.getsize(scaler_path) / 1024  # KB
-    print(f"   ✓ Scaler saved: {scaler_path}")
+    scaler_label = "smoothed" if has_preprocessing else "raw"
+    print(f"   ✓ Scaler ({scaler_label}) saved: {scaler_path}")
     print(f"   ✓ File size: {scaler_size:.2f} KB")
 
-    # Save metadata for reference
+    # Save RAW scaler (only if preprocessing was applied)
+    scaler_raw_size = 0
+    if has_preprocessing and scaler_raw is not None:
+        with open(scaler_raw_path, 'wb') as f:
+            pickle.dump(scaler_raw, f)
+
+        scaler_raw_size = os.path.getsize(scaler_raw_path) / 1024  # KB
+        print(f"   ✓ Scaler (raw) saved: {scaler_raw_path}")
+        print(f"   ✓ File size: {scaler_raw_size:.2f} KB")
+
+    # Save metadata
     with open(metadata_path, 'w') as f:
         f.write(f"Experiment: {exp_name}\n")
         f.write(f"Model: {model_name}\n")
@@ -923,49 +1089,50 @@ def prepare_shared_configuration(cfg):
         f.write(f"Sequence length: {seq_len}\n")
         f.write(f"Train indices: {len(train_indexes):,}\n")
         f.write(f"Val indices: {len(val_indexes):,}\n")
-        f.write(f"Scaler: {scaler.__class__.__name__}\n")
-
-        # ✅ Use JSON for scaler_params (single line, no indent issues)
-        f.write(f"Scaler params: {json.dumps(scaler_params)}\n")
-
+        f.write(f"Preprocessing: {'Yes (smoothing)' if has_preprocessing else 'No (raw only)'}\n")
+        f.write(f"Scaler (main): {scaler_main.__class__.__name__}\n")
+        f.write(f"Scaler main params: {json.dumps(scaler_main_params)}\n")
+        if has_preprocessing and scaler_raw is not None:
+            f.write(f"Scaler (raw): {scaler_raw.__class__.__name__}\n")
+            f.write(f"Scaler raw params: {json.dumps(scaler_raw_params)}\n")
         f.write(f"Feature columns: {', '.join(feature_columns)}\n")
     print(f"   ✓ Metadata saved: {metadata_path}")
 
-    # 6. Build shared config
+    # Build shared configuration dictionary
     shared_config = {
-        # Paths to experiment-specific directory
         'indices_path': str(indices_path),
         'scaler_path': str(scaler_path),
+        'scaler_raw_path': str(scaler_raw_path) if has_preprocessing else None,
         'experiment_dir': str(exp_indices_dir),
-
-        # Dataset path
         'dataset_path': str(dataset_path),
         'metric_loader_path': metric_dataset_path,
-
-        # Small metadata
-        'scaler_params': scaler_params,
+        'scaler_params': scaler_main_params,
+        'scaler_raw_params': scaler_raw_params if has_preprocessing else None,
         'feature_columns': list(feature_columns),
         'seq_len': int(seq_len),
-
-        # Statistics
         'train_size': int(len(train_indexes)),
         'val_size': int(len(val_indexes)),
-
-        # Experiment identifier
         'exp_identifier': exp_subdir_name,
+        'has_preprocessing': has_preprocessing,
     }
 
     print("\n" + "=" * 80)
-    print("✅ SHARED CONFIGURATION READY (REGENERATED)")
+    pipeline_type = "TWO-SCALER PIPELINE" if has_preprocessing else "SINGLE-SCALER (RAW)"
+    print(f"✅ SHARED CONFIGURATION READY ({pipeline_type})")
     print("=" * 80)
-    print(f"   Mode: Training from scratch (regenerated all files)")
+    print(f"   Mode: Training from scratch")
     print(f"   - Experiment directory: {exp_indices_dir}")
+    print(f"   - Scaler (main): for training/evaluation")
+    if has_preprocessing:
+        print(f"   - Scaler (raw): for metric generation pipeline")
     print(f"   - Indices: {len(train_indexes):,} train, {len(val_indexes):,} val")
-    print(f"   - Scaler: {scaler.__class__.__name__}")
     if metric_dataset_path:
         print(f"   - Metric dataset: {metric_dataset_path}")
-    print(f"   - File sizes: {indices_size:.2f} MB + {scaler_size:.2f} KB")
-    print(f"   ⚠️  All trials will read from: {exp_indices_dir}")
+    total_size = indices_size + scaler_size / 1024 + scaler_raw_size / 1024
+    print(f"   - Total file size: {total_size:.2f} MB")
+    print("=" * 80)
+
+    return shared_config
     print("=" * 80)
 
     return shared_config
@@ -1303,13 +1470,13 @@ def get_samplers_from_index_sets(index_sets: dict, seed=42):
         dict: Dictionary with same keys, values are SubsetRandomSampler objects.
 
     Example:
-    >>> index_sets = {
+    index_sets = {
     ...     'train': {'indices': [0,1,2,...,1000], 'shuffle': True},
     ...     'val': {'indices': [1001,1002,...,1200], 'shuffle': False}
     ... }
-    >>> samplers = get_samplers_from_index_sets(index_sets, seed=42)
-    >>> train_sampler = samplers['train']  # Shuffled indices
-    >>> val_sampler = samplers['val']      # Sequential indices
+    samplers = get_samplers_from_index_sets(index_sets, seed=42)
+    train_sampler = samplers['train']  # Shuffled indices
+    val_sampler = samplers['val']      # Sequential indices
     """
     import numpy as np
     from torch.utils.data import SubsetRandomSampler
@@ -1743,3 +1910,399 @@ def apply_smoothing_with_padding(df, cols_to_smooth, mode, kernel_size, pad_mode
             df_smoothed = df_smoothed.fillna(method='ffill').fillna(method='bfill')
 
     return df_smoothed
+
+
+def apply_smoothing_to_dataframe(df, cfg, feature_columns):
+    """
+    Apply smoothing to a DataFrame (wrapper around existing apply_smoothing_groups).
+
+    Args:
+        df: DataFrame with time series data
+        cfg: configuration
+        feature_columns: list of columns to smooth
+
+    Returns:
+        df_smoothed: DataFrame with smoothed data
+    """
+    smooth_cfg = cfg.dataset.get('smooth', None)
+
+    if smooth_cfg is None:
+        print(f"      ℹ️  No smoothing configured - returning original data")
+        return df.copy()
+
+    print(f"      🔧 Applying smoothing to dataframe...")
+
+    # Get anomaly column
+    ano_col = cfg.dataset.get('is_anomaly_column')
+
+    # Supporta sia singolo dict che lista di dict
+    if isinstance(smooth_cfg, dict):
+        smooth_configs = [smooth_cfg]
+    else:
+        smooth_configs = list(smooth_cfg)
+
+    # Use your existing function
+    df_smoothed = apply_smoothing_groups(df, smooth_configs, feature_columns, ano_col)
+
+    return df_smoothed
+
+
+def get_scaler_fitted(cfg, df_fit, feature_columns):
+    """
+    Fit scaler on DataFrame and return scaler + params.
+    Compatible with existing scaler configuration system.
+
+    Args:
+        cfg: configuration
+        df_fit: DataFrame to fit on
+        feature_columns: list of columns to scale
+
+    Returns:
+        scaler: fitted scaler
+        scaler_params: dict of parameters
+    """
+    import numpy as np
+    import pandas as pd
+    from sklearn.preprocessing import StandardScaler, RobustScaler
+
+    # Get scaler configuration
+    scaler_cfg = cfg.dataset.get('scaler', None)
+
+    if not scaler_cfg:
+        raise ValueError("No scaler configuration found in cfg.dataset.scaler")
+
+    # Parse scaler configuration
+    parts = scaler_cfg.split('-')
+    scaler_name = parts[0]
+
+    print(f"      - Scaler config: {scaler_cfg}")
+
+    # Create scaler instance
+    if scaler_name == 'StandardScaler':
+        scaler = StandardScaler()
+    elif scaler_name == 'RobustScaler':
+        # Check if quantiles are provided
+        if len(parts) >= 3:
+            q1 = float(parts[1])
+            q2 = float(parts[2])
+        else:
+            q1, q2 = 25, 75  # default
+        scaler = RobustScaler(quantile_range=(q1, q2))
+        print(f"         - Quantile range: ({q1}, {q2})")
+    else:
+        raise ValueError(f"Scaler '{scaler_name}' not supported. Use 'StandardScaler' or 'RobustScaler'")
+
+    # Prepare data (exclude anomaly column if present)
+    anomaly_col = cfg.dataset.get('is_anomaly_column', None)
+
+    if anomaly_col and anomaly_col in df_fit.columns:
+        df_fit_clean = df_fit.drop(columns=[anomaly_col])
+        print(f"         - Excluded anomaly column: {anomaly_col}")
+    else:
+        df_fit_clean = df_fit.copy()
+
+    # Select only feature columns
+    X_fit = df_fit_clean[feature_columns].values
+
+    # Fit scaler
+    scaler.fit(X_fit)
+
+    print(f"         - Fitted on: {X_fit.shape[0]} samples, {X_fit.shape[1]} features")
+
+    # Serialize parameters
+    scaler_params = serialize_scaler(scaler)
+
+    return scaler, scaler_params
+
+
+def transform_dataframe_with_scaler(df, scaler, feature_columns):
+    """
+    Transform DataFrame with fitted scaler.
+    Compatible with existing system.
+
+    Args:
+        df: DataFrame to transform
+        scaler: fitted scaler
+        feature_columns: list of columns to transform
+
+    Returns:
+        df_scaled: DataFrame with scaled features
+        scaler_params: dict of parameters
+    """
+    import pandas as pd
+
+    # Get anomaly column if present
+    anomaly_col = None
+    for col in df.columns:
+        if col not in feature_columns and col in df.columns:
+            # Assume this is the anomaly column
+            anomaly_col = col
+            break
+
+    # Prepare data (exclude anomaly column)
+    if anomaly_col and anomaly_col in df.columns:
+        df_no_anomaly = df.drop(columns=[anomaly_col])
+    else:
+        df_no_anomaly = df.copy()
+
+    # Select only feature columns
+    X = df_no_anomaly[feature_columns].values
+
+    # Transform
+    X_scaled = scaler.transform(X)
+
+    # Create scaled dataframe
+    df_scaled = pd.DataFrame(
+        X_scaled,
+        columns=feature_columns,
+        index=df.index
+    )
+
+    # Re-attach anomaly column if present
+    if anomaly_col and anomaly_col in df.columns:
+        df_scaled[anomaly_col] = df[anomaly_col].values
+
+    # Serialize parameters
+    scaler_params = serialize_scaler(scaler)
+
+    return df_scaled, scaler_params
+
+
+def standardize_sequences(sequences, scaler, feature_columns):
+    """
+    Standardize sequences using fitted scaler.
+
+    Args:
+        sequences: (N, L, F) array
+        scaler: fitted sklearn scaler
+        feature_columns: list of feature names
+
+    Returns:
+        sequences_std: (N, L, F) standardized array
+    """
+    import numpy as np
+
+    N, L, F = sequences.shape
+
+    # Reshape to 2D
+    sequences_flat = sequences.reshape(-1, F)  # (N*L, F)
+
+    # Transform
+    sequences_std_flat = scaler.transform(sequences_flat)
+
+    # Reshape back
+    sequences_std = sequences_std_flat.reshape(N, L, F)
+
+    return sequences_std
+
+
+def destandardize_sequences(sequences, scaler, feature_columns):
+    """
+    De-standardize sequences using fitted scaler.
+
+    Args:
+        sequences: (N, L, F) standardized array
+        scaler: fitted sklearn scaler
+        feature_columns: list of feature names
+
+    Returns:
+        sequences_raw: (N, L, F) de-standardized array
+    """
+    import numpy as np
+
+    N, L, F = sequences.shape
+
+    # Reshape to 2D
+    sequences_flat = sequences.reshape(-1, F)  # (N*L, F)
+
+    # Inverse transform
+    sequences_raw_flat = scaler.inverse_transform(sequences_flat)
+
+    # Reshape back
+    sequences_raw = sequences_raw_flat.reshape(N, L, F)
+
+    return sequences_raw
+
+
+def serialize_scaler(scaler):
+    """
+    Serialize scaler to dictionary (uses existing function logic).
+
+    Args:
+        scaler: Fitted scaler object
+
+    Returns:
+        Dictionary with scaler parameters
+    """
+    from sklearn.preprocessing import StandardScaler, RobustScaler
+
+    if isinstance(scaler, StandardScaler):
+        return {
+            'type': 'StandardScaler',
+            'mean_': scaler.mean_.tolist(),
+            'scale_': scaler.scale_.tolist(),
+            'var_': scaler.var_.tolist(),
+            'n_samples_seen_': int(scaler.n_samples_seen_)
+        }
+
+    elif isinstance(scaler, RobustScaler):
+        return {
+            'type': 'RobustScaler',
+            'center_': scaler.center_.tolist(),
+            'scale_': scaler.scale_.tolist(),
+            'quantile_range': scaler.quantile_range
+        }
+
+    else:
+        raise ValueError(f"Cannot serialize unknown scaler type: {type(scaler)}")
+
+
+def deserialize_scaler(scaler_params):
+    """
+    Deserialize scaler from dictionary (uses existing function logic).
+
+    Args:
+        scaler_params: Dictionary with scaler parameters
+
+    Returns:
+        Fitted scaler object
+    """
+    import numpy as np
+    from sklearn.preprocessing import StandardScaler, RobustScaler
+
+    scaler_type = scaler_params['type']
+
+    if scaler_type == 'StandardScaler':
+        scaler = StandardScaler()
+        scaler.mean_ = np.array(scaler_params['mean_'])
+        scaler.scale_ = np.array(scaler_params['scale_'])
+        scaler.var_ = np.array(scaler_params['var_'])
+        scaler.n_samples_seen_ = scaler_params.get('n_samples_seen_', len(scaler.mean_))
+        return scaler
+
+    elif scaler_type == 'RobustScaler':
+        scaler = RobustScaler()
+        scaler.center_ = np.array(scaler_params['center_'])
+        scaler.scale_ = np.array(scaler_params['scale_'])
+        scaler.quantile_range = tuple(scaler_params['quantile_range'])
+        return scaler
+
+    else:
+        raise ValueError(f"Cannot deserialize unknown scaler type: {scaler_type}")
+
+
+def apply_smoothing_to_sequences(sequences, cfg, feature_columns):
+    """
+    Apply smoothing to 3D sequences array.
+
+    Args:
+        sequences: (N, L, F) array
+        cfg: configuration
+        feature_columns: list of feature names
+
+    Returns:
+        sequences_smoothed: (N, L, F) array
+    """
+    from scipy.signal import savgol_filter
+    import numpy as np
+
+    smoothing_method = cfg.dataset.get('smoothing_method', None)
+
+    if smoothing_method is None:
+        return sequences.copy()
+
+    N, L, F = sequences.shape
+    sequences_smoothed = sequences.copy()
+
+    if smoothing_method == 'savgol':
+        window_length = cfg.dataset.get('smoothing_window', 5)
+        polyorder = cfg.dataset.get('smoothing_polyorder', 2)
+
+        if window_length % 2 == 0:
+            window_length += 1
+        window_length = max(window_length, polyorder + 2)
+
+        print(f"         - Savitzky-Golay: window={window_length}, poly={polyorder}")
+
+        for i in range(N):
+            for f in range(F):
+                signal = sequences[i, :, f]
+                if len(signal) >= window_length:
+                    try:
+                        sequences_smoothed[i, :, f] = savgol_filter(
+                            signal,
+                            window_length,
+                            polyorder,
+                            mode='interp'
+                        )
+                    except Exception as e:
+                        sequences_smoothed[i, :, f] = signal
+
+    elif smoothing_method == 'moving_average':
+        window_length = cfg.dataset.get('smoothing_window', 5)
+
+        print(f"         - Moving Average: window={window_length}")
+
+        kernel = np.ones(window_length) / window_length
+
+        for i in range(N):
+            for f in range(F):
+                sequences_smoothed[i, :, f] = np.convolve(
+                    sequences[i, :, f],
+                    kernel,
+                    mode='same'
+                )
+
+    return sequences_smoothed
+
+
+def standardize_sequences(sequences, scaler, feature_columns):
+    """
+    Standardize sequences using fitted scaler.
+
+    Args:
+        sequences: (N, L, F) array
+        scaler: fitted sklearn scaler
+        feature_columns: list of feature names
+
+    Returns:
+        sequences_std: (N, L, F) standardized array
+    """
+    N, L, F = sequences.shape
+
+    # Reshape to 2D
+    sequences_flat = sequences.reshape(-1, F)  # (N*L, F)
+
+    # Transform
+    sequences_std_flat = scaler.transform(sequences_flat)
+
+    # Reshape back
+    sequences_std = sequences_std_flat.reshape(N, L, F)
+
+    return sequences_std
+
+
+def destandardize_sequences(sequences, scaler, feature_columns):
+    """
+    De-standardize sequences using fitted scaler.
+
+    Args:
+        sequences: (N, L, F) standardized array
+        scaler: fitted sklearn scaler
+        feature_columns: list of feature names
+
+    Returns:
+        sequences_raw: (N, L, F) de-standardized array
+    """
+    N, L, F = sequences.shape
+
+    # Reshape to 2D
+    sequences_flat = sequences.reshape(-1, F)  # (N*L, F)
+
+    # Inverse transform
+    sequences_raw_flat = scaler.inverse_transform(sequences_flat)
+
+    # Reshape back
+    sequences_raw = sequences_raw_flat.reshape(N, L, F)
+
+    return sequences_raw

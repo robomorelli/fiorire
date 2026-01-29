@@ -742,7 +742,7 @@ def main():
 
     # Load checkpoint
     checkpoint, cfg, checkpoint_metric_path, scaler_params = load_checkpoint(checkpoint_path)
-    max_sequences_per_block = int(cfg.dataset.get('seq_in_length_into_chunk', 200)/config.get('seq_in_length_factor', 200))
+    max_sequences_per_block = max(int(cfg.dataset.get('seq_in_length_into_chunk', 200)/config.get('seq_in_length_factor', 200)), 10)
 
     print(f"   ✓ checkpoint_path: {checkpoint_path}")
     print(f"   ✓ weighting_factor: {weighting_factor}")
@@ -813,7 +813,7 @@ def main():
     max_timesteps_per_block = max_sequences_per_block * seq_len
 
     total_timesteps = max(normal_concat['targets'].shape[1], anomaly_concat['targets'].shape[1])
-    n_blocks = math.ceil(total_timesteps / max_timesteps_per_block)
+    n_blocks = max(math.ceil(total_timesteps / max_timesteps_per_block), 10)
 
     print(f"\n📊 Creating {n_blocks} plot blocks (max {max_sequences_per_block} sequences per block)...")
 

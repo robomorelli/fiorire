@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from omegaconf import DictConfig
 from typing import Optional, List, Tuple
 import sys
+import shutil
 sys.path.append("./")
 
 from dataset.sentinel import Dataset_seq, concatenate_datasets
@@ -27,350 +28,410 @@ ANOMALIES_REGISTRY = {
 
 
 def generate_and_save_metric_dataset(
-        cfg: DictConfig,
-        clean_sequences,
+        cfg,
+        val_sequences_raw,
         feature_columns,
-        scaler,
+        scaler_raw,
+        scaler_smoothed,
+        anomaly_strategy,
         original_anomaly_sequences=None,
         original_anomaly_labels=None,
         output_dir='./metric_datasets/',
         force_regenerate=False,
-        plot_samples=True,
+        plot_samples=False,
         plot_percentage=0.05
 ):
     """
-    Generate metric dataset from pre-extracted sequences and save as PyTorch Dataset.
+    Generate and save metric dataset with two-scaler pipeline.
 
     Args:
         cfg: Configuration
-        clean_sequences: [N, L, F] numpy array of clean, standardized sequences
+        val_sequences_raw: [N, L, F] RAW validation sequences (not smoothed, not standardized)
         feature_columns: List of feature column names
-        scaler: Fitted scaler (for potential destandardization)
-        original_anomaly_sequences: [M, L, F] original anomalous sequences (optional)
-        original_anomaly_labels: [M, 1, L] labels for original anomalies (optional)
-        output_dir: Directory to save dataset
+        scaler_raw: Scaler fitted on RAW training data
+        scaler_smoothed: Scaler fitted on SMOOTHED training data
+        anomaly_strategy: 'corrupt_validation', 'use_original', or 'both'
+        original_anomaly_sequences: Optional pre-processed anomaly sequences
+        original_anomaly_labels: Optional anomaly labels
+        output_dir: Output directory
         force_regenerate: Force regeneration even if file exists
-        plot_samples: Whether to generate comparison plots
+        plot_samples: Whether to plot sample sequences
         plot_percentage: Percentage of samples to plot
 
     Returns:
-        filepath: Path to saved dataset file, or None if not generated
-
-    NOTE: Input sequences MUST be standardized (from df_scaled)
+        str: Path to saved dataset file
     """
     import torch
     import numpy as np
-    import os
-    from datetime import datetime
-    from dataset.sentinel import Dataset_seq, concatenate_datasets
+    from pathlib import Path
+    from dataset.sentinel import Dataset_seq
 
-    strategy = cfg.opt.get('anomaly_strategy', 'none')
+    print(f"\n   🔄 TWO-SCALER ANOMALY PIPELINE")
+    print(f"      Simulates: Raw anomalies → Production filter → Production scaler")
+    print(f"      Input: {val_sequences_raw.shape} (RAW, not smoothed, not standardized)")
+    print(f"      Strategy: {anomaly_strategy}")
 
-    if strategy == 'none':
-        print("\n   ℹ️  Strategy='none': No metric dataset")
-        return None
+    output_dir = Path(output_dir)
+    output_dir.mkdir(exist_ok=True)
 
-    # Validate input
-    if clean_sequences is None or len(clean_sequences) == 0:
-        print("\n   ⚠️  No clean sequences provided!")
-        return None
+    N, L, F = val_sequences_raw.shape
 
-    print(f"\n   ✓ Received clean sequences: {clean_sequences.shape}")
-
-    # Create filename
+    # ============================================================
+    # BUILD FILENAME (like old version - detailed)
+    # ============================================================
     model_name = cfg.model.get('name', 'unknown_model')
     dataset_name = cfg.dataset.get('name', 'dataset')
     exp_name = cfg.opt.get('exp_name', 'experiment')
     seed = cfg.opt.get('seed', 42)
     seq_len = cfg.dataset.seq_in_length
 
-    # ✅ PREDICT is_standardized from config
-    force_destd = cfg.opt.get('force_destandardization', False)
+    # Get corruption config
+    corruption_cfg = cfg.opt.get('corruption_config', {})
+    anomalies_type = corruption_cfg.get('anomalies_type', ['GWN'])
+    delta_mean = corruption_cfg.get('delta_mean', 0.8)
 
-    if strategy == 'use_original':
+    # Predict standardization status
+    force_destd = cfg.opt.get('force_destandardization', False)
+    if anomaly_strategy == 'use_original':
         predicted_is_standardized = True
-    elif strategy in ['corrupt_validation', 'both']:
+    elif anomaly_strategy in ['corrupt_validation', 'both']:
         predicted_is_standardized = not force_destd
     else:
         predicted_is_standardized = True
 
-    # Build filename with suffix
+    # Build detailed filename like old version
     scale_suffix = "" if predicted_is_standardized else "_original"
-    anomalies = '_'.join([x for x in list(cfg.opt.corruption_config.get('anomalies_type', []))])
-    filename = f"metric_{model_name}_{exp_name}_{dataset_name}_{seq_len}_{strategy}_{anomalies}_seed{seed}{scale_suffix}_{cfg.opt.corruption_config.delta_mean}.pt"
-    filepath = os.path.join(output_dir, filename)
+    anomalies_str = '_'.join(anomalies_type)
+    smooth_suffix = "" if cfg.dataset.get('smooth', None) is None else '_smoothed'
 
-    # ✅ Check if already exists
-    if os.path.exists(filepath) and not force_regenerate:
-        print(f"\n   ✓ Metric dataset already exists: {filepath}")
-        print(f"     (Use force_regenerate=True to regenerate)")
-        return filepath
+    filename = f"metric_{model_name}_{exp_name}_{dataset_name}_{seq_len}_{anomaly_strategy}_{anomalies_str}_seed{seed}{scale_suffix}_{delta_mean}{smooth_suffix}.pt"
+    save_path = output_dir / filename
 
-    # ✅ Generate metric dataset based on strategy
-    original_sequences_for_plot = None
+    # Check if already exists
+    if save_path.exists() and not force_regenerate:
+        print(f"\n      ℹ️  Metric dataset already exists: {save_path}")
+        print(f"      ℹ️  Skipping generation (use force_regenerate=True to recreate)")
+        print(f"      ℹ️  Loading existing dataset for verification...")
 
-    if strategy == 'corrupt_validation':
-        metric_dataset, is_standardized = _create_corrupted_sequences_dataset(
+        try:
+            saved_data = torch.load(save_path, map_location='cpu')
+            print(f"      ✓ Loaded existing dataset: {len(saved_data['dataset'])} sequences")
+            return str(save_path)
+        except Exception as e:
+            print(f"      ⚠️  Failed to load existing dataset: {e}")
+            print(f"      → Will regenerate...")
+
+
+    if force_regenerate and save_path.exists():
+        print(f"\n      🔄 force_regenerate=True: Regenerating dataset...")
+        os.remove(save_path)
+
+    # ============================================================
+    # PREPARE CLEAN SEQUENCES (baseline - production pipeline)
+    # ============================================================
+    print(f"\n      Preparing clean sequences (Production pipeline: Raw → Smooth → Std)...")
+
+    val_sequences_smoothed = apply_smoothing_to_sequences(
+        sequences=val_sequences_raw,
+        cfg=cfg,
+        feature_columns=feature_columns
+    )
+
+    clean_sequences = standardize_sequences(
+        sequences=val_sequences_smoothed,
+        scaler=scaler_smoothed,
+        feature_columns=feature_columns
+    )
+
+    print(f"      ✓ Clean sequences: {clean_sequences.shape} (smoothed + std with scaler_smoothed)")
+
+    # ============================================================
+    # STRATEGY: CORRUPT VALIDATION
+    # ============================================================
+    if anomaly_strategy == 'corrupt_validation':
+        print(f"\n      📊 Strategy: Corrupt Validation (Simulate raw anomalies)")
+
+        # STEP 1: Standardize with scaler_raw
+        print(f"\n      Step 1/5: Standardizing RAW sequences (with scaler_raw)...")
+        val_sequences_std_from_raw = standardize_sequences(
+            sequences=val_sequences_raw,
+            scaler=scaler_raw,
+            feature_columns=feature_columns
+        )
+        print(f"         ✓ Standardized (raw scale): {val_sequences_std_from_raw.shape}")
+
+        # STEP 2: Inject anomalies
+        print(f"\n      Step 2/5: Injecting anomalies...")
+        corrupted_sequences, labels, anomaly_types, affected_channels, is_standardized, indices_to_corrupt = corrupt_sequences_wombat(
+            sequences=val_sequences_std_from_raw,
+            feature_columns=feature_columns,
+            anomalies_type=anomalies_type,
+            delta_mean=delta_mean,
+            corruption_ratio=corruption_cfg.get('corruption_ratio', 1.0),
+            random_seed=corruption_cfg.get('random_seed', 123),
+            scaler=None,
+            force_destandardization=False,
+            target_channels=corruption_cfg.get('target_channels', None)
+        )
+        print(f"         ✓ Anomalies injected: {corrupted_sequences.shape}")
+
+        # Save intermediate for plotting (before smoothing)
+        corrupted_sequences_before_smooth = corrupted_sequences.copy()
+
+        # STEP 3: De-standardize
+        print(f"\n      Step 3/5: De-standardizing (with scaler_raw)...")
+        corrupted_sequences_raw = destandardize_sequences(
+            sequences=corrupted_sequences,
+            scaler=scaler_raw,
+            feature_columns=feature_columns
+        )
+        print(f"         ✓ De-standardized to raw scale: {corrupted_sequences_raw.shape}")
+
+        # STEP 4: Smooth
+        print(f"\n      Step 4/5: Applying smoothing to anomalous sequences...")
+        corrupted_sequences_smoothed = apply_smoothing_to_sequences(
+            sequences=corrupted_sequences_raw,
+            cfg=cfg,
+            feature_columns=feature_columns
+        )
+        print(f"         ✓ Smoothed: {corrupted_sequences_smoothed.shape}")
+
+        # STEP 5: Re-standardize
+        print(f"\n      Step 5/5: Re-standardizing (with scaler_smoothed)...")
+        corrupted_sequences_final = standardize_sequences(
+            sequences=corrupted_sequences_smoothed,
+            scaler=scaler_smoothed,
+            feature_columns=feature_columns
+        )
+        print(f"         ✓ Re-standardized (smoothed scale): {corrupted_sequences_final.shape}")
+        print(f"\n      ✅ Pipeline complete: Raw anomalies → Production processing → Model input")
+
+        # Verification
+        if cfg.opt.get('verify_anomaly_smoothness', False):
+            print(f"\n      🔍 Verifying anomaly smoothness...")
+            verify_anomaly_smoothness_comparison(
+                sequences_clean=clean_sequences,
+                sequences_anomalous_before_smooth=corrupted_sequences_before_smooth,
+                sequences_anomalous_after_smooth=corrupted_sequences_final,
+                labels=labels,
+                feature_columns=feature_columns
+            )
+
+        # Build dataset
+        dataset, is_standardized_final = _create_corrupted_sequences_dataset(
             cfg=cfg,
             clean_sequences=clean_sequences,
-            feature_columns=feature_columns,
-            scaler=scaler,
-            include_clean=True
-        )
-        original_sequences_for_plot = clean_sequences.copy()
-
-    elif strategy == 'use_original':
-        print("\n" + "!" * 80)
-        print("⚠️  WARNING: Strategy 'use_original' is NOT FULLY TESTED!")
-        print("   This strategy uses original anomalies from the dataset.")
-        print("   Results may vary depending on data quality and anomaly distribution.")
-        print("!" * 80 + "\n")
-
-        metric_dataset, is_standardized = _create_original_anomaly_sequences_dataset(
-            clean_sequences=clean_sequences,
-            original_anomaly_sequences=original_anomaly_sequences,
-            original_anomaly_labels=original_anomaly_labels,
-            force_destandardization=force_destd,
-            scaler=scaler,
+            corrupted_sequences=corrupted_sequences_final,
+            labels=labels,
+            anomaly_types=anomaly_types,
+            affected_channels=affected_channels,
+            indices_to_corrupt=indices_to_corrupt,
             feature_columns=feature_columns,
             include_clean=True
         )
 
-    elif strategy == 'both':
-        print("\n" + "!" * 80)
-        print("⚠️  WARNING: Strategy 'both' is NOT FULLY TESTED!")
-        print("   This strategy combines corrupted validation + original anomalies.")
-        print("   Results may vary depending on data quality and anomaly distribution.")
-        print("!" * 80 + "\n")
+        print(f"\n      ✓ Final dataset: {len(dataset)} sequences")
+        print(f"         - Clean: {N} sequences")
+        print(f"         - Anomalous: {(labels.sum(axis=(1, 2)) > 0).sum()} sequences")
 
-        # Get ONLY corrupted (no clean)
-        corrupted_dataset, is_std_corrupted = _create_corrupted_sequences_dataset(
-            cfg=cfg,
-            clean_sequences=clean_sequences,
-            feature_columns=feature_columns,
-            scaler=scaler,
-            include_clean=False
+        # Plot samples
+        if plot_samples:
+            print(f"\n      📊 Plotting sample sequences for verification...")
+
+            # Extract only the corrupted sequences for plotting
+            was_corrupted = (labels.sum(axis=(1, 2)) > 0)
+            actually_corrupted_indices = np.array([i for i in indices_to_corrupt if was_corrupted[i]])
+
+            # Get original clean and final corrupted
+            original_for_plot = clean_sequences[actually_corrupted_indices]  # Clean versions
+            corrupted_for_plot = corrupted_sequences_final[actually_corrupted_indices]  # After full pipeline
+            labels_for_plot = labels[actually_corrupted_indices]
+            anomaly_types_for_plot = [anomaly_types[i] for i in actually_corrupted_indices]
+            affected_channels_for_plot = [affected_channels[i] for i in actually_corrupted_indices]
+
+            plot_corrupted_sequences_samples(
+                cfg=cfg,
+                original_sequences=original_for_plot,
+                corrupted_sequences=corrupted_for_plot,
+                labels=labels_for_plot,
+                anomaly_types=anomaly_types_for_plot,
+                affected_channels=affected_channels_for_plot,
+                feature_columns=feature_columns,
+                dataset_filepath=str(save_path),
+                sample_percentage=plot_percentage,
+                max_samples=20,
+                random_seed=seed
+            )
+
+    # ============================================================
+    # STRATEGY: USE ORIGINAL
+    # ============================================================
+    elif anomaly_strategy == 'use_original':
+        print(f"\n      📊 Strategy: Use Original Anomalies")
+
+        if original_anomaly_sequences is None or original_anomaly_labels is None:
+            raise ValueError("Original anomaly sequences/labels required for 'use_original' strategy")
+
+        all_sequences = np.concatenate([clean_sequences, original_anomaly_sequences], axis=0)
+        clean_labels = np.zeros((N, 1, L), dtype=np.float32)
+        all_labels = np.concatenate([clean_labels, original_anomaly_labels], axis=0)
+
+        all_anomaly_types = ['normal'] * N + ['original'] * len(original_anomaly_sequences)
+        all_affected_channels = ['none'] * N + ['multiple'] * len(original_anomaly_sequences)
+
+        dataset = Dataset_seq(
+            sequences=all_sequences,
+            targets=all_sequences,
+            anomaly_labels=all_labels,
+            transform=None
         )
 
-        # Get ONLY original anomalies (no clean)
-        original_dataset, is_std_original = _create_original_anomaly_sequences_dataset(
-            clean_sequences=clean_sequences,
-            original_anomaly_sequences=original_anomaly_sequences,
-            original_anomaly_labels=original_anomaly_labels,
-            force_destandardization=force_destd,
-            scaler=scaler,
-            feature_columns=feature_columns,
-            include_clean=False
+        dataset.anomaly_types = all_anomaly_types
+        dataset.affected_channels = all_affected_channels
+        is_standardized_final = True
+
+        print(f"      ✓ Final dataset: {len(dataset)} sequences")
+
+    # ============================================================
+    # STRATEGY: BOTH
+    # ============================================================
+    elif anomaly_strategy == 'both':
+        print(f"\n      📊 Strategy: Both (Corrupted + Original)")
+
+        if original_anomaly_sequences is None or original_anomaly_labels is None:
+            raise ValueError("Original anomaly sequences/labels required for 'both' strategy")
+
+        # Generate corrupted sequences (same as corrupt_validation)
+        print(f"\n      Part 1: Generating corrupted sequences...")
+
+        val_sequences_std_from_raw = standardize_sequences(
+            sequences=val_sequences_raw,
+            scaler=scaler_raw,
+            feature_columns=feature_columns
         )
 
-        # Verify standardization match
-        if is_std_corrupted != is_std_original:
-            raise ValueError(
-                f"Standardization mismatch: corrupted={is_std_corrupted}, original={is_std_original}"
+        corrupted_sequences, labels, anomaly_types, affected_channels, is_standardized, indices_to_corrupt = corrupt_sequences_wombat(
+            sequences=val_sequences_std_from_raw,
+            feature_columns=feature_columns,
+            anomalies_type=anomalies_type,
+            delta_mean=delta_mean,
+            corruption_ratio=corruption_cfg.get('corruption_ratio', 1.0),
+            random_seed=corruption_cfg.get('random_seed', 123),
+            scaler=None,
+            force_destandardization=False,
+            target_channels=corruption_cfg.get('target_channels', None)
+        )
+
+        corrupted_sequences_raw = destandardize_sequences(corrupted_sequences, scaler_raw, feature_columns)
+        corrupted_sequences_smoothed = apply_smoothing_to_sequences(corrupted_sequences_raw, cfg, feature_columns)
+        corrupted_sequences_final = standardize_sequences(corrupted_sequences_smoothed, scaler_smoothed,
+                                                          feature_columns)
+
+        print(f"         ✓ Corrupted sequences: {corrupted_sequences_final.shape}")
+
+        # Combine
+        print(f"\n      Part 2: Combining all sequences...")
+
+        all_sequences = np.concatenate([
+            clean_sequences,
+            corrupted_sequences_final,
+            original_anomaly_sequences
+        ], axis=0)
+
+        clean_labels = np.zeros((N, 1, L), dtype=np.float32)
+        all_labels = np.concatenate([clean_labels, labels, original_anomaly_labels], axis=0)
+
+        all_anomaly_types = (
+                ['normal'] * N +
+                anomaly_types +
+                ['original'] * len(original_anomaly_sequences)
+        )
+
+        all_affected_channels = (
+                ['none'] * N +
+                affected_channels +
+                ['multiple'] * len(original_anomaly_sequences)
+        )
+
+        dataset = Dataset_seq(
+            sequences=all_sequences,
+            targets=all_sequences,
+            anomaly_labels=all_labels,
+            transform=None
+        )
+
+        dataset.anomaly_types = all_anomaly_types
+        dataset.affected_channels = all_affected_channels
+        is_standardized_final = True
+
+        print(f"      ✓ Final dataset: {len(dataset)} sequences")
+
+        # Plot only corrupted part
+        if plot_samples:
+            print(f"\n      📊 Plotting corrupted samples (original anomalies not plotted)...")
+
+            was_corrupted = (labels.sum(axis=(1, 2)) > 0)
+            actually_corrupted_indices = np.array([i for i in indices_to_corrupt if was_corrupted[i]])
+
+            original_for_plot = clean_sequences[actually_corrupted_indices]
+            corrupted_for_plot = corrupted_sequences_final[actually_corrupted_indices]
+            labels_for_plot = labels[actually_corrupted_indices]
+            anomaly_types_for_plot = [anomaly_types[i] for i in actually_corrupted_indices]
+            affected_channels_for_plot = [affected_channels[i] for i in actually_corrupted_indices]
+
+            plot_corrupted_sequences_samples(
+                cfg=cfg,
+                original_sequences=original_for_plot,
+                corrupted_sequences=corrupted_for_plot,
+                labels=labels_for_plot,
+                anomaly_types=anomaly_types_for_plot,
+                affected_channels=affected_channels_for_plot,
+                feature_columns=feature_columns,
+                dataset_filepath=str(save_path),
+                sample_percentage=plot_percentage,
+                max_samples=20,
+                random_seed=seed
             )
-
-        # Concatenate
-        if corrupted_dataset is not None and original_dataset is not None:
-            # Prepare clean sequences
-            if not is_std_corrupted and scaler is not None:
-                from preprocessing.scaling import inverse_transform_array
-                clean_for_both = inverse_transform_array(clean_sequences, scaler, feature_columns)
-            else:
-                clean_for_both = clean_sequences
-
-            # Combine sequences
-            all_sequences = np.concatenate([
-                clean_for_both,
-                corrupted_dataset.sequences,
-                original_dataset.sequences
-            ], axis=0)
-
-            # Combine labels
-            N_clean = len(clean_sequences)
-            L = clean_sequences.shape[1]
-
-            clean_labels = np.zeros((N_clean, 1, L), dtype=np.float32)
-            all_labels = np.concatenate([
-                clean_labels,
-                corrupted_dataset.anomaly_labels,
-                original_dataset.anomaly_labels
-            ], axis=0)
-
-            # Create final dataset
-            from dataset.sentinel import Dataset_seq
-            metric_dataset = Dataset_seq(
-                sequences=all_sequences,
-                targets=all_sequences,
-                anomaly_labels=all_labels,
-                transform=None
-            )
-
-            # Combine metadata
-            all_anomaly_types = (
-                    ['normal'] * N_clean +
-                    list(corrupted_dataset.anomaly_types) +
-                    list(original_dataset.anomaly_types)
-            )
-
-            all_affected_channels = (
-                    ['none'] * N_clean +
-                    list(corrupted_dataset.affected_channels) +
-                    list(original_dataset.affected_channels)
-            )
-
-            metric_dataset.anomaly_types = all_anomaly_types
-            metric_dataset.affected_channels = all_affected_channels
-
-            is_standardized = is_std_corrupted
-
-            print(f"   ✓ Combined 'both' strategy: {len(metric_dataset)} total sequences")
-            print(f"      - Clean: {N_clean}")
-            print(f"      - Corrupted: {len(corrupted_dataset)}")
-            print(f"      - Original: {len(original_dataset)}")
-        elif corrupted_dataset is not None:
-            metric_dataset = corrupted_dataset
-            is_standardized = is_std_corrupted
-            print(f"   ⚠️  Only corrupted dataset available")
-        elif original_dataset is not None:
-            metric_dataset = original_dataset
-            is_standardized = is_std_original
-            print(f"   ⚠️  Only original dataset available")
-        else:
-            print(f"   ⚠️  No datasets created!")
-            return None
-
-        original_sequences_for_plot = clean_sequences.copy()
 
     else:
-        raise ValueError(f"Unknown strategy: {strategy}")
+        raise ValueError(f"Unknown anomaly strategy: {anomaly_strategy}")
 
-    if metric_dataset is None:
-        print(f"   ⚠️  No metric dataset created")
-        return None
+    # ============================================================
+    # SAVE DATASET
+    # ============================================================
+    print(f"\n      💾 Saving metric dataset...")
 
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Scale info
-    scale_info = "STANDARDIZED (ready for model)" if is_standardized else "ORIGINAL SCALE"
-
-    print(f"\n📊 Saving metric dataset:")
-    print(f"   - Strategy: {strategy}")
-    print(f"   - Output: {filepath}")
-    print(f"   - Data scale: {scale_info}")
-
-    if not is_standardized:
-        print(f"\n   ⚠️  WARNING: Data saved in ORIGINAL SCALE")
-        print(f"      This metric dataset will require standardization before use")
-
-    # Create metadata
-    metadata = {
-        'is_standardized': is_standardized,
-        'strategy': strategy,
-        'dataset_name': dataset_name,
-        'exp_name': exp_name,
-        'seed': seed,
-        'seq_len': seq_len,
-        'feature_columns': list(feature_columns),
-        'num_sequences': len(metric_dataset),
-        'creation_date': datetime.now().isoformat(),
-    }
-
-    # Add corruption config
-    if strategy in ['corrupt_validation', 'both']:
-        corruption_cfg = cfg.opt.get('corruption_config', {})
-        metadata['corruption_config'] = {
-            'anomalies_type': list(corruption_cfg.get('anomalies_type', [])),
-            'delta_mean': float(corruption_cfg.get('delta_mean', 0.8)),
-            'corruption_ratio': float(corruption_cfg.get('corruption_ratio', 1.0)),
+    torch.save({
+        'dataset': dataset,
+        'metadata': {
+            'strategy': anomaly_strategy,
+            'n_sequences': len(dataset),
+            'is_standardized': is_standardized_final,
+            'is_smoothed': True,
+            'uses_two_scalers': True,
+            'feature_columns': feature_columns,
+            'scaler_smoothed_params': serialize_scaler(scaler_smoothed),
+            'scaler_raw_params': serialize_scaler(scaler_raw),
+            'smoothing_config': cfg.dataset.get('smooth'),
+            'corruption_config': {
+                'anomalies_type': list(anomalies_type),
+                'delta_mean': float(delta_mean),
+                'corruption_ratio': float(corruption_cfg.get('corruption_ratio', 1.0)),
+                'random_seed': corruption_cfg.get('random_seed', 123),
+            },
+            'seed': seed,
+            'model_name': model_name,
+            'dataset_name': dataset_name,
+            'exp_name': exp_name,
+            'seq_len': seq_len,
         }
+    }, save_path)
 
-    # ✅ Save Dataset + metadata
-    save_dict = {
-        'dataset': metric_dataset,
-        'metadata': metadata,
-    }
+    print(f"      ✓ Saved: {save_path}")
+    print(f"      ✓ File size: {save_path.stat().st_size / (1024 * 1024):.2f} MB")
+    print(f"      ✓ Filename: {filename}")
 
-    torch.save(save_dict, filepath)
-
-    # Calculate anomaly stats
-    if hasattr(metric_dataset, 'anomaly_labels') and metric_dataset.anomaly_labels is not None:
-        labels = metric_dataset.anomaly_labels
-        if isinstance(labels, np.ndarray):
-            labels = torch.from_numpy(labels)
-        n_anomalous_seqs = (labels.sum(dim=(1, 2)) > 0).sum().item()
-        n_normal_seqs = len(metric_dataset) - n_anomalous_seqs
-    else:
-        n_normal_seqs = len(metric_dataset)
-        n_anomalous_seqs = 0
-
-    print(f"\n   ✅ Metric dataset saved:")
-    print(f"      - Path: {filepath}")
-    print(f"      - Total sequences: {len(metric_dataset)}")
-    print(f"      - Normal sequences: {n_normal_seqs}")
-    print(f"      - Anomalous sequences: {n_anomalous_seqs}")
-    print(f"      - File size: {os.path.getsize(filepath) / 1024 ** 2:.2f} MB")
-    print(f"      - is_standardized: {is_standardized}")
-
-    # ✅ Generate plots if requested
-    if plot_samples and original_sequences_for_plot is not None and strategy in ['corrupt_validation', 'both']:
-        print(f"\n📊 Generating comparison plots...")
-
-        # ✅ Use corruption mapping to extract PAIRED sequences
-        if hasattr(metric_dataset, 'corruption_mapping'):
-            mapping = metric_dataset.corruption_mapping
-            original_indices = mapping['original_indices']
-            n_corrupted = mapping['n_corrupted']
-
-            # ✅ Extract ORIGINAL sequences for the corrupted ones
-            original_part = original_sequences_for_plot[original_indices]  # [M, L, F]
-
-            # ✅ Extract CORRUPTED sequences (last M in dataset)
-            all_sequences = metric_dataset.sequences
-            all_labels = metric_dataset.anomaly_labels
-            corrupted_part = all_sequences[-n_corrupted:]  # [M, L, F]
-            labels_part = all_labels[-n_corrupted:]  # [M, 1, L]
-
-            # ✅ Extract metadata
-            anomaly_types = metric_dataset.anomaly_types if hasattr(metric_dataset, 'anomaly_types') else None
-            affected_channels = metric_dataset.affected_channels if hasattr(metric_dataset,
-                                                                            'affected_channels') else None
-
-            anomaly_types_part = anomaly_types[-n_corrupted:] if anomaly_types is not None else None
-            affected_channels_part = affected_channels[-n_corrupted:] if affected_channels is not None else None
-
-            # ✅ CRITICAL: Verify shapes match
-            print(f"   ✓ Plotting alignment check:")
-            print(f"      - Original sequences: {original_part.shape}")
-            print(f"      - Corrupted sequences: {corrupted_part.shape}")
-            print(f"      - Mapping pairs: {len(original_indices)}")
-
-            if original_part.shape[0] != corrupted_part.shape[0]:
-                print(f"   ❌ ERROR: Shape mismatch!")
-                print(f"      - Original: {original_part.shape[0]}")
-                print(f"      - Corrupted: {corrupted_part.shape[0]}")
-                print(f"      Skipping plots")
-            else:
-                print(f"   ✓ Shapes match - generating plots")
-
-                # ✅ NOW they correspond: original_part[i] ↔ corrupted_part[i]
-                plot_corrupted_sequences_samples(
-                    original_sequences=original_part,
-                    corrupted_sequences=corrupted_part,
-                    labels=labels_part,
-                    anomaly_types=anomaly_types_part,
-                    affected_channels=affected_channels_part,
-                    feature_columns=feature_columns,
-                    dataset_filepath=filepath,
-                    sample_percentage=plot_percentage,
-                    max_samples=10,
-                    random_seed=mapping['seed']
-                )
-        else:
-            print(f"   ⚠️  No corruption mapping found - skipping plots")
-            print(f"      (Mapping is required for accurate plot alignment)")
-
-    return filepath
+    return str(save_path)
 
 def _create_original_anomaly_sequences_dataset(
         clean_sequences,
@@ -676,76 +737,66 @@ def corrupt_sequences_wombat(
     )
 
 
-def _create_corrupted_sequences_dataset(cfg, clean_sequences, feature_columns, scaler, include_clean=True):
-    """Create dataset with corrupted sequences."""
-    import numpy as np
-    from dataset.sentinel import Dataset_seq
+def _create_corrupted_sequences_dataset(
+        cfg,
+        clean_sequences,
+        corrupted_sequences,
+        labels,
+        anomaly_types,
+        affected_channels,
+        indices_to_corrupt,
+        feature_columns,
+        include_clean=True
+):
+    """
+    Create dataset with corrupted sequences (for two-scaler pipeline).
 
-    print(f"\n   🔧 Creating corrupted validation dataset...")
-    print(f"      - Input sequences: {clean_sequences.shape}")
+    Args:
+        clean_sequences: (N, L, F) - clean sequences (already smoothed+std)
+        corrupted_sequences: (N, L, F) - corrupted sequences (already smoothed+std)
+        labels: (N, 1, L) - anomaly labels
+        anomaly_types: list of anomaly type names
+        affected_channels: list of affected channel names
+        indices_to_corrupt: indices that were selected for corruption
+        include_clean: if True, include clean sequences in final dataset
+    """
+    from dataset.sentinel import Dataset_seq
+    import numpy as np
+
+    print(f"\n   🔧 Creating corrupted sequences dataset...")
+    print(f"      - Clean sequences: {clean_sequences.shape}")
+    print(f"      - Corrupted sequences: {corrupted_sequences.shape}")
     print(f"      - Include clean: {include_clean}")
 
-    # Get config
-    corruption_cfg = cfg.opt.get('corruption_config', {})
-    corruption_ratio = corruption_cfg.get('corruption_ratio', 1.0)
-    anomalies_type = corruption_cfg.get('anomalies_type', ['GWN'])
-    delta_mean = corruption_cfg.get('delta_mean', 0.8)
-    random_seed = corruption_cfg.get('random_seed', 123)
-    target_channels = corruption_cfg.get('target_channels', None)
+    # Find which sequences were actually corrupted
+    was_corrupted = (labels.sum(axis=(1, 2)) > 0)  # [N] boolean
 
-    force_destd = cfg.opt.get('force_destandardization', False)
-
-    # Use WOMBAT - returns indices_to_corrupt
-    corrupted_sequences, labels, anomaly_types, affected_channels, is_standardized, indices_to_corrupt = corrupt_sequences_wombat(
-        sequences=clean_sequences,
-        feature_columns=feature_columns,
-        anomalies_type=anomalies_type,
-        delta_mean=delta_mean,
-        corruption_ratio=corruption_ratio,
-        random_seed=random_seed,
-        scaler=scaler,
-        force_destandardization=force_destd,
-        target_channels=target_channels
-    )
-
-    print(f"      ✓ Sequences corrupted: {corrupted_sequences.shape}")
-
-    # ✅ FIX: Use indices directly instead of boolean indexing
-    # Find which of the selected indices actually got corrupted
-    was_corrupted_full = (labels.sum(axis=(1, 2)) > 0)  # [N_clean] boolean
-
-    # Filter indices_to_corrupt to keep only those that were actually corrupted
+    # Filter to get only actually corrupted sequences
     actually_corrupted_indices = []
     for idx in indices_to_corrupt:
-        if was_corrupted_full[idx]:
+        if was_corrupted[idx]:
             actually_corrupted_indices.append(idx)
 
     actually_corrupted_indices = np.array(actually_corrupted_indices)
 
-    # ✅ Extract using direct indexing (preserves order!)
+    # Extract corrupted sequences
     corrupted_only = corrupted_sequences[actually_corrupted_indices]
     labels_corrupted = labels[actually_corrupted_indices]
     anomaly_types_corrupted = [anomaly_types[i] for i in actually_corrupted_indices]
     affected_channels_corrupted = [affected_channels[i] for i in actually_corrupted_indices]
 
-    # ✅ Store the mapping (now in correct order!)
-    original_indices_corrupted = actually_corrupted_indices
-
-    print(f"      ✓ Corruption mapping:")
-    print(f"         - Selected for corruption: {len(indices_to_corrupt)}")
-    print(f"         - Actually corrupted: {len(original_indices_corrupted)}")
+    print(f"      ✓ Actually corrupted: {len(actually_corrupted_indices)}/{len(indices_to_corrupt)}")
 
     N_clean = len(clean_sequences)
     L = clean_sequences.shape[1]
 
     if include_clean:
-        # Standard: clean + corrupted
+        # Combine clean + corrupted
         all_sequences = np.concatenate([clean_sequences, corrupted_only], axis=0)
 
         clean_labels = np.zeros((N_clean, 1, L), dtype=np.float32)
         all_labels = np.concatenate([clean_labels, labels_corrupted], axis=0)
 
-        # Metadata
         all_anomaly_types = ['normal'] * N_clean + anomaly_types_corrupted
         all_affected_channels = ['none'] * N_clean + affected_channels_corrupted
 
@@ -753,23 +804,14 @@ def _create_corrupted_sequences_dataset(cfg, clean_sequences, feature_columns, s
         print(f"         - Clean: {N_clean} sequences")
         print(f"         - Corrupted: {len(corrupted_only)} sequences")
     else:
-        # Only corrupted (for "both" strategy)
+        # Only corrupted
         all_sequences = corrupted_only
         all_labels = labels_corrupted
 
-        # Metadata
         all_anomaly_types = anomaly_types_corrupted
         all_affected_channels = affected_channels_corrupted
 
         print(f"      ✓ Corrupted-only dataset: {all_sequences.shape}")
-        print(f"         - Corrupted: {len(corrupted_only)} sequences")
-
-    # If destandardized, apply inverse to clean too
-    if include_clean and not is_standardized and scaler is not None:
-        from preprocessing.scaling import inverse_transform_array
-        print(f"      ℹ️  Clean sequences also destandardized for consistency")
-        clean_sequences_destd = inverse_transform_array(clean_sequences, scaler, feature_columns)
-        all_sequences[:N_clean] = clean_sequences_destd
 
     # Create dataset
     dataset = Dataset_seq(
@@ -779,24 +821,22 @@ def _create_corrupted_sequences_dataset(cfg, clean_sequences, feature_columns, s
         transform=None
     )
 
-    # Metadata
     dataset.anomaly_types = all_anomaly_types
     dataset.affected_channels = all_affected_channels
 
-    # ✅ Store corruption mapping
+    # Store corruption mapping
     dataset.corruption_mapping = {
-        'original_indices': original_indices_corrupted,
-        'seed': random_seed,
-        'n_clean': N_clean,
+        'original_indices': actually_corrupted_indices,
+        'seed': cfg.opt.get('corruption_config', {}).get('random_seed', 123),
+        'n_clean': N_clean if include_clean else 0,
         'n_corrupted': len(corrupted_only)
     }
 
-    print(f"      ✓ Corruption mapping saved: {len(original_indices_corrupted)} pairs")
-
-    return dataset, is_standardized
+    return dataset, True  # is_standardized = True
 
 
 def plot_corrupted_sequences_samples(
+        cfg,
         original_sequences,
         corrupted_sequences,
         labels,
@@ -845,7 +885,11 @@ def plot_corrupted_sequences_samples(
     # Create output directory
     dataset_path = Path(dataset_filepath)
     dataset_name = dataset_path.stem
-    output_dir = dataset_path.parent / f"{dataset_name}_plots"
+    smooth_suffix = "" if cfg.dataset.get('smooth', None) is None else '_smoothed'
+    output_dir = dataset_path.parent / f"{dataset_name}{smooth_suffix}_plots"
+
+    if os.path.exists(output_dir):
+         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"   - Output directory: {output_dir}")
@@ -1087,3 +1131,323 @@ def plot_corrupted_sequences_samples(
             f.write(f"  - {channel}: {count}\n")
 
     print(f"   ✓ Summary saved to: {summary_file}")
+
+
+def apply_smoothing_to_dataframe(df, cfg, feature_columns):
+    """
+    Apply smoothing to a DataFrame.
+
+    Args:
+        df: DataFrame with time series data
+        cfg: configuration
+        feature_columns: list of columns to smooth
+
+    Returns:
+        df_smoothed: DataFrame with smoothed data
+    """
+    from scipy.signal import savgol_filter
+    import numpy as np
+
+    smoothing_method = cfg.dataset.get('smoothing_method', None)
+
+    if smoothing_method is None:
+        print(f"      ℹ️  No smoothing configured - returning original data")
+        return df.copy()
+
+    df_smoothed = df.copy()
+
+    if smoothing_method == 'savgol':
+        window_length = cfg.dataset.get('smoothing_window', 5)
+        polyorder = cfg.dataset.get('smoothing_polyorder', 2)
+
+        # Ensure odd window
+        if window_length % 2 == 0:
+            window_length += 1
+        window_length = max(window_length, polyorder + 2)
+
+        print(f"      - Method: Savitzky-Golay (window={window_length}, poly={polyorder})")
+
+        for col in feature_columns:
+            if col in df_smoothed.columns:
+                df_smoothed[col] = savgol_filter(
+                    df_smoothed[col].values,
+                    window_length,
+                    polyorder,
+                    mode='interp'
+                )
+
+    elif smoothing_method == 'moving_average':
+        window_length = cfg.dataset.get('smoothing_window', 5)
+
+        print(f"      - Method: Moving Average (window={window_length})")
+
+        for col in feature_columns:
+            if col in df_smoothed.columns:
+                df_smoothed[col] = df_smoothed[col].rolling(
+                    window=window_length,
+                    center=True,
+                    min_periods=1
+                ).mean()
+
+    else:
+        raise ValueError(f"Unknown smoothing method: {smoothing_method}")
+
+    return df_smoothed
+
+
+
+
+def verify_anomaly_smoothness_comparison(
+        sequences_clean,
+        sequences_anomalous_before_smooth,
+        sequences_anomalous_after_smooth,
+        labels,
+        feature_columns,
+        n_samples=3
+):
+    """
+    Verify that anomaly smoothing pipeline works correctly.
+
+    Args:
+        sequences_clean: (N, L, F) - clean sequences (smoothed+std with scaler_smoothed)
+        sequences_anomalous_before_smooth: (N, L, F) - after injection (std with scaler_raw)
+        sequences_anomalous_after_smooth: (N, L, F) - final (smoothed+std with scaler_smoothed)
+        labels: (N, 1, L) - anomaly labels
+        feature_columns: list of feature names
+        n_samples: number of samples to plot
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    # Find anomalous sequences
+    anomalous_mask = (labels.sum(axis=(1, 2)) > 0)
+    anomalous_indices = np.where(anomalous_mask)[0]
+
+    if len(anomalous_indices) == 0:
+        print(f"         ⚠️  No anomalous sequences found!")
+        return
+
+    # Sample
+    n_samples = min(n_samples, len(anomalous_indices))
+    sample_indices = np.random.choice(anomalous_indices, size=n_samples, replace=False)
+
+    for idx in sample_indices:
+        # Find affected channel
+        affected_timesteps = np.where(labels[idx, 0, :] > 0)[0]
+        if len(affected_timesteps) == 0:
+            continue
+
+        # Find which channel was affected
+        ch_idx = 0
+        for c in range(len(feature_columns)):
+            if np.any(sequences_anomalous_before_smooth[idx, affected_timesteps[0], c] !=
+                      sequences_clean[idx, affected_timesteps[0], c]):
+                ch_idx = c
+                break
+
+        L = sequences_clean.shape[1]
+
+        fig, axes = plt.subplots(4, 1, figsize=(14, 12))
+
+        # 1. Clean (smoothed baseline)
+        axes[0].plot(sequences_clean[idx, :, ch_idx], label='Clean (smoothed+std)', color='green', linewidth=2)
+        axes[0].fill_between(range(L), -3, 3,
+                             where=labels[idx, 0, :] > 0, alpha=0.2, color='red', label='Anomaly region')
+        axes[0].set_title(f'Sequence {idx} - Channel: {feature_columns[ch_idx]} - CLEAN (Smoothed Baseline)')
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+        axes[0].set_ylabel('Standardized value')
+
+        # 2. Anomaly BEFORE smoothing (std with scaler_raw)
+        axes[1].plot(sequences_anomalous_before_smooth[idx, :, ch_idx],
+                     label='Anomaly (after injection, NOT smoothed)', color='red', linewidth=2)
+        axes[1].fill_between(range(L), -3, 3,
+                             where=labels[idx, 0, :] > 0, alpha=0.2, color='red')
+        axes[1].set_title('BEFORE Smoothing (Standardized with scaler_raw)')
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
+        axes[1].set_ylabel('Standardized value')
+
+        # 3. Anomaly AFTER smoothing (std with scaler_smoothed)
+        axes[2].plot(sequences_anomalous_after_smooth[idx, :, ch_idx],
+                     label='Anomaly (smoothed+restd)', color='orange', linewidth=2)
+        axes[2].fill_between(range(L), -3, 3,
+                             where=labels[idx, 0, :] > 0, alpha=0.2, color='red')
+        axes[2].set_title('AFTER Smoothing (Standardized with scaler_smoothed)')
+        axes[2].legend()
+        axes[2].grid(True, alpha=0.3)
+        axes[2].set_ylabel('Standardized value')
+
+        # 4. Differences (smoothness metric)
+        diff_clean = np.abs(np.diff(sequences_clean[idx, :, ch_idx]))
+        diff_before = np.abs(np.diff(sequences_anomalous_before_smooth[idx, :, ch_idx]))
+        diff_after = np.abs(np.diff(sequences_anomalous_after_smooth[idx, :, ch_idx]))
+
+        axes[3].plot(diff_clean, label='|Δ Clean|', color='green', alpha=0.7)
+        axes[3].plot(diff_before, label='|Δ Before Smooth|', color='red', alpha=0.7)
+        axes[3].plot(diff_after, label='|Δ After Smooth|', color='orange', alpha=0.7)
+        axes[3].set_title('First Differences (Smoothness Check)')
+        axes[3].legend()
+        axes[3].grid(True, alpha=0.3)
+        axes[3].set_ylabel('|Δx|')
+        axes[3].set_xlabel('Timestep')
+
+        # Stats in anomaly region
+        anomaly_mask_diff = labels[idx, 0, :-1] > 0
+        if anomaly_mask_diff.any():
+            ratio_before = diff_before[anomaly_mask_diff].mean() / diff_clean.mean() if diff_clean.mean() > 0 else 0
+            ratio_after = diff_after[anomaly_mask_diff].mean() / diff_clean.mean() if diff_clean.mean() > 0 else 0
+
+            axes[3].text(0.02, 0.98,
+                         f'Smoothness Ratio (in anomaly region):\n'
+                         f'Before smoothing: {ratio_before:.2f}x\n'
+                         f'After smoothing: {ratio_after:.2f}x',
+                         transform=axes[3].transAxes,
+                         verticalalignment='top',
+                         bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+        plt.tight_layout()
+        plt.savefig(f'./anomaly_smoothing_verification_seq{idx}.png', dpi=150)
+        plt.close()
+
+        print(f"         ✓ Saved: ./anomaly_smoothing_verification_seq{idx}.png")
+
+
+def apply_smoothing_to_sequences(sequences, cfg, feature_columns):
+    """
+    Apply smoothing to 3D sequences array.
+
+    Args:
+        sequences: (N, L, F) array
+        cfg: configuration
+        feature_columns: list of feature names
+
+    Returns:
+        sequences_smoothed: (N, L, F) array
+    """
+    from scipy.signal import savgol_filter
+    import numpy as np
+
+    smoothing_method = cfg.dataset.get('smoothing_method', None)
+
+    if smoothing_method is None:
+        return sequences.copy()
+
+    N, L, F = sequences.shape
+    sequences_smoothed = sequences.copy()
+
+    if smoothing_method == 'savgol':
+        window_length = cfg.dataset.get('smoothing_window', 5)
+        polyorder = cfg.dataset.get('smoothing_polyorder', 2)
+
+        if window_length % 2 == 0:
+            window_length += 1
+        window_length = max(window_length, polyorder + 2)
+
+        print(f"         - Savitzky-Golay: window={window_length}, poly={polyorder}")
+
+        for i in range(N):
+            for f in range(F):
+                signal = sequences[i, :, f]
+                if len(signal) >= window_length:
+                    try:
+                        sequences_smoothed[i, :, f] = savgol_filter(
+                            signal,
+                            window_length,
+                            polyorder,
+                            mode='interp'
+                        )
+                    except Exception as e:
+                        sequences_smoothed[i, :, f] = signal
+
+    elif smoothing_method == 'moving_average':
+        window_length = cfg.dataset.get('smoothing_window', 5)
+
+        print(f"         - Moving Average: window={window_length}")
+
+        kernel = np.ones(window_length) / window_length
+
+        for i in range(N):
+            for f in range(F):
+                sequences_smoothed[i, :, f] = np.convolve(
+                    sequences[i, :, f],
+                    kernel,
+                    mode='same'
+                )
+
+    return sequences_smoothed
+
+
+def standardize_sequences(sequences, scaler, feature_columns):
+    """
+    Standardize sequences using fitted scaler.
+
+    Args:
+        sequences: (N, L, F) array
+        scaler: fitted sklearn scaler
+        feature_columns: list of feature names
+
+    Returns:
+        sequences_std: (N, L, F) standardized array
+    """
+    N, L, F = sequences.shape
+
+    # Reshape to 2D
+    sequences_flat = sequences.reshape(-1, F)  # (N*L, F)
+
+    # Transform
+    sequences_std_flat = scaler.transform(sequences_flat)
+
+    # Reshape back
+    sequences_std = sequences_std_flat.reshape(N, L, F)
+
+    return sequences_std
+
+
+def destandardize_sequences(sequences, scaler, feature_columns):
+    """
+    De-standardize sequences using fitted scaler.
+
+    Args:
+        sequences: (N, L, F) standardized array
+        scaler: fitted sklearn scaler
+        feature_columns: list of feature names
+
+    Returns:
+        sequences_raw: (N, L, F) de-standardized array
+    """
+    N, L, F = sequences.shape
+
+    # Reshape to 2D
+    sequences_flat = sequences.reshape(-1, F)  # (N*L, F)
+
+    # Inverse transform
+    sequences_raw_flat = scaler.inverse_transform(sequences_flat)
+
+    # Reshape back
+    sequences_raw = sequences_raw_flat.reshape(N, L, F)
+
+    return sequences_raw
+
+def serialize_scaler(scaler):
+    """
+    Serialize scaler to dictionary for saving.
+
+    Args:
+        scaler: Fitted scaler object
+
+    Returns:
+        Dictionary with scaler parameters
+    """
+    scaler_params = {
+        'type': type(scaler).__name__,
+        'mean': scaler.mean_.tolist() if hasattr(scaler, 'mean_') else None,
+        'scale': scaler.scale_.tolist() if hasattr(scaler, 'scale_') else None,
+        'var': scaler.var_.tolist() if hasattr(scaler, 'var_') else None,
+        'min': scaler.min_.tolist() if hasattr(scaler, 'min_') else None,
+        'data_min': scaler.data_min_.tolist() if hasattr(scaler, 'data_min_') else None,
+        'data_max': scaler.data_max_.tolist() if hasattr(scaler, 'data_max_') else None,
+        'center': scaler.center_.tolist() if hasattr(scaler, 'center_') else None,
+    }
+
+    return scaler_params
