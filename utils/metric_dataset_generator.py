@@ -10,6 +10,11 @@ from omegaconf import DictConfig
 from typing import Optional, List, Tuple
 import sys
 import shutil
+from omegaconf import ListConfig
+import pandas as pd
+from scipy.signal import savgol_filter
+from scipy.ndimage import median_filter, gaussian_filter1d
+import numpy as np
 sys.path.append("./")
 
 from dataset.sentinel import Dataset_seq, concatenate_datasets
@@ -76,21 +81,17 @@ def generate_and_save_metric_dataset(
 
     N, L, F = val_sequences_raw.shape
 
-    # ============================================================
-    # BUILD FILENAME (like old version - detailed)
-    # ============================================================
+    # Build filename
     model_name = cfg.model.get('name', 'unknown_model')
     dataset_name = cfg.dataset.get('name', 'dataset')
     exp_name = cfg.opt.get('exp_name', 'experiment')
     seed = cfg.opt.get('seed', 42)
     seq_len = cfg.dataset.seq_in_length
 
-    # Get corruption config
     corruption_cfg = cfg.opt.get('corruption_config', {})
     anomalies_type = corruption_cfg.get('anomalies_type', ['GWN'])
     delta_mean = corruption_cfg.get('delta_mean', 0.8)
 
-    # Predict standardization status
     force_destd = cfg.opt.get('force_destandardization', False)
     if anomaly_strategy == 'use_original':
         predicted_is_standardized = True
@@ -99,10 +100,10 @@ def generate_and_save_metric_dataset(
     else:
         predicted_is_standardized = True
 
-    # Build detailed filename like old version
     scale_suffix = "" if predicted_is_standardized else "_original"
     anomalies_str = '_'.join(anomalies_type)
     smooth_suffix = "" if cfg.dataset.get('smooth', None) is None else '_smoothed'
+    is_smoothed = False if cfg.dataset.get('smooth', None) is None else True
 
     filename = f"metric_{model_name}_{exp_name}_{dataset_name}_{seq_len}_{anomaly_strategy}_{anomalies_str}_seed{seed}{scale_suffix}_{delta_mean}{smooth_suffix}.pt"
     save_path = output_dir / filename
@@ -112,7 +113,6 @@ def generate_and_save_metric_dataset(
         print(f"\n      ℹ️  Metric dataset already exists: {save_path}")
         print(f"      ℹ️  Skipping generation (use force_regenerate=True to recreate)")
         print(f"      ℹ️  Loading existing dataset for verification...")
-
         try:
             saved_data = torch.load(save_path, map_location='cpu')
             print(f"      ✓ Loaded existing dataset: {len(saved_data['dataset'])} sequences")
@@ -121,28 +121,22 @@ def generate_and_save_metric_dataset(
             print(f"      ⚠️  Failed to load existing dataset: {e}")
             print(f"      → Will regenerate...")
 
-
     if force_regenerate and save_path.exists():
         print(f"\n      🔄 force_regenerate=True: Regenerating dataset...")
         os.remove(save_path)
 
-    # ============================================================
-    # PREPARE CLEAN SEQUENCES (baseline - production pipeline)
-    # ============================================================
+    # Prepare clean sequences
     print(f"\n      Preparing clean sequences (Production pipeline: Raw → Smooth → Std)...")
-
     val_sequences_smoothed = apply_smoothing_to_sequences(
         sequences=val_sequences_raw,
         cfg=cfg,
         feature_columns=feature_columns
     )
-
     clean_sequences = standardize_sequences(
         sequences=val_sequences_smoothed,
         scaler=scaler_smoothed,
         feature_columns=feature_columns
     )
-
     print(f"      ✓ Clean sequences: {clean_sequences.shape} (smoothed + std with scaler_smoothed)")
 
     # ============================================================
@@ -175,9 +169,6 @@ def generate_and_save_metric_dataset(
         )
         print(f"         ✓ Anomalies injected: {corrupted_sequences.shape}")
 
-        # Save intermediate for plotting (before smoothing)
-        corrupted_sequences_before_smooth = corrupted_sequences.copy()
-
         # STEP 3: De-standardize
         print(f"\n      Step 3/5: De-standardizing (with scaler_raw)...")
         corrupted_sequences_raw = destandardize_sequences(
@@ -186,6 +177,9 @@ def generate_and_save_metric_dataset(
             feature_columns=feature_columns
         )
         print(f"         ✓ De-standardized to raw scale: {corrupted_sequences_raw.shape}")
+
+        # Save intermediate for plotting (AFTER de-std, BEFORE smoothing)
+        corrupted_sequences_before_smooth = corrupted_sequences_raw.copy()
 
         # STEP 4: Smooth
         print(f"\n      Step 4/5: Applying smoothing to anomalous sequences...")
@@ -237,14 +231,11 @@ def generate_and_save_metric_dataset(
         # Plot samples
         if plot_samples:
             print(f"\n      📊 Plotting sample sequences for verification...")
-
-            # Extract only the corrupted sequences for plotting
             was_corrupted = (labels.sum(axis=(1, 2)) > 0)
             actually_corrupted_indices = np.array([i for i in indices_to_corrupt if was_corrupted[i]])
 
-            # Get original clean and final corrupted
-            original_for_plot = clean_sequences[actually_corrupted_indices]  # Clean versions
-            corrupted_for_plot = corrupted_sequences_final[actually_corrupted_indices]  # After full pipeline
+            original_for_plot = clean_sequences[actually_corrupted_indices]
+            corrupted_for_plot = corrupted_sequences_final[actually_corrupted_indices]
             labels_for_plot = labels[actually_corrupted_indices]
             anomaly_types_for_plot = [anomaly_types[i] for i in actually_corrupted_indices]
             affected_channels_for_plot = [affected_channels[i] for i in actually_corrupted_indices]
@@ -301,7 +292,7 @@ def generate_and_save_metric_dataset(
         if original_anomaly_sequences is None or original_anomaly_labels is None:
             raise ValueError("Original anomaly sequences/labels required for 'both' strategy")
 
-        # Generate corrupted sequences (same as corrupt_validation)
+        # Generate corrupted sequences
         print(f"\n      Part 1: Generating corrupted sequences...")
 
         val_sequences_std_from_raw = standardize_sequences(
@@ -323,9 +314,12 @@ def generate_and_save_metric_dataset(
         )
 
         corrupted_sequences_raw = destandardize_sequences(corrupted_sequences, scaler_raw, feature_columns)
+
+        # Save intermediate for plotting (AFTER de-std, BEFORE smoothing)
+        corrupted_sequences_before_smooth = corrupted_sequences_raw.copy()
+
         corrupted_sequences_smoothed = apply_smoothing_to_sequences(corrupted_sequences_raw, cfg, feature_columns)
-        corrupted_sequences_final = standardize_sequences(corrupted_sequences_smoothed, scaler_smoothed,
-                                                          feature_columns)
+        corrupted_sequences_final = standardize_sequences(corrupted_sequences_smoothed, scaler_smoothed, feature_columns)
 
         print(f"         ✓ Corrupted sequences: {corrupted_sequences_final.shape}")
 
@@ -407,8 +401,8 @@ def generate_and_save_metric_dataset(
             'strategy': anomaly_strategy,
             'n_sequences': len(dataset),
             'is_standardized': is_standardized_final,
-            'is_smoothed': True,
-            'uses_two_scalers': True,
+            'is_smoothed': is_smoothed,
+            'uses_two_scalers': is_smoothed,
             'feature_columns': feature_columns,
             'scaler_smoothed_params': serialize_scaler(scaler_smoothed),
             'scaler_raw_params': serialize_scaler(scaler_raw),
@@ -886,7 +880,7 @@ def plot_corrupted_sequences_samples(
     dataset_path = Path(dataset_filepath)
     dataset_name = dataset_path.stem
     smooth_suffix = "" if cfg.dataset.get('smooth', None) is None else '_smoothed'
-    output_dir = dataset_path.parent / f"{dataset_name}{smooth_suffix}_plots"
+    output_dir = dataset_path.parent / f"{dataset_name}_plots"
 
     if os.path.exists(output_dir):
          shutil.rmtree(output_dir)
@@ -1135,7 +1129,7 @@ def plot_corrupted_sequences_samples(
 
 def apply_smoothing_to_dataframe(df, cfg, feature_columns):
     """
-    Apply smoothing to a DataFrame.
+    Apply smoothing to a DataFrame (wrapper around existing apply_smoothing_groups).
 
     Args:
         df: DataFrame with time series data
@@ -1145,52 +1139,211 @@ def apply_smoothing_to_dataframe(df, cfg, feature_columns):
     Returns:
         df_smoothed: DataFrame with smoothed data
     """
-    from scipy.signal import savgol_filter
-    import numpy as np
+    smooth_cfg = cfg.dataset.get('smooth', None)
 
-    smoothing_method = cfg.dataset.get('smoothing_method', None)
-
-    if smoothing_method is None:
+    if smooth_cfg is None:
         print(f"      ℹ️  No smoothing configured - returning original data")
         return df.copy()
 
+    print(f"      🔧 Applying smoothing to dataframe...")
+
+    # Get anomaly column
+    ano_col = cfg.dataset.get('is_anomaly_column')
+
+    # Supporta sia singolo dict che lista di dict
+    if isinstance(smooth_cfg, dict):
+        smooth_configs = [smooth_cfg]
+    else:
+        smooth_configs = list(smooth_cfg)
+
+    # Use your existing function
+    df_smoothed = apply_smoothing_groups(df, smooth_configs, feature_columns, ano_col)
+
+    return df_smoothed
+
+def apply_smoothing_groups(df, smooth_configs, feature_cols, ano_col=None):
+    """
+    Apply different smoothing to different feature groups.
+
+    Args:
+        df: DataFrame to smooth
+        smooth_configs: List of smoothing config dicts, each with:
+            - mode: smoothing method
+            - features: 'all' or list of columns
+            - kernel_size: window size
+            - pad_mode: 'drop', 'forward_fill', 'reflect', 'edge' (default: 'drop')
+            - ... (method-specific params)
+        feature_cols: List of feature column names
+        ano_col: Anomaly column name
+
+    Returns:
+        df: DataFrame with smoothed features
+    """
+    df_smoothed = df.copy()
+    smoothed_cols = set()  # Track which columns have been smoothed
+
+    for i, smooth_cfg in enumerate(smooth_configs):
+        print(f"\n   📦 Smoothing group {i + 1}/{len(smooth_configs)}:")
+
+        mode = smooth_cfg.get('mode', 'mean')
+        features = smooth_cfg.get('features', 'all')
+        kernel_size = smooth_cfg.get('kernel_size', 10)
+        pad_mode = smooth_cfg.get('pad_mode', 'drop')  # 'drop', 'ffill', 'reflect', 'edge'
+
+        # Determine columns for this group
+        if features == 'all' or features == ['all']:
+            # All features not yet smoothed
+            cols_to_smooth = [c for c in feature_cols if c not in smoothed_cols]
+        elif isinstance(features, (list, ListConfig)):
+            cols_to_smooth = [f for f in features if f in df.columns and f not in smoothed_cols]
+        else:
+            cols_to_smooth = [features] if features in df.columns and features not in smoothed_cols else []
+
+        # Remove anomaly column
+        if ano_col and ano_col in cols_to_smooth:
+            cols_to_smooth.remove(ano_col)
+
+        if not cols_to_smooth:
+            print(f"      ⚠️  No columns to smooth in this group")
+            continue
+
+        print(f"      - Mode: {mode}")
+        print(f"      - Kernel: {kernel_size}")
+        print(f"      - Pad mode: {pad_mode}")
+        print(f"      - Columns: {cols_to_smooth}")
+
+        # Apply smoothing with padding strategy
+        df_smoothed = apply_smoothing_with_padding(
+            df_smoothed,
+            cols_to_smooth,
+            mode,
+            kernel_size,
+            pad_mode,
+            smooth_cfg
+        )
+
+        # Mark as smoothed
+        smoothed_cols.update(cols_to_smooth)
+
+    # Check for unsmoothed features
+    unsmoothed = [c for c in feature_cols if c not in smoothed_cols and c != ano_col]
+    if unsmoothed:
+        print(f"\n   ℹ️  Unsmoothed features: {unsmoothed}")
+
+    return df_smoothed
+
+
+def apply_smoothing_with_padding(df, cols_to_smooth, mode, kernel_size, pad_mode, smooth_cfg):
+    """
+    Apply smoothing with different padding strategies to avoid data loss.
+    """
+
+
     df_smoothed = df.copy()
 
-    if smoothing_method == 'savgol':
-        window_length = cfg.dataset.get('smoothing_window', 5)
-        polyorder = cfg.dataset.get('smoothing_polyorder', 2)
+    # ✅ FIX: Map pad_mode to scipy mode correctly
+    pad_mode_to_scipy = {
+        'reflect': 'mirror',  # ← FIX: scipy usa 'mirror' non 'reflect'
+        'edge': 'nearest',
+        'constant': 'constant',
+        'wrap': 'wrap',
+        'mirror': 'mirror',
+        'nearest': 'nearest',
+        'drop': 'nearest',  # Use nearest then drop NaN
+        'ffill': 'nearest'  # Use nearest then ffill
+    }
 
-        # Ensure odd window
-        if window_length % 2 == 0:
-            window_length += 1
-        window_length = max(window_length, polyorder + 2)
+    scipy_mode = pad_mode_to_scipy.get(pad_mode, 'nearest')
 
-        print(f"      - Method: Savitzky-Golay (window={window_length}, poly={polyorder})")
+    print(f"         - Padding: {pad_mode} → scipy mode: {scipy_mode}")
 
-        for col in feature_columns:
-            if col in df_smoothed.columns:
-                df_smoothed[col] = savgol_filter(
-                    df_smoothed[col].values,
-                    window_length,
-                    polyorder,
-                    mode='interp'
-                )
+    for col in cols_to_smooth:
+        signal = df[col].values
 
-    elif smoothing_method == 'moving_average':
-        window_length = cfg.dataset.get('smoothing_window', 5)
+        try:
+            # Apply smoothing based on mode
+            if mode == 'mean':
+                # Rolling mean with padding
+                if pad_mode == 'ffill':
+                    smoothed = df[col].rolling(
+                        window=kernel_size,
+                        min_periods=1,
+                        center=True
+                    ).mean()
+                elif pad_mode == 'drop':
+                    smoothed = df[col].rolling(
+                        window=kernel_size,
+                        min_periods=kernel_size,
+                        center=True
+                    ).mean()
+                else:  # reflect, edge, etc.
+                    pad_width = kernel_size // 2
+                    if pad_mode == 'reflect' or pad_mode == 'mirror':
+                        padded = np.pad(signal, pad_width, mode='reflect')
+                    elif pad_mode == 'edge' or pad_mode == 'nearest':
+                        padded = np.pad(signal, pad_width, mode='edge')
+                    elif pad_mode == 'wrap':
+                        padded = np.pad(signal, pad_width, mode='wrap')
+                    else:
+                        padded = np.pad(signal, pad_width, mode='edge')
 
-        print(f"      - Method: Moving Average (window={window_length})")
+                    smoothed = pd.Series(padded).rolling(
+                        window=kernel_size,
+                        min_periods=kernel_size,
+                        center=True
+                    ).mean().values[pad_width:-pad_width]
 
-        for col in feature_columns:
-            if col in df_smoothed.columns:
-                df_smoothed[col] = df_smoothed[col].rolling(
-                    window=window_length,
-                    center=True,
-                    min_periods=1
-                ).mean()
+            elif mode == 'median':
+                # Scipy median filter
+                smoothed = median_filter(signal, size=kernel_size, mode=scipy_mode)
 
+            elif mode == 'gaussian':
+                sigma = kernel_size / 6
+                smoothed = gaussian_filter1d(signal, sigma, mode=scipy_mode)
+
+            elif mode == 'savgol':
+                polyorder = min(3, kernel_size - 1)
+                if kernel_size % 2 == 0:
+                    kernel_size += 1
+                    print(f"         - Adjusted kernel_size to {kernel_size} (must be odd for savgol)")
+
+                # ✅ FIX: Use correct scipy mode
+                smoothed = savgol_filter(signal, kernel_size, polyorder, mode=scipy_mode)
+
+            elif mode == 'ewm':
+                # EWM doesn't lose data at edges
+                smoothed = df[col].ewm(span=kernel_size, min_periods=1).mean()
+
+            else:
+                print(f"         ⚠️  Unknown mode '{mode}', using mean")
+                smoothed = df[col].rolling(window=kernel_size, min_periods=1, center=True).mean()
+
+            df_smoothed[col] = smoothed
+
+        except Exception as e:
+            print(f"         ❌ Error smoothing column '{col}': {e}")
+            print(f"         → Keeping original values for this column")
+            # Keep original values on error
+            df_smoothed[col] = df[col]
+
+    # Handle NaN based on pad_mode
+    if pad_mode == 'drop':
+        initial_rows = len(df_smoothed)
+        df_smoothed = df_smoothed.dropna()
+        dropped = initial_rows - len(df_smoothed)
+        if dropped > 0:
+            print(f"         → Dropped {dropped} rows with NaN ({100 * dropped / initial_rows:.4f}%)")
+    elif pad_mode == 'ffill':
+        # Forward fill then backward fill to handle all NaN
+        df_smoothed = df_smoothed.fillna(method='ffill').fillna(method='bfill')
+        print(f"         → Forward/backward filled NaN values")
+    # For scipy modes (mirror, nearest, etc.), no NaN should be present
     else:
-        raise ValueError(f"Unknown smoothing method: {smoothing_method}")
+        # Check if there are any NaN (shouldn't be with proper scipy modes)
+        nan_count = df_smoothed[cols_to_smooth].isnull().sum().sum()
+        if nan_count > 0:
+            print(f"         ⚠️  Found {nan_count} NaN values, forward filling...")
+            df_smoothed = df_smoothed.fillna(method='ffill').fillna(method='bfill')
 
     return df_smoothed
 
@@ -1316,64 +1469,230 @@ def verify_anomaly_smoothness_comparison(
 def apply_smoothing_to_sequences(sequences, cfg, feature_columns):
     """
     Apply smoothing to 3D sequences array.
+    Replicates the exact logic of apply_smoothing_groups + apply_smoothing_with_padding.
 
     Args:
         sequences: (N, L, F) array
-        cfg: configuration
+        cfg: configuration object
         feature_columns: list of feature names
 
     Returns:
         sequences_smoothed: (N, L, F) array
     """
-    from scipy.signal import savgol_filter
-    import numpy as np
+    smooth_cfg = cfg.dataset.get('smooth', None)
 
-    smoothing_method = cfg.dataset.get('smoothing_method', None)
-
-    if smoothing_method is None:
+    if smooth_cfg is None:
+        print(f"      ℹ️  No smoothing configured - returning original data")
         return sequences.copy()
+
+    print(f"      🔧 Applying smoothing to sequences...")
 
     N, L, F = sequences.shape
     sequences_smoothed = sequences.copy()
 
-    if smoothing_method == 'savgol':
-        window_length = cfg.dataset.get('smoothing_window', 5)
-        polyorder = cfg.dataset.get('smoothing_polyorder', 2)
+    # Get anomaly column index (if exists)
+    ano_col = cfg.dataset.get('is_anomaly_column')
+    ano_col_idx = feature_columns.index(ano_col) if ano_col and ano_col in feature_columns else None
 
-        if window_length % 2 == 0:
-            window_length += 1
-        window_length = max(window_length, polyorder + 2)
+    # Support both single dict and list of dicts
+    if isinstance(smooth_cfg, dict):
+        smooth_configs = [smooth_cfg]
+    else:
+        smooth_configs = list(smooth_cfg)
 
-        print(f"         - Savitzky-Golay: window={window_length}, poly={polyorder}")
+    smoothed_indices = set()  # Track which feature indices have been smoothed
 
-        for i in range(N):
-            for f in range(F):
-                signal = sequences[i, :, f]
-                if len(signal) >= window_length:
-                    try:
-                        sequences_smoothed[i, :, f] = savgol_filter(
-                            signal,
-                            window_length,
-                            polyorder,
-                            mode='interp'
-                        )
-                    except Exception as e:
-                        sequences_smoothed[i, :, f] = signal
+    for i, smooth_config in enumerate(smooth_configs):
+        print(f"\n   📦 Smoothing group {i + 1}/{len(smooth_configs)}:")
 
-    elif smoothing_method == 'moving_average':
-        window_length = cfg.dataset.get('smoothing_window', 5)
+        mode = smooth_config.get('mode', 'mean')
+        features = smooth_config.get('features', 'all')
+        kernel_size = smooth_config.get('kernel_size', 10)
+        pad_mode = smooth_config.get('pad_mode', 'drop')
 
-        print(f"         - Moving Average: window={window_length}")
+        # Determine feature indices for this group
+        if features == 'all' or features == ['all']:
+            # All features not yet smoothed
+            indices_to_smooth = [idx for idx in range(F) if idx not in smoothed_indices]
+        elif isinstance(features, list):
+            indices_to_smooth = [
+                feature_columns.index(f)
+                for f in features
+                if f in feature_columns and feature_columns.index(f) not in smoothed_indices
+            ]
+        else:
+            idx = feature_columns.index(features) if features in feature_columns else None
+            indices_to_smooth = [idx] if idx is not None and idx not in smoothed_indices else []
 
-        kernel = np.ones(window_length) / window_length
+        # Remove anomaly column index
+        if ano_col_idx is not None and ano_col_idx in indices_to_smooth:
+            indices_to_smooth.remove(ano_col_idx)
 
-        for i in range(N):
-            for f in range(F):
-                sequences_smoothed[i, :, f] = np.convolve(
-                    sequences[i, :, f],
-                    kernel,
-                    mode='same'
-                )
+        if not indices_to_smooth:
+            print(f"      ⚠️  No features to smooth in this group")
+            continue
+
+        cols_names = [feature_columns[idx] for idx in indices_to_smooth]
+        print(f"      - Mode: {mode}")
+        print(f"      - Kernel: {kernel_size}")
+        print(f"      - Pad mode: {pad_mode}")
+        print(f"      - Features: {cols_names}")
+
+        # Apply smoothing with padding strategy (SAME as dataframe)
+        sequences_smoothed = apply_smoothing_with_padding_sequences(
+            sequences_smoothed,
+            indices_to_smooth,
+            mode,
+            kernel_size,
+            pad_mode,
+            smooth_config
+        )
+
+        # Mark as smoothed
+        smoothed_indices.update(indices_to_smooth)
+
+    # Check for unsmoothed features
+    unsmoothed_indices = [
+        idx for idx in range(F)
+        if idx not in smoothed_indices and idx != ano_col_idx
+    ]
+    if unsmoothed_indices:
+        unsmoothed_names = [feature_columns[idx] for idx in unsmoothed_indices]
+        print(f"\n   ℹ️  Unsmoothed features: {unsmoothed_names}")
+
+    return sequences_smoothed
+
+
+def apply_smoothing_with_padding_sequences(sequences, indices_to_smooth, mode, kernel_size, pad_mode, smooth_cfg):
+    """
+    Apply smoothing with padding strategies to sequences.
+    Replicates the exact logic of apply_smoothing_with_padding but for 3D arrays.
+
+    Args:
+        sequences: (N, L, F) array
+        indices_to_smooth: list of feature indices to smooth
+        mode: smoothing mode
+        kernel_size: window size
+        pad_mode: padding mode
+        smooth_cfg: config dict with method-specific params
+
+    Returns:
+        sequences_smoothed: (N, L, F) array
+    """
+    N, L, F = sequences.shape
+    sequences_smoothed = sequences.copy()
+
+    # Map pad_mode to scipy mode (SAME as dataframe)
+    pad_mode_to_scipy = {
+        'reflect': 'mirror',
+        'edge': 'nearest',
+        'constant': 'constant',
+        'wrap': 'wrap',
+        'mirror': 'mirror',
+        'nearest': 'nearest',
+        'drop': 'nearest',
+        'ffill': 'nearest'
+    }
+
+    scipy_mode = pad_mode_to_scipy.get(pad_mode, 'nearest')
+    print(f"         - Padding: {pad_mode} → scipy mode: {scipy_mode}")
+
+    for f_idx in indices_to_smooth:
+        try:
+            # Process each sequence for this feature
+            for seq_idx in range(N):
+                signal = sequences[seq_idx, :, f_idx]
+
+                # Apply smoothing based on mode (SAME logic as dataframe)
+                if mode == 'mean':
+                    if pad_mode == 'ffill':
+                        smoothed = pd.Series(signal).rolling(
+                            window=kernel_size,
+                            min_periods=1,
+                            center=True
+                        ).mean().values
+                    elif pad_mode == 'drop':
+                        smoothed = pd.Series(signal).rolling(
+                            window=kernel_size,
+                            min_periods=kernel_size,
+                            center=True
+                        ).mean().values
+                    else:  # reflect, edge, wrap, etc.
+                        pad_width = kernel_size // 2
+                        if pad_mode == 'reflect' or pad_mode == 'mirror':
+                            padded = np.pad(signal, pad_width, mode='reflect')
+                        elif pad_mode == 'edge' or pad_mode == 'nearest':
+                            padded = np.pad(signal, pad_width, mode='edge')
+                        elif pad_mode == 'wrap':
+                            padded = np.pad(signal, pad_width, mode='wrap')
+                        else:
+                            padded = np.pad(signal, pad_width, mode='edge')
+
+                        smoothed = pd.Series(padded).rolling(
+                            window=kernel_size,
+                            min_periods=kernel_size,
+                            center=True
+                        ).mean().values[pad_width:-pad_width]
+
+                elif mode == 'median':
+                    smoothed = median_filter(signal, size=kernel_size, mode=scipy_mode)
+
+                elif mode == 'gaussian':
+                    sigma = kernel_size / 6
+                    smoothed = gaussian_filter1d(signal, sigma, mode=scipy_mode)
+
+                elif mode == 'savgol':
+                    polyorder = min(3, kernel_size - 1)
+                    if kernel_size % 2 == 0:
+                        kernel_size += 1
+
+                    smoothed = savgol_filter(signal, kernel_size, polyorder, mode=scipy_mode)
+
+                elif mode == 'ewm':
+                    smoothed = pd.Series(signal).ewm(span=kernel_size, min_periods=1).mean().values
+
+                else:
+                    print(f"         ⚠️  Unknown mode '{mode}', using mean")
+                    smoothed = pd.Series(signal).rolling(
+                        window=kernel_size,
+                        min_periods=1,
+                        center=True
+                    ).mean().values
+
+                sequences_smoothed[seq_idx, :, f_idx] = smoothed
+
+        except Exception as e:
+            print(f"         ❌ Error smoothing feature index {f_idx}: {e}")
+            print(f"         → Keeping original values for this feature")
+            # Keep original values on error
+            sequences_smoothed[:, :, f_idx] = sequences[:, :, f_idx]
+
+    # Handle NaN based on pad_mode (SAME as dataframe)
+    if pad_mode == 'drop':
+        # For sequences, we'd need to identify which timesteps have NaN
+        # This is complex, so we'll use ffill instead
+        print(f"         ⚠️  'drop' mode not fully supported for sequences, using ffill")
+        for f_idx in indices_to_smooth:
+            for seq_idx in range(N):
+                series = pd.Series(sequences_smoothed[seq_idx, :, f_idx])
+                sequences_smoothed[seq_idx, :, f_idx] = series.fillna(method='ffill').fillna(method='bfill').values
+
+    elif pad_mode == 'ffill':
+        for f_idx in indices_to_smooth:
+            for seq_idx in range(N):
+                series = pd.Series(sequences_smoothed[seq_idx, :, f_idx])
+                sequences_smoothed[seq_idx, :, f_idx] = series.fillna(method='ffill').fillna(method='bfill').values
+        print(f"         → Forward/backward filled NaN values")
+    else:
+        # Check for NaN (shouldn't be with proper scipy modes)
+        nan_mask = np.isnan(sequences_smoothed[:, :, indices_to_smooth])
+        nan_count = nan_mask.sum()
+        if nan_count > 0:
+            print(f"         ⚠️  Found {nan_count} NaN values, forward filling...")
+            for f_idx in indices_to_smooth:
+                for seq_idx in range(N):
+                    series = pd.Series(sequences_smoothed[seq_idx, :, f_idx])
+                    sequences_smoothed[seq_idx, :, f_idx] = series.fillna(method='ffill').fillna(method='bfill').values
 
     return sequences_smoothed
 
