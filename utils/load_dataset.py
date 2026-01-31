@@ -1822,9 +1822,3 @@ def transform_dataframe_with_scaler(df, scaler, feature_columns):
 
     return df_scaled, scaler_params
 
-
-def
-
-
-
-
