@@ -15,6 +15,8 @@ from torch.utils.data import SubsetRandomSampler
 import json
 from pathlib import Path
 import pickle
+from scipy.signal import savgol_filter
+from scipy.ndimage import median_filter, gaussian_filter1d
 
 from utils.metric_dataset_generator import generate_and_save_metric_dataset
 from preprocessing.scaling import *
@@ -892,28 +894,6 @@ def prepare_shared_configuration(cfg):
             #print(f"         - Avg std ratio (smooth/raw): {std_ratio:.4f}")
             #print(f"         → Smoothed data has ~{(1 - std_ratio) * 100:.1f}% less variance")
 
-    # ============================================================
-    # 5. PROCESS ENTIRE DATASET
-    # ============================================================
-    if has_preprocessing:
-        print("\n5️⃣ Applying smoothing to ENTIRE dataset...")
-        df_full_processed = apply_smoothing_to_dataframe(
-            df=df_raw.copy(),
-            cfg=cfg,
-            feature_columns=feature_columns
-        )
-        print(f"   ✓ Full dataset smoothed: {df_full_processed.shape}")
-    else:
-        print("\n5️⃣ Using RAW data for entire dataset...")
-        df_full_processed = df_raw.copy()
-
-    # Standardize with main scaler
-    df_scaled, _ = transform_dataframe_with_scaler(
-        df=df_full_processed,
-        scaler=scaler_main,
-        feature_columns=feature_columns
-    )
-    print(f"   ✓ Full dataset standardized")
 
     # ============================================================
     # 6. GENERATE METRIC DATASET WITH APPROPRIATE PIPELINE
