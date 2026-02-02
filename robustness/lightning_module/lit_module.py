@@ -45,14 +45,16 @@ class LitAutoEncoder(pl.LightningModule):
         )
         return loss
     
-    def on_train_end(self):
+    def on_train_epoch_end(self):
         if len(self.train_feat_errors) == 0:
             return
 
-        # [N_steps, F] → [F]
         self.train_feat_median = torch.stack(
             self.train_feat_errors
         ).median(dim=0).values
+
+        # reset per epoca successiva
+        self.train_feat_errors.clear()
 
     def validation_step(self, batch, batch_idx):
         x = batch

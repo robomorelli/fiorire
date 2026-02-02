@@ -8,7 +8,6 @@ from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 from robustness.lightning_module.lit_module import LitAutoEncoder
-from robustness.utils import inject_training_hparams_from_ckpt
 from robustness.dataset.data_types import Config
 from robustness.dataset.data_module import DataModule
 
@@ -21,16 +20,12 @@ def main(config_path: str | Path, mode: str = "train"):
     # qui cfg_merged è ancora DictConfig/structuredConfig ma compatibile
     cfg: Config = OmegaConf.to_object(cfg_merged)  #type: ignore
 
-    ckpt = cfg.opt.checkpoint_path
-    ckpt_dict = torch.load(ckpt, map_location="cpu", weights_only=False)
-    cfg = inject_training_hparams_from_ckpt(cfg, ckpt_dict)
-
     datamodule = DataModule(cfg, mode=mode)
     datamodule.setup()
     model = LitAutoEncoder(cfg)
 
     if mode == "train":
-        print("Training: architettura da checkpoint, pesi random")
+        print("Training from scratch (Lightning checkpoint will be saved)")
 
         early_stopping = EarlyStopping(
             monitor="val_loss",
@@ -52,19 +47,19 @@ def main(config_path: str | Path, mode: str = "train"):
             devices=cfg.trainer.devices,
             max_epochs=cfg.trainer.epochs,
             precision=cfg.trainer.precision,
-            default_root_dir=cfg.trainer.out_dir,
             callbacks=[early_stopping, checkpoint_cb],
         )
 
         trainer.fit(model, datamodule=datamodule)
 
     elif mode == "test":
-        print("Test: carico modello CON pesi")
+        print("Test: carico modello da checkpoint Lightning")
 
-        # carichiamo a mano il modello perché non è un checkpoint Lightning
-        # non possiamo usare: LitAutoEncoder.load_from_checkpoint(...)
-        model.load_state_dict(ckpt_dict["model_state_dict"], strict=True)
-        model.eval()
+        model = LitAutoEncoder.load_from_checkpoint(
+            cfg.opt.checkpoint_path,
+            cfg=cfg,          # lightning non ricostruisce cfg da solo
+            strict=True,
+        )
 
         trainer = Trainer(
             accelerator=cfg.trainer.accelerator,
