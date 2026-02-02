@@ -8,7 +8,9 @@ anomalies_injection/dataset_configuration/*
 train_configurations/*
 info/
 data/
+models/cmg/
 dataloader/
+.cursor/*
 # C extensions
 *.so
 
