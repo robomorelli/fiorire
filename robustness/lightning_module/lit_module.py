@@ -32,7 +32,7 @@ class LitAutoEncoder(pl.LightningModule):
 
         # errore per feature: mean su batch e tempo
         # x: [B, W, F]
-        feat_err = (x_hat - x).pow(2).mean(dim=(0, 1))  # [F]
+        feat_err = (x_hat - x).pow(2).mean(dim=(0, 1, 3))  # → [F]
         self.train_feat_errors.append(feat_err.detach().cpu())
 
         loss = feat_err.mean()
@@ -71,7 +71,7 @@ class LitAutoEncoder(pl.LightningModule):
             num_iter=self.cfg.defense.num_iter,
         )
 
-        rec_err_feat = (x_rec - x).pow(2).mean(dim=1)
+        rec_err_feat = (x_rec - x).pow(2).mean(dim=(1, 3))
 
         rec_err = apply_feature_weighting(
             rec_err_feat,

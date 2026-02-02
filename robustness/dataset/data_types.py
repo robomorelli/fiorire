@@ -13,7 +13,6 @@ class ModelConfig:
     activation: str
     bottleneck_activation: str
 
-
 @dataclass
 class DatasetConfig:
     csv_path: str
