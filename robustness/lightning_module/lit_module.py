@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from robustness.dataset.data_types import Config
 from models.conv_ae2D import CONV_AE2D
 from scheduler import build_scheduler
+from metrics import compute_metrics
 from defenses import approximate_projection, apply_feature_weighting
 
 class LitAutoEncoder(pl.LightningModule):
@@ -105,12 +106,53 @@ class LitAutoEncoder(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         x = batch
         x_hat = self(x)
+        metrics = {}
+        if self.cfg.metrics.compute_validation:
+            metrics = compute_metrics(x, x_hat, self.cfg.metrics.types)
         loss = F.mse_loss(x_hat, x)
         self.log("val_loss", loss, prog_bar=True)
+        for k, v in metrics.items():
+            self.log(f"val_{k}", v, prog_bar=True)
+        return metrics
     
     def test_step(self, batch, batch_idx):
-        x = batch
+        x: torch.Tensor = batch
+        perturb = self.cfg.metrics.perturb_test
 
+        if perturb:
+            B = x.size(0)
+            n_adv = int(self.cfg.metrics.perturb_fraction * B)
+
+            x_adv = x[:n_adv].detach().clone()
+            x_real = x[n_adv:].detach().clone()
+
+            # --- adversarial perturbation ---
+            x_adv.requires_grad_(True)
+            x_hat_adv = self(x_adv)
+            adv_loss = F.mse_loss(x_hat_adv, x_adv)
+            grad_x = torch.autograd.grad(adv_loss, x_adv)[0]
+            x_adv = x_adv + self.epsilon * grad_x.sign()
+            x_adv = x_adv.detach()
+
+            # --- real perturbation (50% batch) ---
+            real_params = self.cfg.metrics.real_noise_params
+            perturb_types = ["gaussian", "dropout", "impulse"]
+            # per ogni sample scegli un tipo casuale
+            for i in range(x_real.size(0)):
+                choice_idx = int(torch.randint(0, len(perturb_types), (1,)).item())
+                choice = perturb_types[choice_idx]
+                if choice == "gaussian":
+                    x_real[i] += real_params.gaussian_std * torch.randn_like(x_real[i])
+                elif choice == "dropout":
+                    mask = torch.rand_like(x_real[i]) < real_params.dropout_prob
+                    x_real[i][mask] = 0.0
+                elif choice == "impulse":
+                    x_real[i] += real_params.impulse_std * torch.randn_like(x_real[i])
+
+            # ricombina il batch perturbato
+            x = torch.cat([x_adv, x_real], dim=0)
+
+        # --- reconstruction + feature weighting ---
         x_rec, _ = approximate_projection(
             encoder=self.model.encoder,
             decoder=self.model.decoder,
@@ -120,22 +162,20 @@ class LitAutoEncoder(pl.LightningModule):
         )
 
         rec_err_feat = (x_rec - x).pow(2).mean(dim=(1, 3))
+        rec_err = apply_feature_weighting(rec_err_feat, self.train_feat_median, epsilon=1e-4, batch_idx=batch_idx)
 
-        rec_err = apply_feature_weighting(
-            rec_err_feat,
-            self.train_feat_median,
-            epsilon=1e-4,
-            batch_idx=batch_idx,
-        )
+        # log reconstruction error separatamente
+        self.log("test_rec_error", rec_err.mean(), prog_bar=True, on_epoch=True)
 
-        self.log(
-            "test_rec_error",
-            rec_err.mean(),
-            prog_bar=True,
-            on_epoch=True,
-        )
+        # --- metriche ---
+        metrics = {}
+        if self.cfg.metrics.compute_test:
+            metrics = compute_metrics(x, x_rec, self.cfg.metrics.types)
+            for k, v in metrics.items():
+                self.log(f"test_{k}", v, prog_bar=True)
 
-        return rec_err
+        return metrics
+
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)

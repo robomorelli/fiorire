@@ -59,9 +59,24 @@ class DefenseConfig:
     pgd_steps: int
 
 @dataclass
+class RealNoiseParams:
+    gaussian_std: float
+    dropout_prob: float
+    impulse_std: float
+@dataclass
+class MetricConfig:
+    compute_validation: bool
+    compute_test: bool
+    types: list[str]                 # ["mse", "mae", "pr_auc"]
+    perturb_test: bool
+    perturb_fraction: float          # percentuale adversarial / noise
+    real_noise_params: RealNoiseParams
+
+@dataclass
 class Config:
     model: ModelConfig
     dataset: DatasetConfig
     trainer: TrainerConfig
     opt: OptConfig
     defense: DefenseConfig
+    metrics: MetricConfig
