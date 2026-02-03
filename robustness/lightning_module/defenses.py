@@ -32,7 +32,7 @@ def approximate_projection(
         loss_fn = torch.nn.SmoothL1Loss(reduction="sum")
 
     with torch.no_grad():
-        z = encoder(x)
+        z: torch.Tensor = encoder(x)
 
     z = z.detach().clone().requires_grad_(True)
 
@@ -41,8 +41,14 @@ def approximate_projection(
         loss = loss_fn(x_rec, x)
 
         loss.backward()
-        z.data -= alpha * z.grad
-        z.grad.zero_()
+        
+        assert z.grad is not None
+        grad = z.grad
+
+        with torch.no_grad():
+            z -= alpha * grad
+            grad.zero_()
+
 
     return x_rec.detach(), z.detach()
 

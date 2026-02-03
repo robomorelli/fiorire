@@ -17,6 +17,9 @@ class LitAutoEncoder(pl.LightningModule):
         self.cfg = cfg
         self.model = CONV_AE2D(cfg)
         self.lr = cfg.opt.lr
+        self.epsilon = cfg.defense.epsilon
+        self.lambda_latent = cfg.defense.lambda_latent
+        self.p_adv = cfg.defense.p_adv
 
         # buffer per errori di training
         self.train_feat_errors = []
@@ -27,18 +30,61 @@ class LitAutoEncoder(pl.LightningModule):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
-        x = batch
-        x_hat = self(x)
+        x: torch.Tensor = batch                      # [B, 1, F, W]
+        B = x.size(0)
 
-        # errore per feature: mean su batch e tempo
-        # x: [B, W, F]
-        feat_err = (x_hat - x).pow(2).mean(dim=(0, 1, 3))  # → [F]
+        epsilon = self.cfg.defense.epsilon
+        lambda_latent = self.cfg.defense.lambda_latent
+        p_adv = self.cfg.defense.p_adv
+
+        # split the batch
+        n_adv = int(p_adv * B)
+        n_clean = B - n_adv
+        x_clean = x[:n_clean]
+        x_adv_src = x[n_clean:]
+
+        # clean
+        x_hat_clean = self(x_clean)
+        recon_loss = F.mse_loss(x_hat_clean, x_clean)
+        # feature-wise statistics
+        feat_err = (x_hat_clean - x_clean).pow(2).mean(dim=(0, 1, 3))
         self.train_feat_errors.append(feat_err.detach().cpu())
 
-        loss = feat_err.mean()
-        self.log(
-            "train_loss",
-            loss,
+        # FGSM adversarial generation
+        if n_adv > 0:
+            x_adv = x_adv_src.detach().clone()
+            x_adv.requires_grad_(True)
+
+            x_hat_adv = self(x_adv)
+            adv_recon_loss = F.mse_loss(x_hat_adv, x_adv)
+
+            grad_x = torch.autograd.grad(
+                adv_recon_loss,
+                x_adv,
+                retain_graph=False,
+                create_graph=False,
+            )[0]
+
+            x_adv = x_adv + epsilon * grad_x.sign()
+            x_adv = x_adv.detach()   # IMPORTANT
+
+            # latent consistency
+            z_clean = self.model.encoder(x_adv_src).detach()
+            z_adv = self.model.encoder(x_adv)
+
+            latent_loss = F.mse_loss(z_adv, z_clean)
+        else:
+            latent_loss = torch.tensor(0.0, device=self.device)
+        
+        # total loss
+        loss = recon_loss + lambda_latent * latent_loss
+
+        self.log_dict(
+            {
+                "train_loss": loss,
+                "train_recon_loss": recon_loss,
+                "train_latent_loss": latent_loss,
+            },
             prog_bar=True,
             on_step=False,
             on_epoch=True,

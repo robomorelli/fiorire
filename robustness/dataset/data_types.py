@@ -53,6 +53,10 @@ class OptConfig:
 class DefenseConfig:
     alpha: float
     num_iter: int
+    epsilon: float        # adversarial perturbation strength
+    lambda_latent: float  # peso regolarizzazione latente
+    p_adv: float          # frazione batch adversarial
+    pgd_steps: int
 
 @dataclass
 class Config:

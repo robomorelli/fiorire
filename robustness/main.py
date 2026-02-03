@@ -2,7 +2,6 @@ from pytorch_lightning import Trainer
 from omegaconf import OmegaConf
 from pathlib import Path
 import fire
-import torch
 
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.callbacks import ModelCheckpoint
