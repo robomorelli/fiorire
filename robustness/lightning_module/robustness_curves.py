@@ -1,0 +1,49 @@
+# robustness_curves.py
+from pathlib import Path
+import matplotlib.pyplot as plt
+
+
+def plot_robustness_curves(
+    clean_metrics:dict[str, float],
+    results: dict[str, dict[float, dict[str, float]]],
+    out_dir: str,
+):
+    """
+    results = {
+        "adversarial": {epsilon: {metric: value}},
+        "gaussian": {std: {...}},
+        "dropout": {p: {...}},
+        "impulse": {std: {...}},
+    }
+    """
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    metrics = list(clean_metrics.keys())
+
+    for metric in metrics:
+        plt.figure(figsize=(6, 4))
+
+        # clean baseline
+        plt.axhline(
+            clean_metrics[metric],
+            linestyle="--",
+            color="black",
+            label="clean baseline",
+        )
+
+        for perturb_type, values in results.items():
+            if not values:
+                continue
+            x = sorted(values.keys())
+            y = [values[v][metric] for v in x]
+            plt.plot(x, y, marker="o", label=perturb_type)
+
+        plt.xlabel("Perturbation intensity")
+        plt.ylabel(metric)
+        plt.title(f"Robustness curve – {metric}")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(out_path / f"{metric}_robustness.png")
+        plt.close()

@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from robustness.dataset.data_types import Config
 from models.conv_ae2D import CONV_AE2D
+from robustness.lightning_module.robustness_curves import plot_robustness_curves
 from scheduler import build_scheduler
 from metrics import compute_metrics
 from defenses import approximate_projection, apply_feature_weighting
@@ -26,6 +27,14 @@ class LitAutoEncoder(pl.LightningModule):
         self.train_feat_errors = []
         # inizializzati via checkpoint
         self.train_feat_median = None
+
+        self._clean_metrics = {}
+        self._robustness_results = {
+            "adversarial": {},
+            "gaussian": {},
+            "dropout": {},
+            "impulse": {},
+        }
 
     def forward(self, x):
         return self.model(x)
@@ -118,6 +127,7 @@ class LitAutoEncoder(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         x: torch.Tensor = batch
         perturb = self.cfg.metrics.perturb_test
+        epsilon_test = self.cfg.metrics.epsilon
 
         if perturb:
             B = x.size(0)
@@ -131,10 +141,10 @@ class LitAutoEncoder(pl.LightningModule):
             x_hat_adv = self(x_adv)
             adv_loss = F.mse_loss(x_hat_adv, x_adv)
             grad_x = torch.autograd.grad(adv_loss, x_adv)[0]
-            x_adv = x_adv + self.epsilon * grad_x.sign()
+            x_adv = x_adv + epsilon_test * grad_x.sign()
             x_adv = x_adv.detach()
 
-            # --- real perturbation (50% batch) ---
+            # --- real perturbation (1-perturb_fraction% batch) ---
             real_params = self.cfg.metrics.real_noise_params
             perturb_types = ["gaussian", "dropout", "impulse"]
             # per ogni sample scegli un tipo casuale
@@ -176,6 +186,61 @@ class LitAutoEncoder(pl.LightningModule):
 
         return metrics
 
+    def on_test_start(self):
+        assert self.trainer.test_dataloaders is not None
+        self._test_dataloader = self.trainer.test_dataloaders[0]
+
+
+    def on_test_epoch_end(self):
+        if not self.cfg.curves.enabled:
+            return
+
+        dataloader = self._test_dataloader
+
+        # clean baseline
+        self._clean_metrics = self._evaluate_on_loader(dataloader)
+
+        # adversarial curve
+        for eps in self.cfg.curves.adversarial_epsilons:
+
+            def adv_perturb(x):
+                x = x.detach().clone().requires_grad_(True)
+                x_hat = self(x)
+                loss = F.mse_loss(x_hat, x)
+                grad = torch.autograd.grad(loss, x)[0]
+                return (x + eps * grad.sign()).detach()
+
+            self._robustness_results["adversarial"][eps] = \
+                self._evaluate_on_loader(dataloader, adv_perturb)
+
+        # gaussian
+        for std in self.cfg.curves.gaussian_stds:
+            self._robustness_results["gaussian"][std] = \
+                self._evaluate_on_loader(
+                    dataloader,
+                    lambda x: x + std * torch.randn_like(x)
+                )
+        # dropout
+        for p in self.cfg.curves.dropout_probs:
+            self._robustness_results["dropout"][p] = \
+                self._evaluate_on_loader(
+                    dataloader,
+                    lambda x: x * (torch.rand_like(x) > p)
+                )
+        # impulsive
+        for std in self.cfg.curves.impulse_stds:
+            self._robustness_results["impulse"][std] = \
+                self._evaluate_on_loader(
+                    dataloader,
+                    lambda x: x + std * torch.randn_like(x)
+                )
+        
+        plot_robustness_curves(
+            clean_metrics=self._clean_metrics,
+            results=self._robustness_results,
+            out_dir=f"{self.cfg.trainer.out_dir}/robustness",
+        )
+
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -195,3 +260,35 @@ class LitAutoEncoder(pl.LightningModule):
 
     def on_load_checkpoint(self, checkpoint):
         self.train_feat_median = checkpoint.get("train_feat_median", None)
+
+    def _evaluate_on_loader(self, dataloader, perturb_fn=None, requires_grad=False):
+        self.eval()
+        metrics_acc = []
+
+        for batch in dataloader:
+            x = batch.to(self.device)
+
+            if perturb_fn is not None:
+                if requires_grad:
+                    x = perturb_fn(x)
+                else:
+                    with torch.no_grad():
+                        x = perturb_fn(x)
+
+            with torch.no_grad():
+                x_rec, _ = approximate_projection(
+                    self.model.encoder,
+                    self.model.decoder,
+                    x,
+                    alpha=self.cfg.defense.alpha,
+                    num_iter=self.cfg.defense.num_iter,
+                )
+
+                metrics = compute_metrics(x, x_rec, self.cfg.metrics.types)
+                metrics_acc.append(metrics)
+
+        return {
+            k: sum(m[k] for m in metrics_acc) / len(metrics_acc)
+            for k in metrics_acc[0]
+        }
+

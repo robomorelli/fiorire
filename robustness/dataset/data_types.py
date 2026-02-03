@@ -69,8 +69,17 @@ class MetricConfig:
     compute_test: bool
     types: list[str]                 # ["mse", "mae", "pr_auc"]
     perturb_test: bool
+    epsilon: float
     perturb_fraction: float          # percentuale adversarial / noise
     real_noise_params: RealNoiseParams
+
+@dataclass
+class CurvesConfig:
+    enabled: bool
+    adversarial_epsilons: list[float]
+    gaussian_stds: list[float]
+    dropout_probs: list[float]
+    impulse_stds: list[float]
 
 @dataclass
 class Config:
@@ -80,3 +89,4 @@ class Config:
     opt: OptConfig
     defense: DefenseConfig
     metrics: MetricConfig
+    curves: CurvesConfig
