@@ -1,6 +1,9 @@
+from pathlib import Path
 import pytorch_lightning as pl
 import torch
+from typing import Literal
 
+from robustness.dataset.data_module import DataModule
 from robustness.dataset.data_types import Config
 from models.conv_ae2D import CONV_AE2D
 from robustness.evaluation.robustness_curves import (
@@ -41,6 +44,8 @@ class LitAutoEncoder(pl.LightningModule):
             "dropout": {},
             "impulse": {},
         }
+
+        self.test_mode: Literal["clean", "anom"]
 
     def forward(self, x):
         return self.model(x)
@@ -138,9 +143,8 @@ class LitAutoEncoder(pl.LightningModule):
             self.train_feat_median,
         )
         # log reconstruction error separatamente
-        prefix = "anom" if self.cfg.metrics.anomalous_test else "clean"
         self.log(
-            f"{prefix}_test_rec_error",
+            f"{self.test_mode}_test_rec_error",
             rec_err.mean(),
             prog_bar=True,
             on_epoch=True,
@@ -175,10 +179,13 @@ class LitAutoEncoder(pl.LightningModule):
                     perturb_builder(p),
                 )
 
+        out_dir = self._test_out_dir() / "robustness"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
         plot_robustness_curves(
             clean_metrics=self._clean_metrics,
             results=self._robustness_results,
-            out_dir=f"{self.cfg.trainer.out_dir}/robustness",
+            out_dir=str(out_dir),
         )
 
     def configure_optimizers(self):
@@ -199,6 +206,9 @@ class LitAutoEncoder(pl.LightningModule):
 
     def on_load_checkpoint(self, checkpoint):
         self.train_feat_median = checkpoint.get("train_feat_median", None)
+
+    def _test_out_dir(self) -> Path:
+        return Path(self.cfg.trainer.out_dir) / self.test_mode
 
     def _evaluate_on_loader(self, dataloader, perturb_fn=None, requires_grad=False):
         self.eval()

@@ -1,3 +1,4 @@
+from typing import Optional
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
@@ -11,11 +12,11 @@ from robustness.dataset.data_types import Config
 
 
 class DataModule(pl.LightningDataModule):
-    def __init__(self, cfg: Config, mode: str = "train", anomalous_test: bool = True):
+    def __init__(self, cfg: Config, mode: str, test_mode: Optional[str]):
         super().__init__()
         self.cfg = cfg
         self.mode = mode
-        self.anomalous_test = anomalous_test
+        self.test_mode = test_mode
 
     def setup(self, stage: str | None = None) -> None:
         data = pd.read_csv(self.cfg.dataset.csv_path).values.astype(np.float32)
@@ -87,7 +88,7 @@ class DataModule(pl.LightningDataModule):
                 Xok_ref=Xok_ref,
             )
 
-            # 3. prendi una percentuale CASUALE
+            # prendi una percentuale CASUALE
             ratio = self.cfg.dataset.val_anomaly_ratio  # 0.3
             n_anom = int(ratio * len(val_clean))
             idx = np.random.choice(len(val_anom), size=n_anom, replace=False).tolist()
@@ -103,7 +104,7 @@ class DataModule(pl.LightningDataModule):
             )
 
         elif self.mode == "test":
-            if self.anomalous_test:
+            if self.test_mode == "anom":
                 # generiamo anomalie su tutto il test set
                 n_total = len(test_data) - W
                 idx = np.arange(n_total)  # tutte le sequenze
@@ -113,11 +114,14 @@ class DataModule(pl.LightningDataModule):
                     W,
                     self.cfg.dataset.seq_stride_test,
                     scaler=self.scaler,
-                    delta_range=(self.cfg.dataset.delta_min, self.cfg.dataset.delta_max),
+                    delta_range=(
+                        self.cfg.dataset.delta_min,
+                        self.cfg.dataset.delta_max,
+                    ),
                     Xok_ref=Xok_ref,
                 )
                 self.test_ds = test_anom_ds
-            else:
+            elif self.test_mode == "clean":
                 self.test_ds = TimeSeriesDataset(
                     test_data,
                     W,

@@ -1,4 +1,3 @@
-from copy import deepcopy
 from pytorch_lightning import Trainer
 from omegaconf import OmegaConf
 from pathlib import Path
@@ -20,7 +19,7 @@ def main(config_path: str | Path, mode: str = "train"):
     # qui cfg_merged è ancora DictConfig/structuredConfig ma compatibile
     cfg: Config = OmegaConf.to_object(cfg_merged)  # type: ignore
 
-    datamodule = DataModule(cfg, mode=mode)
+    datamodule = DataModule(cfg, mode=mode, test_mode = None)
     datamodule.setup()
     model = LitAutoEncoder(cfg)
 
@@ -68,13 +67,13 @@ def main(config_path: str | Path, mode: str = "train"):
         )
 
         print("Running CLEAN test")
-        datamodule_clean = DataModule(cfg, mode="test", anomalous_test=False)
+        datamodule_clean = DataModule(cfg, mode="test", test_mode="clean")
         trainer.test(model, datamodule=datamodule_clean)
 
         print("Running ANOMALOUS test")
-        datamodule_anom = DataModule(cfg, mode="test", anomalous_test=True)
+        datamodule_anom = DataModule(cfg, mode="test", test_mode="anom")
         trainer.test(model, datamodule=datamodule_anom)
-        
+
     else:
         raise ValueError("mode deve essere 'train' o 'test'")
 
