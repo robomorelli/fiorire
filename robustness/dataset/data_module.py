@@ -102,12 +102,27 @@ class DataModule(pl.LightningDataModule):
             )
 
         elif self.mode == "test":
-            self.test_ds = TimeSeriesDataset(
-                test_data,
-                W,
-                self.cfg.dataset.seq_stride_test,
-                scaler=self.scaler,
-            )
+            if self.cfg.metrics.anomalous_test:
+                # generiamo anomalie su tutto il test set
+                n_total = len(test_data) - W
+                idx = np.arange(n_total)  # tutte le sequenze
+                Xok_ref = None  # opzionale, se vuoi usarlo come riferimento
+                test_anom_ds = TimeSeriesDataset(
+                    test_data,
+                    W,
+                    self.cfg.dataset.seq_stride_test,
+                    scaler=self.scaler,
+                    delta_range=(self.cfg.dataset.delta_min, self.cfg.dataset.delta_max),
+                    Xok_ref=Xok_ref,
+                )
+                self.test_ds = test_anom_ds
+            else:
+                self.test_ds = TimeSeriesDataset(
+                    test_data,
+                    W,
+                    self.cfg.dataset.seq_stride_test,
+                    scaler=self.scaler,
+                )
 
     def train_dataloader(self) -> DataLoader:
         if self.mode != "train":

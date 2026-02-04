@@ -85,6 +85,7 @@ class MetricConfig:
     compute_validation: bool
     compute_test: bool
     types: list[str]  # ["mse", "mae", "pr_auc"]
+    anomalous_test: bool
     perturb_test: bool
     epsilon: float
     perturb_fraction: float  # percentuale adversarial / noise
