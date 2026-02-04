@@ -1,7 +1,16 @@
 import torch
-from sklearn.metrics import precision_recall_curve, roc_auc_score, auc, mean_squared_error, mean_absolute_error
+from sklearn.metrics import (
+    precision_recall_curve,
+    roc_auc_score,
+    auc,
+    mean_squared_error,
+    mean_absolute_error,
+)
 
-def compute_metrics(y_true: torch.Tensor, y_pred: torch.Tensor, metric_types: list) -> dict[str, float]:
+
+def compute_metrics(
+    y_true: torch.Tensor, y_pred: torch.Tensor, metric_types: list
+) -> dict[str, float]:
     """
     Compute requested metrics:
     - mse/mae ratio
@@ -34,5 +43,3 @@ def compute_metrics(y_true: torch.Tensor, y_pred: torch.Tensor, metric_types: li
             metrics["roc_auc"] = float("nan")  # caso single-class
 
     return metrics
-
-

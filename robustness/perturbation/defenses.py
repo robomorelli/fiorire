@@ -3,7 +3,10 @@ import warnings
 from typing import Optional
 from torch import Tensor
 
-from robustness.perturbation.defenses import approximate_projection, apply_feature_weighting
+from robustness.perturbation.defenses import (
+    approximate_projection,
+    apply_feature_weighting,
+)
 from models.conv_ae2D import Encoder, Decoder
 
 
@@ -43,14 +46,13 @@ def approximate_projection(
         loss = loss_fn(x_rec, x)
 
         loss.backward()
-        
+
         assert z.grad is not None
         grad = z.grad
 
         with torch.no_grad():
             z -= alpha * grad
             grad.zero_()
-
 
     return x_rec.detach(), z.detach()
 
@@ -86,6 +88,7 @@ def apply_feature_weighting(
     weights = 1.0 / (epsilon + train_feat_median.to(rec_err_feat.device))
     return (rec_err_feat * weights).sum(dim=1)
 
+
 def reconstruct_and_weight(
     encoder: Encoder,
     decoder: Decoder,
@@ -93,7 +96,7 @@ def reconstruct_and_weight(
     alpha: float,
     num_iter: int,
     train_feat_median: Optional[Tensor],
-    epsilon: float = 1e-4
+    epsilon: float = 1e-4,
 ) -> tuple[Tensor, Tensor]:
     """
     Apply approximate projection + feature weighting in one shot.

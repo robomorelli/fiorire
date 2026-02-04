@@ -39,7 +39,7 @@ def build_robustness_curves(model: torch.nn.Module, cfg: Config) -> dict[str, tu
 
 
 def plot_robustness_curves(
-    clean_metrics:dict[str, float],
+    clean_metrics: dict[str, float],
     results: dict[str, dict[float, dict[str, float]]],
     out_dir: str,
 ):

@@ -2,21 +2,19 @@ import numpy as np
 import random
 from numpy.typing import NDArray
 
-from wombats.anomalies.increasing import (
-    GWN, Impulse, Step, Constant
-)
+from wombats.anomalies.increasing import GWN, Impulse, Step, Constant
 
 ALL_ANOMALIES = [
     GWN,
     Impulse,
     Step,
     Constant,
-    ]
+]
 
 
 def apply_random_wombats_anomaly(
     signal: NDArray,  # shape (W,)
-    Xok_ref: NDArray, # shape (N, W) for fit
+    Xok_ref: NDArray,  # shape (N, W) for fit
     delta_range: tuple[float, float],
 ) -> np.ndarray:
     """

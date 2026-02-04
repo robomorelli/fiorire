@@ -52,21 +52,15 @@ class DataModule(pl.LightningDataModule):
 
         # torniamo a una shape (W, F)
         train_data = np.concatenate(train_chunks, axis=0).reshape(-1, F)
-        val_data   = np.concatenate(val_chunks, axis=0).reshape(-1, F)
-        test_data  = np.concatenate(test_chunks, axis=0).reshape(-1, F)
+        val_data = np.concatenate(val_chunks, axis=0).reshape(-1, F)
+        test_data = np.concatenate(test_chunks, axis=0).reshape(-1, F)
 
         self.scaler = StandardScaler().fit(train_data)
 
         W = self.cfg.dataset.seq_in_length
-        n_ref = min(
-            self.cfg.dataset.n_wombats_ref,
-            len(val_data) - W
-        )
+        n_ref = min(self.cfg.dataset.n_wombats_ref, len(val_data) - W)
         idx = np.random.choice(len(val_data) - W, size=n_ref, replace=False)
-        Xok_ref = np.stack([
-            val_data[i : i + W]
-            for i in idx
-        ])  # shape: [n_ref, W, F]
+        Xok_ref = np.stack([val_data[i : i + W] for i in idx])  # shape: [n_ref, W, F]
 
         if self.mode == "train":
             self.train_ds = TimeSeriesDataset(
@@ -88,8 +82,7 @@ class DataModule(pl.LightningDataModule):
                 W,
                 self.cfg.dataset.seq_stride_val,
                 scaler=self.scaler,
-                delta_range=(self.cfg.dataset.delta_min,
-                    self.cfg.dataset.delta_max),
+                delta_range=(self.cfg.dataset.delta_min, self.cfg.dataset.delta_max),
                 Xok_ref=Xok_ref,
             )
 
@@ -136,7 +129,7 @@ class DataModule(pl.LightningDataModule):
             self.val_ds,
             batch_size=self.cfg.dataset.batch_size,
             sampler=self.val_sampler,
-            shuffle = False,
+            shuffle=False,
             num_workers=self.cfg.dataset.num_workers,
             pin_memory=True,
         )

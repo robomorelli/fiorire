@@ -10,7 +10,7 @@ from robustness.dataset.wombats import apply_random_wombats_anomaly
 class TimeSeriesDataset(Dataset):
     def __init__(
         self,
-        data: NDArray,                  # [T, F]
+        data: NDArray,  # [T, F]
         seq_len: int,
         stride: int,
         scaler: Optional[StandardScaler] = None,
@@ -61,4 +61,3 @@ class TimeSeriesDataset(Dataset):
         )
 
         return window
-

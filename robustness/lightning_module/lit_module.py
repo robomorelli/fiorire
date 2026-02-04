@@ -3,7 +3,10 @@ import torch
 
 from robustness.dataset.data_types import Config
 from models.conv_ae2D import CONV_AE2D
-from robustness.evaluation.robustness_curves import plot_robustness_curves, build_robustness_curves
+from robustness.evaluation.robustness_curves import (
+    plot_robustness_curves,
+    build_robustness_curves,
+)
 from robustness.lightning_module.losses import reconstruction_loss, feature_errors
 from scheduler import build_scheduler
 from robustness.evaluation.metrics import compute_metrics
@@ -43,7 +46,7 @@ class LitAutoEncoder(pl.LightningModule):
         return self.model(x)
 
     def training_step(self, batch, batch_idx):
-        x: torch.Tensor = batch                      # [B, 1, F, W]
+        x: torch.Tensor = batch  # [B, 1, F, W]
         B = x.size(0)
 
         # split the batch
@@ -63,12 +66,10 @@ class LitAutoEncoder(pl.LightningModule):
         if n_adv > 0:
             x_adv = fgsm_attack(self, x_adv_src, self.epsilon)
             x_adv = x_adv.detach()
-            latent_loss = latent_consistency_loss(
-                self.model.encoder, x_adv_src, x_adv
-            )
+            latent_loss = latent_consistency_loss(self.model.encoder, x_adv_src, x_adv)
         else:
             latent_loss = torch.tensor(0.0, device=self.device)
-        
+
         # total loss
         loss = recon_loss + self.lambda_latent * latent_loss
 
@@ -83,18 +84,18 @@ class LitAutoEncoder(pl.LightningModule):
             on_epoch=True,
         )
         return loss
-    
+
     def on_train_epoch_end(self):
         if len(self.train_feat_errors) == 0:
             return
 
-        self.train_feat_median = torch.stack(
-            self.train_feat_errors
-        ).median(dim=0).values
+        self.train_feat_median = (
+            torch.stack(self.train_feat_errors).median(dim=0).values
+        )
 
         # reset per epoca successiva
         self.train_feat_errors.clear()
-    
+
     def validation_step(self, batch, batch_idx):
         x = batch
         x_hat = self(x)
@@ -108,7 +109,7 @@ class LitAutoEncoder(pl.LightningModule):
                 self.log(f"val_{k}", v, prog_bar=True)
 
         return loss
-    
+
     def test_step(self, batch, batch_idx):
         x: torch.Tensor = batch
         perturb = self.cfg.metrics.perturb_test
@@ -122,8 +123,7 @@ class LitAutoEncoder(pl.LightningModule):
 
             x_adv = fgsm_attack(self, x[:n_adv].detach().clone(), epsilon_test)
             x_real = random_real_perturbation(
-                x[n_adv:],
-                self.cfg.metrics.real_noise_params
+                x[n_adv:], self.cfg.metrics.real_noise_params
             )
 
             # ricombina il batch perturbato
@@ -135,12 +135,11 @@ class LitAutoEncoder(pl.LightningModule):
             x,
             self.cfg.defense.alpha,
             self.cfg.defense.num_iter,
-            self.train_feat_median
+            self.train_feat_median,
         )
         # log reconstruction error separatamente
         self.log("test_rec_error", rec_err.mean(), prog_bar=True, on_epoch=True)
 
-        # --- metriche ---
         metrics = {}
         if self.cfg.metrics.compute_test:
             metrics = compute_metrics(x, x_rec, self.cfg.metrics.types)
@@ -156,7 +155,7 @@ class LitAutoEncoder(pl.LightningModule):
     def on_test_epoch_end(self):
         if not self.cfg.curves.enabled:
             return
-        
+
         dataloader = self._test_dataloader
 
         # clean baseline
@@ -169,13 +168,12 @@ class LitAutoEncoder(pl.LightningModule):
                     dataloader,
                     perturb_builder(p),
                 )
-        
+
         plot_robustness_curves(
             clean_metrics=self._clean_metrics,
             results=self._robustness_results,
             out_dir=f"{self.cfg.trainer.out_dir}/robustness",
         )
-
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -187,7 +185,7 @@ class LitAutoEncoder(pl.LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": scheduler_dict,
         }
-    
+
     # called when a lightning checkpoint is saved or loaded
     def on_save_checkpoint(self, checkpoint):
         if hasattr(self, "train_feat_median"):
@@ -211,7 +209,7 @@ class LitAutoEncoder(pl.LightningModule):
                     with torch.no_grad():
                         x = perturb_fn(x)
 
-            # ricostruzione + feature weighting in un colpo
+            # ricostruzione + feature weighting
             with torch.no_grad():
                 x_rec, rec_err = reconstruct_and_weight(
                     self.model.encoder,
@@ -219,7 +217,7 @@ class LitAutoEncoder(pl.LightningModule):
                     x,
                     self.cfg.defense.alpha,
                     self.cfg.defense.num_iter,
-                    self.train_feat_median
+                    self.train_feat_median,
                 )
 
             # metriche
@@ -228,7 +226,6 @@ class LitAutoEncoder(pl.LightningModule):
             metrics_acc.append(metrics)
 
         # media batch
-        return {k: sum(m[k] for m in metrics_acc) / len(metrics_acc)
-                for k in metrics_acc[0]}
-
-
+        return {
+            k: sum(m[k] for m in metrics_acc) / len(metrics_acc) for k in metrics_acc[0]
+        }

@@ -1,6 +1,7 @@
 import torch
 from robustness.dataset.data_types import RealNoiseParams
 
+
 def gaussian_noise(x: torch.Tensor, std: float) -> torch.Tensor:
     """
     Additive Gaussian noise.
@@ -21,6 +22,7 @@ def impulse_noise(x: torch.Tensor, std: float) -> torch.Tensor:
     Impulsive noise (Gaussian, but conceptually spike-like).
     """
     return x + std * torch.randn_like(x)
+
 
 def random_real_perturbation(
     x: torch.Tensor,
