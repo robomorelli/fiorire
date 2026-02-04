@@ -34,3 +34,5 @@ def compute_metrics(y_true: torch.Tensor, y_pred: torch.Tensor, metric_types: li
             metrics["roc_auc"] = float("nan")  # caso single-class
 
     return metrics
+
+

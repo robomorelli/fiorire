@@ -38,12 +38,12 @@ def main(config_path: str | Path, mode: str = "train"):
             monitor="val_loss",      # metrica da ottimizzare
             mode="min",
             save_top_k=1,            # salva SOLO il migliore
-            save_last=False,         # opzionale
         )
 
         trainer = Trainer(
             accelerator=cfg.trainer.accelerator,
             devices=cfg.trainer.devices,
+            strategy=cfg.trainer.strategy,
             max_epochs=cfg.trainer.epochs,
             precision=cfg.trainer.precision,
             callbacks=[early_stopping, checkpoint_cb],
@@ -63,14 +63,13 @@ def main(config_path: str | Path, mode: str = "train"):
         trainer = Trainer(
             accelerator=cfg.trainer.accelerator,
             devices=cfg.trainer.devices,
+            strategy=cfg.trainer.strategy,
         )
 
         trainer.test(model, datamodule=datamodule)
 
     else:
         raise ValueError("mode deve essere 'train' o 'test'")
-
-
 
 if __name__ == "__main__":
     fire.Fire(main)

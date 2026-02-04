@@ -1,6 +1,41 @@
-# robustness_curves.py
 from pathlib import Path
 import matplotlib.pyplot as plt
+import torch
+
+from robustness.dataset.data_types import Config
+from robustness.perturbation.adv_train import fgsm_attack
+from robustness.perturbation.real import (
+    gaussian_noise,
+    dropout_noise,
+    impulse_noise,
+)
+
+
+def build_robustness_curves(model: torch.nn.Module, cfg: Config) -> dict[str, tuple]:
+    """
+    Returns a dict:
+        name -> (params, perturb_builder)
+    where:
+        perturb_builder(p) -> Callable[[Tensor], Tensor]
+    """
+    return {
+        "adversarial": (
+            cfg.curves.adversarial_epsilons,
+            lambda eps: lambda x: fgsm_attack(model, x, eps),
+        ),
+        "gaussian": (
+            cfg.curves.gaussian_stds,
+            lambda std: lambda x: gaussian_noise(x, std),
+        ),
+        "dropout": (
+            cfg.curves.dropout_probs,
+            lambda p: lambda x: dropout_noise(x, p),
+        ),
+        "impulse": (
+            cfg.curves.impulse_stds,
+            lambda std: lambda x: impulse_noise(x, std),
+        ),
+    }
 
 
 def plot_robustness_curves(

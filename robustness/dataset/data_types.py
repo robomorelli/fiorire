@@ -35,6 +35,13 @@ class DatasetConfig:
 class TrainerConfig:
     accelerator: str
     devices: int
+    strategy: Literal[
+        "ddp",
+        "ddp_find_unused_parameters_false",
+        "auto",
+        "dp",
+        "deepspeed",
+    ]
     epochs: int
     precision: Literal[16, 32, 64, "16-true", "transformer-engine", "transformer-engine-float16"]
     out_dir: str

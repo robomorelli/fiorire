@@ -1,14 +1,16 @@
 import torch
 import warnings
 from typing import Optional
+from torch import Tensor
 
+from robustness.perturbation.defenses import approximate_projection, apply_feature_weighting
 from models.conv_ae2D import Encoder, Decoder
 
 
 def approximate_projection(
     encoder: Encoder,
     decoder: Decoder,
-    x: torch.Tensor,
+    x: Tensor,
     alpha: float,
     num_iter: int,
     loss_fn: Optional[torch.nn.Module] = None,
@@ -32,7 +34,7 @@ def approximate_projection(
         loss_fn = torch.nn.SmoothL1Loss(reduction="sum")
 
     with torch.no_grad():
-        z: torch.Tensor = encoder(x)
+        z: Tensor = encoder(x)
 
     z = z.detach().clone().requires_grad_(True)
 
@@ -54,8 +56,8 @@ def approximate_projection(
 
 
 def apply_feature_weighting(
-    rec_err_feat: torch.Tensor,
-    train_feat_median: Optional[torch.Tensor],
+    rec_err_feat: Tensor,
+    train_feat_median: Optional[Tensor],
     epsilon: float = 1e-4,
     warn: bool = True,
     batch_idx: Optional[int] = None,
@@ -83,3 +85,33 @@ def apply_feature_weighting(
 
     weights = 1.0 / (epsilon + train_feat_median.to(rec_err_feat.device))
     return (rec_err_feat * weights).sum(dim=1)
+
+def reconstruct_and_weight(
+    encoder: Encoder,
+    decoder: Decoder,
+    x: Tensor,
+    alpha: float,
+    num_iter: int,
+    train_feat_median: Optional[Tensor],
+    epsilon: float = 1e-4
+) -> tuple[Tensor, Tensor]:
+    """
+    Apply approximate projection + feature weighting in one shot.
+
+    Args:
+        encoder: torch module, maps x -> latent z
+        decoder: torch module, maps latent z -> reconstructed x_hat
+        x: input batch [B, C, F, W]
+        alpha: step size for projection
+        num_iter: number of projection steps
+        train_feat_median: [F] median of training feature errors (or None)
+        epsilon: small constant for numerical stability in weighting
+
+    Returns:
+        x_rec: reconstructed batch [B, C, F, W]
+        rec_err: weighted reconstruction error [B]
+    """
+    x_rec, _ = approximate_projection(encoder, decoder, x, alpha, num_iter)
+    rec_err_feat = (x_rec - x).pow(2).mean(dim=(1, 3))
+    rec_err = apply_feature_weighting(rec_err_feat, train_feat_median, epsilon)
+    return x_rec, rec_err

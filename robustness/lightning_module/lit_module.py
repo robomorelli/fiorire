@@ -1,13 +1,16 @@
 import pytorch_lightning as pl
 import torch
-import torch.nn.functional as F
 
 from robustness.dataset.data_types import Config
 from models.conv_ae2D import CONV_AE2D
-from robustness.lightning_module.robustness_curves import plot_robustness_curves
+from robustness.evaluation.robustness_curves import plot_robustness_curves, build_robustness_curves
+from robustness.lightning_module.losses import reconstruction_loss, feature_errors
 from scheduler import build_scheduler
-from metrics import compute_metrics
-from defenses import approximate_projection, apply_feature_weighting
+from robustness.evaluation.metrics import compute_metrics
+from robustness.perturbation.defenses import reconstruct_and_weight
+from robustness.perturbation.adv_train import fgsm_attack, latent_consistency_loss
+from robustness.perturbation.real import random_real_perturbation
+
 
 class LitAutoEncoder(pl.LightningModule):
     def __init__(self, cfg: Config):
@@ -43,51 +46,31 @@ class LitAutoEncoder(pl.LightningModule):
         x: torch.Tensor = batch                      # [B, 1, F, W]
         B = x.size(0)
 
-        epsilon = self.cfg.defense.epsilon
-        lambda_latent = self.cfg.defense.lambda_latent
-        p_adv = self.cfg.defense.p_adv
-
         # split the batch
-        n_adv = int(p_adv * B)
+        n_adv = int(self.p_adv * B)
         n_clean = B - n_adv
         x_clean = x[:n_clean]
         x_adv_src = x[n_clean:]
 
         # clean
         x_hat_clean = self(x_clean)
-        recon_loss = F.mse_loss(x_hat_clean, x_clean)
+        recon_loss = reconstruction_loss(x_clean, x_hat_clean)
         # feature-wise statistics
-        feat_err = (x_hat_clean - x_clean).pow(2).mean(dim=(0, 1, 3))
+        feat_err = feature_errors(x_clean, x_hat_clean)
         self.train_feat_errors.append(feat_err.detach().cpu())
 
         # FGSM adversarial generation
         if n_adv > 0:
-            x_adv = x_adv_src.detach().clone()
-            x_adv.requires_grad_(True)
-
-            x_hat_adv = self(x_adv)
-            adv_recon_loss = F.mse_loss(x_hat_adv, x_adv)
-
-            grad_x = torch.autograd.grad(
-                adv_recon_loss,
-                x_adv,
-                retain_graph=False,
-                create_graph=False,
-            )[0]
-
-            x_adv = x_adv + epsilon * grad_x.sign()
-            x_adv = x_adv.detach()   # IMPORTANT
-
-            # latent consistency
-            z_clean = self.model.encoder(x_adv_src).detach()
-            z_adv = self.model.encoder(x_adv)
-
-            latent_loss = F.mse_loss(z_adv, z_clean)
+            x_adv = fgsm_attack(self, x_adv_src, self.epsilon)
+            x_adv = x_adv.detach()
+            latent_loss = latent_consistency_loss(
+                self.model.encoder, x_adv_src, x_adv
+            )
         else:
             latent_loss = torch.tensor(0.0, device=self.device)
         
         # total loss
-        loss = recon_loss + lambda_latent * latent_loss
+        loss = recon_loss + self.lambda_latent * latent_loss
 
         self.log_dict(
             {
@@ -111,18 +94,20 @@ class LitAutoEncoder(pl.LightningModule):
 
         # reset per epoca successiva
         self.train_feat_errors.clear()
-
+    
     def validation_step(self, batch, batch_idx):
         x = batch
         x_hat = self(x)
-        metrics = {}
+
+        loss = reconstruction_loss(x, x_hat)
+        self.log("val_loss", loss, prog_bar=True)
+
         if self.cfg.metrics.compute_validation:
             metrics = compute_metrics(x, x_hat, self.cfg.metrics.types)
-        loss = F.mse_loss(x_hat, x)
-        self.log("val_loss", loss, prog_bar=True)
-        for k, v in metrics.items():
-            self.log(f"val_{k}", v, prog_bar=True)
-        return metrics
+            for k, v in metrics.items():
+                self.log(f"val_{k}", v, prog_bar=True)
+
+        return loss
     
     def test_step(self, batch, batch_idx):
         x: torch.Tensor = batch
@@ -133,47 +118,25 @@ class LitAutoEncoder(pl.LightningModule):
             B = x.size(0)
             n_adv = int(self.cfg.metrics.perturb_fraction * B)
 
-            x_adv = x[:n_adv].detach().clone()
             x_real = x[n_adv:].detach().clone()
 
-            # --- adversarial perturbation ---
-            x_adv.requires_grad_(True)
-            x_hat_adv = self(x_adv)
-            adv_loss = F.mse_loss(x_hat_adv, x_adv)
-            grad_x = torch.autograd.grad(adv_loss, x_adv)[0]
-            x_adv = x_adv + epsilon_test * grad_x.sign()
-            x_adv = x_adv.detach()
-
-            # --- real perturbation (1-perturb_fraction% batch) ---
-            real_params = self.cfg.metrics.real_noise_params
-            perturb_types = ["gaussian", "dropout", "impulse"]
-            # per ogni sample scegli un tipo casuale
-            for i in range(x_real.size(0)):
-                choice_idx = int(torch.randint(0, len(perturb_types), (1,)).item())
-                choice = perturb_types[choice_idx]
-                if choice == "gaussian":
-                    x_real[i] += real_params.gaussian_std * torch.randn_like(x_real[i])
-                elif choice == "dropout":
-                    mask = torch.rand_like(x_real[i]) < real_params.dropout_prob
-                    x_real[i][mask] = 0.0
-                elif choice == "impulse":
-                    x_real[i] += real_params.impulse_std * torch.randn_like(x_real[i])
+            x_adv = fgsm_attack(self, x[:n_adv].detach().clone(), epsilon_test)
+            x_real = random_real_perturbation(
+                x[n_adv:],
+                self.cfg.metrics.real_noise_params
+            )
 
             # ricombina il batch perturbato
             x = torch.cat([x_adv, x_real], dim=0)
 
-        # --- reconstruction + feature weighting ---
-        x_rec, _ = approximate_projection(
-            encoder=self.model.encoder,
-            decoder=self.model.decoder,
-            x=x,
-            alpha=self.cfg.defense.alpha,
-            num_iter=self.cfg.defense.num_iter,
+        x_rec, rec_err = reconstruct_and_weight(
+            self.model.encoder,
+            self.model.decoder,
+            x,
+            self.cfg.defense.alpha,
+            self.cfg.defense.num_iter,
+            self.train_feat_median
         )
-
-        rec_err_feat = (x_rec - x).pow(2).mean(dim=(1, 3))
-        rec_err = apply_feature_weighting(rec_err_feat, self.train_feat_median, epsilon=1e-4, batch_idx=batch_idx)
-
         # log reconstruction error separatamente
         self.log("test_rec_error", rec_err.mean(), prog_bar=True, on_epoch=True)
 
@@ -190,49 +153,21 @@ class LitAutoEncoder(pl.LightningModule):
         assert self.trainer.test_dataloaders is not None
         self._test_dataloader = self.trainer.test_dataloaders[0]
 
-
     def on_test_epoch_end(self):
         if not self.cfg.curves.enabled:
             return
-
+        
         dataloader = self._test_dataloader
 
         # clean baseline
         self._clean_metrics = self._evaluate_on_loader(dataloader)
 
-        # adversarial curve
-        for eps in self.cfg.curves.adversarial_epsilons:
-
-            def adv_perturb(x):
-                x = x.detach().clone().requires_grad_(True)
-                x_hat = self(x)
-                loss = F.mse_loss(x_hat, x)
-                grad = torch.autograd.grad(loss, x)[0]
-                return (x + eps * grad.sign()).detach()
-
-            self._robustness_results["adversarial"][eps] = \
-                self._evaluate_on_loader(dataloader, adv_perturb)
-
-        # gaussian
-        for std in self.cfg.curves.gaussian_stds:
-            self._robustness_results["gaussian"][std] = \
-                self._evaluate_on_loader(
+        curves = build_robustness_curves(self, self.cfg)
+        for name, (params, perturb_builder) in curves.items():
+            for p in params:
+                self._robustness_results[name][p] = self._evaluate_on_loader(
                     dataloader,
-                    lambda x: x + std * torch.randn_like(x)
-                )
-        # dropout
-        for p in self.cfg.curves.dropout_probs:
-            self._robustness_results["dropout"][p] = \
-                self._evaluate_on_loader(
-                    dataloader,
-                    lambda x: x * (torch.rand_like(x) > p)
-                )
-        # impulsive
-        for std in self.cfg.curves.impulse_stds:
-            self._robustness_results["impulse"][std] = \
-                self._evaluate_on_loader(
-                    dataloader,
-                    lambda x: x + std * torch.randn_like(x)
+                    perturb_builder(p),
                 )
         
         plot_robustness_curves(
@@ -268,6 +203,7 @@ class LitAutoEncoder(pl.LightningModule):
         for batch in dataloader:
             x = batch.to(self.device)
 
+            # applica perturbazione se presente
             if perturb_fn is not None:
                 if requires_grad:
                     x = perturb_fn(x)
@@ -275,20 +211,24 @@ class LitAutoEncoder(pl.LightningModule):
                     with torch.no_grad():
                         x = perturb_fn(x)
 
+            # ricostruzione + feature weighting in un colpo
             with torch.no_grad():
-                x_rec, _ = approximate_projection(
+                x_rec, rec_err = reconstruct_and_weight(
                     self.model.encoder,
                     self.model.decoder,
                     x,
-                    alpha=self.cfg.defense.alpha,
-                    num_iter=self.cfg.defense.num_iter,
+                    self.cfg.defense.alpha,
+                    self.cfg.defense.num_iter,
+                    self.train_feat_median
                 )
 
-                metrics = compute_metrics(x, x_rec, self.cfg.metrics.types)
-                metrics_acc.append(metrics)
+            # metriche
+            metrics = compute_metrics(x, x_rec, self.cfg.metrics.types)
+            metrics["rec_error"] = rec_err.mean().item()  # weighted error media batch
+            metrics_acc.append(metrics)
 
-        return {
-            k: sum(m[k] for m in metrics_acc) / len(metrics_acc)
-            for k in metrics_acc[0]
-        }
+        # media batch
+        return {k: sum(m[k] for m in metrics_acc) / len(metrics_acc)
+                for k in metrics_acc[0]}
+
 
