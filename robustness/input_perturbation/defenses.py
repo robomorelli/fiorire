@@ -3,7 +3,7 @@ import warnings
 from typing import Optional
 from torch import Tensor
 
-from robustness.perturbation.defenses import (
+from robustness.input_perturbation.defenses import (
     approximate_projection,
     apply_feature_weighting,
 )

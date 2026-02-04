@@ -10,9 +10,9 @@ from robustness.evaluation.robustness_curves import (
 from robustness.lightning_module.losses import reconstruction_loss, feature_errors
 from scheduler import build_scheduler
 from robustness.evaluation.metrics import compute_metrics
-from robustness.perturbation.defenses import reconstruct_and_weight
-from robustness.perturbation.adv_train import fgsm_attack, latent_consistency_loss
-from robustness.perturbation.real import random_real_perturbation
+from robustness.input_perturbation.defenses import reconstruct_and_weight
+from robustness.input_perturbation.adv_train import fgsm_attack, latent_consistency_loss
+from robustness.input_perturbation.real import random_real_perturbation
 
 
 class LitAutoEncoder(pl.LightningModule):

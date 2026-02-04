@@ -3,8 +3,8 @@ import matplotlib.pyplot as plt
 import torch
 
 from robustness.dataset.data_types import Config
-from robustness.perturbation.adv_train import fgsm_attack
-from robustness.perturbation.real import (
+from robustness.input_perturbation.adv_train import fgsm_attack
+from robustness.input_perturbation.real import (
     gaussian_noise,
     dropout_noise,
     impulse_noise,
