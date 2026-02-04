@@ -11,10 +11,11 @@ from robustness.dataset.data_types import Config
 
 
 class DataModule(pl.LightningDataModule):
-    def __init__(self, cfg: Config, mode: str = "train"):
+    def __init__(self, cfg: Config, mode: str = "train", anomalous_test: bool = True):
         super().__init__()
         self.cfg = cfg
         self.mode = mode
+        self.anomalous_test = anomalous_test
 
     def setup(self, stage: str | None = None) -> None:
         data = pd.read_csv(self.cfg.dataset.csv_path).values.astype(np.float32)
@@ -102,7 +103,7 @@ class DataModule(pl.LightningDataModule):
             )
 
         elif self.mode == "test":
-            if self.cfg.metrics.anomalous_test:
+            if self.anomalous_test:
                 # generiamo anomalie su tutto il test set
                 n_total = len(test_data) - W
                 idx = np.arange(n_total)  # tutte le sequenze

@@ -1,3 +1,4 @@
+from copy import deepcopy
 from pytorch_lightning import Trainer
 from omegaconf import OmegaConf
 from pathlib import Path
@@ -56,7 +57,7 @@ def main(config_path: str | Path, mode: str = "train"):
 
         model = LitAutoEncoder.load_from_checkpoint(
             cfg.opt.checkpoint_path,
-            cfg=cfg,  # lightning non ricostruisce cfg da solo
+            cfg=cfg,
             strict=True,
         )
 
@@ -66,8 +67,14 @@ def main(config_path: str | Path, mode: str = "train"):
             strategy=cfg.trainer.strategy,
         )
 
-        trainer.test(model, datamodule=datamodule)
+        print("Running CLEAN test")
+        datamodule_clean = DataModule(cfg, mode="test", anomalous_test=False)
+        trainer.test(model, datamodule=datamodule_clean)
 
+        print("Running ANOMALOUS test")
+        datamodule_anom = DataModule(cfg, mode="test", anomalous_test=True)
+        trainer.test(model, datamodule=datamodule_anom)
+        
     else:
         raise ValueError("mode deve essere 'train' o 'test'")
 

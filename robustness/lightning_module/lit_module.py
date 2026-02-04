@@ -138,7 +138,13 @@ class LitAutoEncoder(pl.LightningModule):
             self.train_feat_median,
         )
         # log reconstruction error separatamente
-        self.log("test_rec_error", rec_err.mean(), prog_bar=True, on_epoch=True)
+        prefix = "anom" if self.cfg.metrics.anomalous_test else "clean"
+        self.log(
+            f"{prefix}_test_rec_error",
+            rec_err.mean(),
+            prog_bar=True,
+            on_epoch=True,
+        )
 
         metrics = {}
         if self.cfg.metrics.compute_test:
