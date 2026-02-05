@@ -2,7 +2,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from torch import nn
 
-from robustness.dataset.data_types import Config
 from robustness.input_perturbation.adv_train_utils import pgd_attack
 from robustness.input_perturbation.real import (
     gaussian_noise,
@@ -11,7 +10,7 @@ from robustness.input_perturbation.real import (
 )
 
 
-def build_robustness_curves(model: nn.Module, cfg: Config) -> dict[str, tuple]:
+def build_robustness_curves(model: nn.Module, cfg: dict) -> dict[str, tuple]:
     """
     Returns a dict:
         name -> (params, perturb_builder)
@@ -20,19 +19,19 @@ def build_robustness_curves(model: nn.Module, cfg: Config) -> dict[str, tuple]:
     """
     return {
         "adversarial": (
-            cfg.curves.adversarial_epsilons,
+            cfg["curves"]["adversarial_epsilons"],
             lambda steps: lambda alpha: lambda eps: lambda x: pgd_attack(model, x, eps, alpha, steps),
         ),
         "gaussian": (
-            cfg.curves.gaussian_stds,
+            cfg["curves"]["gaussian_stds"],
             lambda std: lambda x: gaussian_noise(x, std),
         ),
         "dropout": (
-            cfg.curves.dropout_probs,
+            cfg["curves"]["dropout_probs"],
             lambda p: lambda x: dropout_noise(x, p),
         ),
         "impulse": (
-            cfg.curves.impulse_stds,
+            cfg["curves"]["impulse_stds"],
             lambda std: lambda x: impulse_noise(x, std),
         ),
     }

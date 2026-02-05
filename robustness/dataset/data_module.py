@@ -8,22 +8,23 @@ from torch.utils.data import DataLoader, ConcatDataset, RandomSampler
 from sklearn.preprocessing import StandardScaler
 
 from robustness.dataset.dataset import TimeSeriesDataset
-from robustness.dataset.data_types import Config
 
 
 class DataModule(pl.LightningDataModule):
-    def __init__(self, cfg: Config, mode: str, test_mode: Optional[str]):
+    def __init__(self, cfg: dict, mode: str, test_mode: Optional[str]):
         super().__init__()
         self.cfg = cfg
         self.mode = mode
         self.test_mode = test_mode
 
     def setup(self, stage: str | None = None) -> None:
-        data = pd.read_csv(self.cfg.dataset.csv_path).values.astype(np.float32)
-        T, F = data.shape
 
-        W = self.cfg.dataset.seq_in_length
-        n_seq_chunk = self.cfg.dataset.n_seq_chunk
+        data = pd.read_csv(self.cfg["dataset"]["csv_path"]).values.astype(np.float32)
+        T, F = data.shape
+        self.n_features = F
+
+        W = self.cfg["dataset"]["seq_in_length"]
+        n_seq_chunk = self.cfg["dataset"]["n_seq_chunk"]
 
         # stride = 1 per definire le sequenze "canoniche"
         sequences = np.stack(
@@ -39,12 +40,12 @@ class DataModule(pl.LightningDataModule):
         chunks = np.split(sequences, n_chunks)
         # list[NDArray] con shape [n_seq_chunk, W, F]
 
-        n_test = int(n_chunks * self.cfg.dataset.test_chunk_ratio)
+        n_test = int(n_chunks * self.cfg["dataset"]["test_chunk_ratio"])
 
         test_chunks = chunks[-n_test:]
         trainval_chunks = chunks[:-n_test]
 
-        n_val = int(len(trainval_chunks) * self.cfg.dataset.val_ratio)
+        n_val = int(len(trainval_chunks) * self.cfg["dataset"]["val_ratio"])
 
         val_chunks = trainval_chunks[:n_val]
         train_chunks = trainval_chunks[n_val:]
@@ -59,8 +60,8 @@ class DataModule(pl.LightningDataModule):
 
         self.scaler = StandardScaler().fit(train_data)
 
-        W = self.cfg.dataset.seq_in_length
-        n_ref = min(self.cfg.dataset.n_wombats_ref, len(val_data) - W)
+        W = self.cfg["dataset"]["seq_in_length"]
+        n_ref = min(self.cfg["dataset"]["n_wombats_ref"], len(val_data) - W)
         idx = np.random.choice(len(val_data) - W, size=n_ref, replace=False)
         Xok_ref = np.stack([val_data[i : i + W] for i in idx])  # shape: [n_ref, W, F]
 
@@ -68,28 +69,28 @@ class DataModule(pl.LightningDataModule):
             self.train_ds = TimeSeriesDataset(
                 train_data,
                 W,
-                self.cfg.dataset.seq_stride_train,
+                self.cfg["dataset"]["seq_stride_train"],
                 scaler=self.scaler,
             )
 
             val_clean = TimeSeriesDataset(
                 val_data,
                 W,
-                self.cfg.dataset.seq_stride_val,
+                self.cfg["dataset"]["seq_stride_val"],
                 scaler=self.scaler,
             )
 
             val_anom = TimeSeriesDataset(
                 val_data,
                 W,
-                self.cfg.dataset.seq_stride_val,
+                self.cfg["dataset"]["seq_stride_val"],
                 scaler=self.scaler,
-                delta_range=(self.cfg.dataset.delta_min, self.cfg.dataset.delta_max),
+                delta_range=(self.cfg["dataset"]["delta_min"], self.cfg["dataset"]["delta_max"]),
                 Xok_ref=Xok_ref,
             )
 
             # prendi una percentuale CASUALE
-            ratio = self.cfg.dataset.val_anomaly_ratio  # 0.3
+            ratio = self.cfg["dataset"]["val_anomaly_ratio"]  # 0.3
             n_anom = int(ratio * len(val_clean))
             idx = np.random.choice(len(val_anom), size=n_anom, replace=False).tolist()
             val_anom = torch.utils.data.Subset(val_anom, idx)
@@ -112,11 +113,11 @@ class DataModule(pl.LightningDataModule):
                 test_anom_ds = TimeSeriesDataset(
                     test_data,
                     W,
-                    self.cfg.dataset.seq_stride_test,
+                    self.cfg["dataset"]["seq_stride_test"],
                     scaler=self.scaler,
                     delta_range=(
-                        self.cfg.dataset.delta_min,
-                        self.cfg.dataset.delta_max,
+                        self.cfg["dataset"]["delta_min"],
+                        self.cfg["dataset"]["delta_max"],
                     ),
                     Xok_ref=Xok_ref,
                 )
@@ -125,7 +126,7 @@ class DataModule(pl.LightningDataModule):
                 self.test_ds = TimeSeriesDataset(
                     test_data,
                     W,
-                    self.cfg.dataset.seq_stride_test,
+                    self.cfg["dataset"]["seq_stride_test"],
                     scaler=self.scaler,
                 )
 
@@ -135,9 +136,9 @@ class DataModule(pl.LightningDataModule):
 
         return DataLoader(
             self.train_ds,
-            batch_size=self.cfg.dataset.batch_size,
+            batch_size=self.cfg["dataset"]["batch_size"],
             shuffle=False,
-            num_workers=self.cfg.dataset.num_workers,
+            num_workers=self.cfg["dataset"]["num_workers"],
             pin_memory=True,
         )
 
@@ -147,10 +148,10 @@ class DataModule(pl.LightningDataModule):
 
         return DataLoader(
             self.val_ds,
-            batch_size=self.cfg.dataset.batch_size,
+            batch_size=self.cfg["dataset"]["batch_size"],
             sampler=self.val_sampler,
             shuffle=False,
-            num_workers=self.cfg.dataset.num_workers,
+            num_workers=self.cfg["dataset"]["num_workers"],
             pin_memory=True,
         )
 
@@ -160,8 +161,8 @@ class DataModule(pl.LightningDataModule):
 
         return DataLoader(
             self.test_ds,
-            batch_size=self.cfg.dataset.batch_size,
+            batch_size=self.cfg["dataset"]["batch_size"],
             shuffle=False,
-            num_workers=self.cfg.dataset.num_workers,
+            num_workers=self.cfg["dataset"]["num_workers"],
             pin_memory=True,
         )

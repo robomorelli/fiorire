@@ -1,40 +1,37 @@
 from pytorch_lightning import Trainer
-from omegaconf import OmegaConf
 from pathlib import Path
 import fire
+import yaml
 
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 
 from robustness.lightning_module.lit_module import LitAutoEncoder
-from robustness.dataset.data_types import Config
 from robustness.dataset.data_module import DataModule
 
 
 def main(config_path: str | Path, mode: str = "train"):
-    cfg_default = OmegaConf.structured(Config)  # crea config tipizzata
-    yaml_cfg = OmegaConf.load(config_path)
-    cfg_merged = OmegaConf.merge(cfg_default, yaml_cfg)
-
-    # qui cfg_merged è ancora DictConfig/structuredConfig ma compatibile
-    cfg: Config = OmegaConf.to_object(cfg_merged)  # type: ignore
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg: dict = yaml.safe_load(f)
 
     loggers = [
         TensorBoardLogger(
             save_dir="lightning_logs",
             name="ae_robust",
-            version=cfg.trainer.run_name,
+            version=cfg["trainer"]["run_name"],
         ),
         CSVLogger(
             save_dir="lightning_logs",
             name="ae_robust",
-            version=cfg.trainer.run_name,
+            version=cfg["trainer"]["run_name"],
         ),
     ]
 
     datamodule = DataModule(cfg, mode=mode, test_mode=None)
     datamodule.setup()
+
+    cfg["model"]["aux_channels"] = datamodule.n_features
     model = LitAutoEncoder(cfg)
 
     if mode == "train":
@@ -42,12 +39,12 @@ def main(config_path: str | Path, mode: str = "train"):
 
         early_stopping = EarlyStopping(
             monitor="val_loss",
-            patience=cfg.opt.es_patience,
+            patience=cfg["opt"]["es_patience"],
             mode="min",
             verbose=True,
         )
         checkpoint_cb = ModelCheckpoint(
-            dirpath=cfg.trainer.out_dir,
+            dirpath=cfg["trainer"]["out_dir"],
             filename="best-{epoch:03d}-{val_loss:.4f}",
             monitor="val_loss",  # metrica da ottimizzare
             mode="min",
@@ -55,11 +52,11 @@ def main(config_path: str | Path, mode: str = "train"):
         )
 
         trainer = Trainer(
-            accelerator=cfg.trainer.accelerator,
-            devices=cfg.trainer.devices,
-            strategy=cfg.trainer.strategy,
-            max_epochs=cfg.trainer.epochs,
-            precision=cfg.trainer.precision,
+            accelerator=cfg["trainer"]["accelerator"],
+            devices=cfg["trainer"]["devices"],
+            strategy=cfg["trainer"]["strategy"],
+            max_epochs=cfg["trainer"]["epochs"],
+            precision=cfg["trainer"]["precision"], # type: ignore
             callbacks=[early_stopping, checkpoint_cb],
             logger=loggers,
         )
@@ -70,15 +67,15 @@ def main(config_path: str | Path, mode: str = "train"):
         print("Test: carico modello da checkpoint Lightning")
 
         model = LitAutoEncoder.load_from_checkpoint(
-            cfg.opt.checkpoint_path,
+            cfg["opt"]["checkpoint_path"],
             cfg=cfg,
             strict=True,
         )
 
         trainer = Trainer(
-            accelerator=cfg.trainer.accelerator,
-            devices=cfg.trainer.devices,
-            strategy=cfg.trainer.strategy,
+            accelerator=cfg["trainer"]["accelerator"],
+            devices=cfg["trainer"]["devices"],
+            strategy=cfg["trainer"]["strategy"],
             logger=loggers,
         )
 

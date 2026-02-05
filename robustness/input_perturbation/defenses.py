@@ -2,11 +2,6 @@ import torch
 import warnings
 from typing import Optional
 from torch import Tensor
-
-from robustness.input_perturbation.defenses import (
-    approximate_projection,
-    apply_feature_weighting,
-)
 from models.conv_ae2D import Encoder, Decoder
 
 

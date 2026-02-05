@@ -1,5 +1,4 @@
 import torch
-from robustness.dataset.data_types import RealNoiseParams
 
 
 def gaussian_noise(x: torch.Tensor, std: float) -> torch.Tensor:
@@ -26,7 +25,7 @@ def impulse_noise(x: torch.Tensor, std: float) -> torch.Tensor:
 
 def random_real_perturbation(
     x: torch.Tensor,
-    params: RealNoiseParams,
+    params: dict,
 ) -> torch.Tensor:
     """
     Apply a random real perturbation to each sample in the batch.
@@ -45,10 +44,10 @@ def random_real_perturbation(
 
     for i in range(B):
         if choices[i] == 0:
-            x_pert[i] = gaussian_noise(x_pert[i], params.gaussian_std)
+            x_pert[i] = gaussian_noise(x_pert[i], params["gaussian_std"])
         elif choices[i] == 1:
-            x_pert[i] = dropout_noise(x_pert[i], params.dropout_prob)
+            x_pert[i] = dropout_noise(x_pert[i], params["dropout_prob"])
         else:
-            x_pert[i] = impulse_noise(x_pert[i], params.impulse_std)
+            x_pert[i] = impulse_noise(x_pert[i], params["impulse_std"])
 
     return x_pert
