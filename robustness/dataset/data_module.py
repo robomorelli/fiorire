@@ -1,5 +1,6 @@
 from typing import Optional
 import numpy as np
+from omegaconf import DictConfig
 import pandas as pd
 import pytorch_lightning as pl
 import torch
@@ -11,7 +12,7 @@ from robustness.dataset.dataset import TimeSeriesDataset
 
 
 class DataModule(pl.LightningDataModule):
-    def __init__(self, cfg: dict, mode: str, test_mode: Optional[str]):
+    def __init__(self, cfg: DictConfig, mode: str, test_mode: Optional[str]):
         super().__init__()
         self.cfg = cfg
         self.mode = mode

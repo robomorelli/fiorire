@@ -1,5 +1,6 @@
 from pathlib import Path
 import matplotlib.pyplot as plt
+from omegaconf import DictConfig
 from torch import nn
 
 from robustness.input_perturbation.adv_train_utils import pgd_attack
@@ -10,7 +11,7 @@ from robustness.input_perturbation.real import (
 )
 
 
-def build_robustness_curves(model: nn.Module, cfg: dict) -> dict[str, tuple]:
+def build_robustness_curves(model: nn.Module, cfg: DictConfig) -> dict[str, tuple]:
     """
     Returns a dict:
         name -> (params, perturb_builder)

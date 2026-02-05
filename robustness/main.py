@@ -1,7 +1,8 @@
+from typing import cast
 from pytorch_lightning import Trainer
 from pathlib import Path
 import fire
-import yaml
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -12,8 +13,8 @@ from robustness.dataset.data_module import DataModule
 
 
 def main(config_path: str | Path, mode: str = "train"):
-    with open(config_path, "r", encoding="utf-8") as f:
-        cfg: dict = yaml.safe_load(f)
+    cfg = OmegaConf.load(config_path)
+    cfg = cast(DictConfig, cfg)
 
     loggers = [
         TensorBoardLogger(

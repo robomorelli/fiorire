@@ -1,4 +1,5 @@
 from pathlib import Path
+from omegaconf import DictConfig
 import pytorch_lightning as pl
 import torch
 from typing import Literal
@@ -22,7 +23,7 @@ from robustness.input_perturbation.real import random_real_perturbation
 
 
 class LitAutoEncoder(pl.LightningModule):
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: DictConfig):
         super().__init__()
 
         # salva config nel checkpoint
