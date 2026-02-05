@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from torch import nn
 
 from robustness.dataset.data_types import Config
-from robustness.input_perturbation.adv_train_utils import fgsm_attack
+from robustness.input_perturbation.adv_train_utils import pgd_attack
 from robustness.input_perturbation.real import (
     gaussian_noise,
     dropout_noise,
@@ -21,7 +21,7 @@ def build_robustness_curves(model: nn.Module, cfg: Config) -> dict[str, tuple]:
     return {
         "adversarial": (
             cfg.curves.adversarial_epsilons,
-            lambda eps: lambda x: fgsm_attack(model, x, eps),
+            lambda steps: lambda alpha: lambda eps: lambda x: pgd_attack(model, x, eps, alpha, steps),
         ),
         "gaussian": (
             cfg.curves.gaussian_stds,

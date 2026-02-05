@@ -2,7 +2,6 @@ from pathlib import Path
 import pytorch_lightning as pl
 import torch
 from typing import Literal
-import csv
 
 from robustness.dataset.data_types import Config
 from models.conv_ae2D import CONV_AE2D
@@ -13,8 +12,12 @@ from robustness.evaluation.robustness_curves import (
 from robustness.lightning_module.losses import reconstruction_loss, feature_errors
 from scheduler import build_scheduler
 from robustness.evaluation.metrics import compute_metrics
+from robustness.evaluation.write_csv import write_test_metrics_csv
 from robustness.input_perturbation.defenses import reconstruct_and_weight
-from robustness.input_perturbation.adv_train_utils import pgd_attack, latent_consistency_loss
+from robustness.input_perturbation.adv_train_utils import (
+    pgd_attack,
+    latent_consistency_loss,
+)
 from robustness.input_perturbation.real import random_real_perturbation
 
 
@@ -46,7 +49,7 @@ class LitAutoEncoder(pl.LightningModule):
         }
 
         self.test_mode: Literal["clean", "anom"]
-        self._test_metrics_epoch = [] # buffer per le metriche di test
+        self._test_metrics_epoch = []  # buffer per le metriche di test
 
     def forward(self, x):
         return self.model(x)
@@ -180,38 +183,11 @@ class LitAutoEncoder(pl.LightningModule):
         self._test_dataloader = self.trainer.test_dataloaders[0]
 
     def on_test_epoch_end(self):
-        if len(self._test_metrics_epoch) == 0:
+        if not self.trainer.is_global_zero:
             return
 
         out_dir = self._test_out_dir()
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        csv_path = out_dir / "metrics.csv"
-
-        # batch-wise
-        fieldnames = list(self._test_metrics_epoch[0].keys())
-
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-
-            for m in self._test_metrics_epoch:
-                writer.writerow(m)
-
-            # aggregate
-            agg = {}
-            for k in fieldnames:
-                if k == "batch_idx":
-                    continue
-                agg[k] = sum(m[k] for m in self._test_metrics_epoch) / len(
-                    self._test_metrics_epoch
-                )
-
-            agg["batch_idx"] = "ALL"
-            writer.writerow(agg)
-
-        # reset
-        self._test_metrics_epoch.clear()
+        write_test_metrics_csv(self._test_metrics_epoch, out_dir)
 
         if not self.cfg.curves.enabled:
             return

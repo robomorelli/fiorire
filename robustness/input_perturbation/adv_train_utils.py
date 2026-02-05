@@ -3,23 +3,6 @@ from torch import Tensor, nn
 from robustness.lightning_module.losses import reconstruction_loss
 
 
-def fgsm_attack(
-    model: nn.Module,
-    x: Tensor,
-    epsilon: float,
-) -> Tensor:
-    """
-    FGSM adversarial attack on reconstruction loss.
-    """
-    x_adv: Tensor = x.detach().clone().requires_grad_(True)
-    x_hat: Tensor = model(x_adv)
-
-    loss: Tensor = reconstruction_loss(x_hat, x_adv)
-    grad: Tensor = torch.autograd.grad(loss, x_adv)[0]
-
-    return (x_adv + epsilon * grad.sign()).detach()
-
-
 def pgd_attack(
     model: nn.Module,
     x: Tensor,

@@ -12,7 +12,6 @@ from robustness.dataset.data_types import Config
 from robustness.dataset.data_module import DataModule
 
 
-
 def main(config_path: str | Path, mode: str = "train"):
     cfg_default = OmegaConf.structured(Config)  # crea config tipizzata
     yaml_cfg = OmegaConf.load(config_path)
@@ -34,7 +33,7 @@ def main(config_path: str | Path, mode: str = "train"):
         ),
     ]
 
-    datamodule = DataModule(cfg, mode=mode, test_mode = None)
+    datamodule = DataModule(cfg, mode=mode, test_mode=None)
     datamodule.setup()
     model = LitAutoEncoder(cfg)
 
