@@ -68,6 +68,7 @@ class OptConfig:
 class DefenseConfig:
     alpha: float
     num_iter: int
+    adv_training: bool
     epsilon: float  # adversarial perturbation strength
     lambda_latent: float  # peso regolarizzazione latente
     p_adv: float  # frazione batch adversarial

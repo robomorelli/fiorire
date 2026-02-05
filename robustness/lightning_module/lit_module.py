@@ -9,15 +9,16 @@ from robustness.evaluation.robustness_curves import (
     plot_robustness_curves,
     build_robustness_curves,
 )
-from robustness.lightning_module.losses import reconstruction_loss, feature_errors
+from robustness.lightning_module.losses import (
+    reconstruction_loss,
+    feature_errors,
+    regularization_loss,
+)
 from scheduler import build_scheduler
 from robustness.evaluation.metrics import compute_metrics
 from robustness.evaluation.write_csv import write_test_metrics_csv
 from robustness.input_perturbation.defenses import reconstruct_and_weight
-from robustness.input_perturbation.adv_train_utils import (
-    pgd_attack,
-    latent_consistency_loss,
-)
+from robustness.input_perturbation.adv_train_utils import pgd_attack
 from robustness.input_perturbation.real import random_real_perturbation
 
 
@@ -58,11 +59,15 @@ class LitAutoEncoder(pl.LightningModule):
         x: torch.Tensor = batch  # [B, 1, F, W]
         B = x.size(0)
 
-        # split the batch
-        n_adv = int(self.p_adv * B)
-        n_clean = B - n_adv
-        x_clean = x[:n_clean]
-        x_adv_src = x[n_clean:]
+        if self.cfg.defense.adv_training:
+            # split the batch
+            n_adv = int(self.p_adv * B)
+            x_clean = x[:-n_adv]
+            x_adv_src = x[-n_adv:]
+        else:
+            # training normale, tutto "clean"
+            n_adv = 0
+            x_clean = x
 
         # clean
         x_hat_clean = self(x_clean)
@@ -71,7 +76,7 @@ class LitAutoEncoder(pl.LightningModule):
         feat_err = feature_errors(x_clean, x_hat_clean)
         self.train_feat_errors.append(feat_err.detach().cpu())
 
-        # FGSM adversarial generation
+        latent_loss = torch.tensor(0.0, device=self.device)
         if n_adv > 0:
             x_adv = pgd_attack(
                 self,
@@ -80,9 +85,7 @@ class LitAutoEncoder(pl.LightningModule):
                 alpha=self.epsilon_train / self.cfg.defense.pgd_steps,
                 steps=self.cfg.defense.pgd_steps,
             )
-            latent_loss = latent_consistency_loss(self.model.encoder, x_adv_src, x_adv)
-        else:
-            latent_loss = torch.tensor(0.0, device=self.device)
+            latent_loss = regularization_loss(self.model.encoder, x_adv_src, x_adv)
 
         # total loss
         loss = recon_loss + self.lambda_latent * latent_loss
