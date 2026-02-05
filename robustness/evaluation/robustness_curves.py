@@ -1,9 +1,9 @@
 from pathlib import Path
 import matplotlib.pyplot as plt
-import torch
+from torch import nn
 
 from robustness.dataset.data_types import Config
-from robustness.input_perturbation.adv_train import fgsm_attack
+from robustness.input_perturbation.adv_train_utils import fgsm_attack
 from robustness.input_perturbation.real import (
     gaussian_noise,
     dropout_noise,
@@ -11,7 +11,7 @@ from robustness.input_perturbation.real import (
 )
 
 
-def build_robustness_curves(model: torch.nn.Module, cfg: Config) -> dict[str, tuple]:
+def build_robustness_curves(model: nn.Module, cfg: Config) -> dict[str, tuple]:
     """
     Returns a dict:
         name -> (params, perturb_builder)

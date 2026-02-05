@@ -50,6 +50,7 @@ class TrainerConfig:
         16, 32, 64, "16-true", "transformer-engine", "transformer-engine-float16"
     ]
     out_dir: str
+    run_name: str
 
 
 @dataclass

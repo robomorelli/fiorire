@@ -2,8 +2,8 @@ from pathlib import Path
 import pytorch_lightning as pl
 import torch
 from typing import Literal
+import csv
 
-from robustness.dataset.data_module import DataModule
 from robustness.dataset.data_types import Config
 from models.conv_ae2D import CONV_AE2D
 from robustness.evaluation.robustness_curves import (
@@ -14,7 +14,7 @@ from robustness.lightning_module.losses import reconstruction_loss, feature_erro
 from scheduler import build_scheduler
 from robustness.evaluation.metrics import compute_metrics
 from robustness.input_perturbation.defenses import reconstruct_and_weight
-from robustness.input_perturbation.adv_train import fgsm_attack, latent_consistency_loss
+from robustness.input_perturbation.adv_train_utils import pgd_attack, latent_consistency_loss
 from robustness.input_perturbation.real import random_real_perturbation
 
 
@@ -28,7 +28,7 @@ class LitAutoEncoder(pl.LightningModule):
         self.cfg = cfg
         self.model = CONV_AE2D(cfg)
         self.lr = cfg.opt.lr
-        self.epsilon = cfg.defense.epsilon
+        self.epsilon_train = cfg.defense.epsilon
         self.lambda_latent = cfg.defense.lambda_latent
         self.p_adv = cfg.defense.p_adv
 
@@ -46,6 +46,7 @@ class LitAutoEncoder(pl.LightningModule):
         }
 
         self.test_mode: Literal["clean", "anom"]
+        self._test_metrics_epoch = [] # buffer per le metriche di test
 
     def forward(self, x):
         return self.model(x)
@@ -69,8 +70,13 @@ class LitAutoEncoder(pl.LightningModule):
 
         # FGSM adversarial generation
         if n_adv > 0:
-            x_adv = fgsm_attack(self, x_adv_src, self.epsilon)
-            x_adv = x_adv.detach()
+            x_adv = pgd_attack(
+                self,
+                x_adv_src,
+                epsilon=self.epsilon_train,
+                alpha=self.epsilon_train / self.cfg.defense.pgd_steps,
+                steps=self.cfg.defense.pgd_steps,
+            )
             latent_loss = latent_consistency_loss(self.model.encoder, x_adv_src, x_adv)
         else:
             latent_loss = torch.tensor(0.0, device=self.device)
@@ -126,7 +132,13 @@ class LitAutoEncoder(pl.LightningModule):
 
             x_real = x[n_adv:].detach().clone()
 
-            x_adv = fgsm_attack(self, x[:n_adv].detach().clone(), epsilon_test)
+            x_adv = pgd_attack(
+                self,
+                x[:n_adv].detach().clone(),
+                epsilon=epsilon_test,
+                alpha=epsilon_test / self.cfg.defense.pgd_steps,
+                steps=self.cfg.defense.pgd_steps,
+            )
             x_real = random_real_perturbation(
                 x[n_adv:], self.cfg.metrics.real_noise_params
             )
@@ -144,7 +156,7 @@ class LitAutoEncoder(pl.LightningModule):
         )
         # log reconstruction error separatamente
         self.log(
-            f"{self.test_mode}_test_rec_error",
+            f"{self.test_mode}_rec_error",
             rec_err.mean(),
             prog_bar=True,
             on_epoch=True,
@@ -156,6 +168,11 @@ class LitAutoEncoder(pl.LightningModule):
             for k, v in metrics.items():
                 self.log(f"test_{k}", v, prog_bar=True)
 
+        metrics["anomaly_score"] = rec_err.mean().item()
+        metrics["batch_idx"] = batch_idx
+
+        self._test_metrics_epoch.append(metrics)
+
         return metrics
 
     def on_test_start(self):
@@ -163,6 +180,39 @@ class LitAutoEncoder(pl.LightningModule):
         self._test_dataloader = self.trainer.test_dataloaders[0]
 
     def on_test_epoch_end(self):
+        if len(self._test_metrics_epoch) == 0:
+            return
+
+        out_dir = self._test_out_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        csv_path = out_dir / "metrics.csv"
+
+        # batch-wise
+        fieldnames = list(self._test_metrics_epoch[0].keys())
+
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for m in self._test_metrics_epoch:
+                writer.writerow(m)
+
+            # aggregate
+            agg = {}
+            for k in fieldnames:
+                if k == "batch_idx":
+                    continue
+                agg[k] = sum(m[k] for m in self._test_metrics_epoch) / len(
+                    self._test_metrics_epoch
+                )
+
+            agg["batch_idx"] = "ALL"
+            writer.writerow(agg)
+
+        # reset
+        self._test_metrics_epoch.clear()
+
         if not self.cfg.curves.enabled:
             return
 
@@ -179,7 +229,7 @@ class LitAutoEncoder(pl.LightningModule):
                     perturb_builder(p),
                 )
 
-        out_dir = self._test_out_dir() / "robustness"
+        out_dir = self._test_out_dir() / "curves"
         out_dir.mkdir(parents=True, exist_ok=True)
 
         plot_robustness_curves(

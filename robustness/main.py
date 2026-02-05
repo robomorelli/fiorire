@@ -5,10 +5,12 @@ import fire
 
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 
 from robustness.lightning_module.lit_module import LitAutoEncoder
 from robustness.dataset.data_types import Config
 from robustness.dataset.data_module import DataModule
+
 
 
 def main(config_path: str | Path, mode: str = "train"):
@@ -18,6 +20,19 @@ def main(config_path: str | Path, mode: str = "train"):
 
     # qui cfg_merged è ancora DictConfig/structuredConfig ma compatibile
     cfg: Config = OmegaConf.to_object(cfg_merged)  # type: ignore
+
+    loggers = [
+        TensorBoardLogger(
+            save_dir="lightning_logs",
+            name="ae_robust",
+            version=cfg.trainer.run_name,
+        ),
+        CSVLogger(
+            save_dir="lightning_logs",
+            name="ae_robust",
+            version=cfg.trainer.run_name,
+        ),
+    ]
 
     datamodule = DataModule(cfg, mode=mode, test_mode = None)
     datamodule.setup()
@@ -47,6 +62,7 @@ def main(config_path: str | Path, mode: str = "train"):
             max_epochs=cfg.trainer.epochs,
             precision=cfg.trainer.precision,
             callbacks=[early_stopping, checkpoint_cb],
+            logger=loggers,
         )
 
         trainer.fit(model, datamodule=datamodule)
@@ -64,6 +80,7 @@ def main(config_path: str | Path, mode: str = "train"):
             accelerator=cfg.trainer.accelerator,
             devices=cfg.trainer.devices,
             strategy=cfg.trainer.strategy,
+            logger=loggers,
         )
 
         print("Running CLEAN test")
