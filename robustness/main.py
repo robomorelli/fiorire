@@ -21,12 +21,12 @@ def main(config_path: str | Path, mode: str = "train"):
 
     loggers = [
         TensorBoardLogger(
-            save_dir="lightning_logs",
+            save_dir="/davinci-1/home/lorenrossi/log_fiorire/lightning_logs",
             name="ae_robust",
             version=cfg["trainer"]["run_name"],
         ),
         CSVLogger(
-            save_dir="lightning_logs",
+            save_dir="/davinci-1/home/lorenrossi/log_fiorire/lightning_logs",
             name="ae_robust",
             version=cfg["trainer"]["run_name"],
         ),
