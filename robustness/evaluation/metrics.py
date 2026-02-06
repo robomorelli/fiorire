@@ -20,8 +20,8 @@ def compute_metrics(
     - roc_auc
     """
     metrics = {}
-    y_true_np = y_true.detach().cpu().numpy().flatten()
-    y_pred_np = y_pred.detach().cpu().numpy().flatten()
+    y_true_np = y_true.detach().float().cpu().numpy().flatten()
+    y_pred_np = y_pred.detach().float().cpu().numpy().flatten()
 
     if "mse" in metric_types:
         mse_val = mean_squared_error(y_true_np, y_pred_np)

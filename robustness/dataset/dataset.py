@@ -36,6 +36,8 @@ class TimeSeriesDataset(Dataset):
         if self.scaler is not None:
             window = self.scaler.transform(window)
 
+        window = np.nan_to_num(window, nan=0.0, posinf=0.0, neginf=0.0)
+
         if self.delta_range is not None:
             window = self._inject_anomaly(window)
 

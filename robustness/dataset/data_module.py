@@ -20,7 +20,9 @@ class DataModule(pl.LightningDataModule):
 
     def setup(self, stage: str | None = None) -> None:
 
-        data = pd.read_csv(self.cfg["dataset"]["csv_path"]).values.astype(np.float32)
+        df = pd.read_csv(self.cfg["dataset"]["csv_path"])
+        df = df.dropna()
+        data = df.values.astype(np.float32)
         T, F = data.shape
         self.cfg["dataset"]["n_features"] = F
 
@@ -60,6 +62,9 @@ class DataModule(pl.LightningDataModule):
         test_data = np.concatenate(test_chunks, axis=0).reshape(-1, F)
 
         self.scaler = StandardScaler().fit(train_data)
+        assert self.scaler.scale_ is not None  # per Pylance / mypy
+        # evita divisioni per zero
+        self.scaler.scale_[self.scaler.scale_ == 0] = 1.0
 
         W = self.cfg["dataset"]["seq_in_length"]
         n_ref = min(self.cfg["dataset"]["n_wombats_ref"], len(val_data) - W)

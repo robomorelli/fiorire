@@ -34,8 +34,6 @@ def main(config_path: str | Path, mode: str = "train"):
 
     datamodule = DataModule(cfg, mode=mode, test_mode=None)
     datamodule.setup()
-
-    cfg["model"]["aux_channels"] = datamodule.cfg["dataset"]["n_features"]
     model = LitAutoEncoder(cfg)
 
     if mode == "train":
