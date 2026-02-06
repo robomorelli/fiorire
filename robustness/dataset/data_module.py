@@ -22,7 +22,7 @@ class DataModule(pl.LightningDataModule):
 
         data = pd.read_csv(self.cfg["dataset"]["csv_path"]).values.astype(np.float32)
         T, F = data.shape
-        self.n_features = F
+        self.cfg["dataset"]["n_features"] = F
 
         W = self.cfg["dataset"]["seq_in_length"]
         n_seq_chunk = self.cfg["dataset"]["n_seq_chunk"]
@@ -137,7 +137,7 @@ class DataModule(pl.LightningDataModule):
 
         return DataLoader(
             self.train_ds,
-            batch_size=self.cfg["dataset"]["batch_size"],
+            batch_size=self.cfg["opt"]["batch_size"],
             shuffle=False,
             num_workers=self.cfg["dataset"]["num_workers"],
             pin_memory=True,
@@ -149,7 +149,7 @@ class DataModule(pl.LightningDataModule):
 
         return DataLoader(
             self.val_ds,
-            batch_size=self.cfg["dataset"]["batch_size"],
+            batch_size=self.cfg["opt"]["batch_size"],
             sampler=self.val_sampler,
             shuffle=False,
             num_workers=self.cfg["dataset"]["num_workers"],
@@ -162,7 +162,7 @@ class DataModule(pl.LightningDataModule):
 
         return DataLoader(
             self.test_ds,
-            batch_size=self.cfg["dataset"]["batch_size"],
+            batch_size=self.cfg["opt"]["batch_size"],
             shuffle=False,
             num_workers=self.cfg["dataset"]["num_workers"],
             pin_memory=True,

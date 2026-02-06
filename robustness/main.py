@@ -2,7 +2,8 @@ from typing import cast
 from pytorch_lightning import Trainer
 from pathlib import Path
 import fire
-from omegaconf import DictConfig, ListConfig, OmegaConf
+import torch
+from omegaconf import DictConfig, OmegaConf
 
 from pytorch_lightning.callbacks import EarlyStopping
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -10,6 +11,8 @@ from pytorch_lightning.loggers import TensorBoardLogger, CSVLogger
 
 from robustness.lightning_module.lit_module import LitAutoEncoder
 from robustness.dataset.data_module import DataModule
+
+torch.set_float32_matmul_precision("medium")
 
 
 def main(config_path: str | Path, mode: str = "train"):
@@ -32,7 +35,7 @@ def main(config_path: str | Path, mode: str = "train"):
     datamodule = DataModule(cfg, mode=mode, test_mode=None)
     datamodule.setup()
 
-    cfg["model"]["aux_channels"] = datamodule.n_features
+    cfg["model"]["aux_channels"] = datamodule.cfg["dataset"]["n_features"]
     model = LitAutoEncoder(cfg)
 
     if mode == "train":
@@ -58,10 +61,12 @@ def main(config_path: str | Path, mode: str = "train"):
             strategy=cfg["trainer"]["strategy"],
             max_epochs=cfg["trainer"]["epochs"],
             precision=cfg["trainer"]["precision"], # type: ignore
+            accumulate_grad_batches=cfg["trainer"]["accumulate_grad_batches"],
             callbacks=[early_stopping, checkpoint_cb],
             logger=loggers,
         )
 
+        print(torch.cuda.mem_get_info())
         trainer.fit(model, datamodule=datamodule)
 
     elif mode == "test":
@@ -77,6 +82,7 @@ def main(config_path: str | Path, mode: str = "train"):
             accelerator=cfg["trainer"]["accelerator"],
             devices=cfg["trainer"]["devices"],
             strategy=cfg["trainer"]["strategy"],
+            accumulate_grad_batches=cfg["trainer"]["accumulate_grad_batches"],
             logger=loggers,
         )
 
