@@ -20,7 +20,7 @@ def compute_metrics(
     """
     metrics: dict[str, float] = {}
 
-    # ======== RECONSTRUCTION ========
+    # reconstruction metrics
     if x is not None and x_rec is not None:
         y_true_np = x.detach().float().cpu().numpy().flatten()
         y_pred_np = x_rec.detach().float().cpu().numpy().flatten()
@@ -36,7 +36,7 @@ def compute_metrics(
             mae = mean_absolute_error(y_true_np, y_pred_np)
             metrics["mse/mae"] = float(mse / (mae + 1e-8))
 
-    # ======== DETECTION ========
+    # detection metrics
     if labels is not None and scores is not None:
         labels = labels.astype(np.int32).flatten()
         scores = scores.astype(np.float32).flatten()
