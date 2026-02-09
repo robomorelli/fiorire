@@ -72,38 +72,16 @@ class DataModule(pl.LightningDataModule):
         Xok_ref = np.stack([val_data[i : i + W] for i in idx])  # shape: [n_ref, W, F]
 
         if self.mode == "train":
-            self.train_ds = TimeSeriesDataset(
-                train_data,
-                W,
-                self.cfg["dataset"]["seq_stride_train"],
-                scaler=self.scaler,
-            )
+            self.train_ds = TimeSeriesDataset(train_data, W, self.cfg["dataset"]["seq_stride_train"], scaler=self.scaler)
 
-            val_clean = TimeSeriesDataset(
-                val_data,
-                W,
-                self.cfg["dataset"]["seq_stride_val"],
-                scaler=self.scaler,
-            )
-
-            val_anom = TimeSeriesDataset(
-                val_data,
-                W,
-                self.cfg["dataset"]["seq_stride_val"],
-                scaler=self.scaler,
-                delta_range=(self.cfg["dataset"]["delta_min"], self.cfg["dataset"]["delta_max"]),
+            self.val_ds = self._build_dataset_with_anomalies(
+                base_data=val_data,
+                stride=self.cfg["dataset"]["seq_stride_val"],
+                anomaly_ratio=self.cfg["dataset"]["val_anomaly_ratio"],
                 Xok_ref=Xok_ref,
+                delta_range=(self.cfg["dataset"]["delta_min"], self.cfg["dataset"]["delta_max"]),
             )
 
-            # prendi una percentuale CASUALE
-            ratio = self.cfg["dataset"]["val_anomaly_ratio"]  # 0.3
-            n_anom = int(ratio * len(val_clean))
-            idx = np.random.choice(len(val_anom), size=n_anom, replace=False).tolist()
-            val_anom = torch.utils.data.Subset(val_anom, idx)
-
-            self.val_ds = ConcatDataset([val_clean, val_anom])
-
-            # RandomSampler riproducibile
             self.val_sampler = RandomSampler(
                 self.val_ds,
                 replacement=False,
@@ -112,29 +90,20 @@ class DataModule(pl.LightningDataModule):
 
         elif self.mode == "test":
             if self.test_mode == "anom":
-                # generiamo anomalie su tutto il test set
-                n_total = len(test_data) - W
-                idx = np.arange(n_total)  # tutte le sequenze
-                Xok_ref = None  # opzionale, se vuoi usarlo come riferimento
-                test_anom_ds = TimeSeriesDataset(
-                    test_data,
-                    W,
-                    self.cfg["dataset"]["seq_stride_test"],
-                    scaler=self.scaler,
-                    delta_range=(
-                        self.cfg["dataset"]["delta_min"],
-                        self.cfg["dataset"]["delta_max"],
-                    ),
-                    Xok_ref=Xok_ref,
-                )
-                self.test_ds = test_anom_ds
-            elif self.test_mode == "clean":
-                self.test_ds = TimeSeriesDataset(
-                    test_data,
-                    W,
-                    self.cfg["dataset"]["seq_stride_test"],
-                    scaler=self.scaler,
-                )
+                ratio = self.cfg["dataset"]["test_anomaly_ratio"]
+                delta_range = (self.cfg["dataset"]["delta_min"], self.cfg["dataset"]["delta_max"])
+            else:
+                ratio = 0
+                delta_range = None
+
+            self.test_ds = self._build_dataset_with_anomalies(
+                base_data=test_data,
+                stride=self.cfg["dataset"]["seq_stride_test"],
+                anomaly_ratio=ratio,
+                Xok_ref=Xok_ref,
+                delta_range=delta_range,
+            )
+
 
     def train_dataloader(self) -> DataLoader:
         if self.mode != "train":
@@ -172,3 +141,47 @@ class DataModule(pl.LightningDataModule):
             num_workers=self.cfg["dataset"]["num_workers"],
             pin_memory=True,
         )
+    
+    def _build_dataset_with_anomalies(
+        self,
+        base_data: np.ndarray,
+        stride: int,
+        anomaly_ratio: float,
+        Xok_ref: Optional[np.ndarray] = None,
+        delta_range: Optional[tuple[float, float]] = None
+    ):
+        """
+        Costruisce un dataset concatenando i dati 'clean' con un subset di anomalie.
+        - base_data: dati originali
+        - stride: stride per TimeSeriesDataset
+        - anomaly_ratio: percentuale di anomalie da aggiungere
+        - Xok_ref: riferimento per perturbazioni
+        - delta_range: range di perturbazioni
+        """
+        # dataset clean
+        clean_ds = TimeSeriesDataset(
+            base_data,
+            self.cfg["dataset"]["seq_in_length"],
+            stride,
+            scaler=self.scaler,
+        )
+
+        # se vogliamo aggiungere anomalie
+        if delta_range is not None and anomaly_ratio > 0:
+            anom_ds = TimeSeriesDataset(
+                base_data,
+                self.cfg["dataset"]["seq_in_length"],
+                stride,
+                scaler=self.scaler,
+                delta_range=delta_range,
+                Xok_ref=Xok_ref,
+            )
+            n_anom = int(anomaly_ratio * len(clean_ds))
+            idx = np.random.choice(len(anom_ds), size=n_anom, replace=False).tolist()
+            anom_ds = torch.utils.data.Subset(anom_ds, idx)
+
+            combined_ds = ConcatDataset([clean_ds, anom_ds])
+            return combined_ds
+
+        return clean_ds
+

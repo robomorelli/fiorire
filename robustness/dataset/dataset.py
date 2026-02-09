@@ -1,4 +1,5 @@
 import torch
+from torch import Tensor
 from numpy.typing import NDArray
 import numpy as np
 from torch.utils.data import Dataset
@@ -29,9 +30,10 @@ class TimeSeriesDataset(Dataset):
     def __len__(self) -> int:
         return len(self.indices)
 
-    def __getitem__(self, idx: int) -> torch.Tensor:
+    def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
         i = self.indices[idx]
         window = self.data[i : i + self.seq_len]  # [W, F]
+        label = 0  # default: clean
 
         if self.scaler is not None:
             window = self.scaler.transform(window)
@@ -40,10 +42,12 @@ class TimeSeriesDataset(Dataset):
 
         if self.delta_range is not None:
             window = self._inject_anomaly(window)
+            label = 1
 
         # [W, F] → [1, F, W]
-        window = torch.from_numpy(window.T).unsqueeze(0)
-        return window.float()
+        window = torch.from_numpy(window.T).unsqueeze(0).float()
+        label = torch.tensor(label, dtype=torch.long)
+        return window, label
 
     def _inject_anomaly(self, window: NDArray) -> NDArray:
         """

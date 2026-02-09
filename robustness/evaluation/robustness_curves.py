@@ -76,7 +76,7 @@ def plot_robustness_curves(
 
         plt.xlabel("Perturbation intensity")
         plt.ylabel(metric)
-        plt.title(f"Robustness curve – {metric}")
+        plt.title(f"Robustness curve {metric}")
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
