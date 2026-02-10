@@ -37,7 +37,7 @@ def approximate_projection(
     z = z.detach().clone().requires_grad_(True)
 
     for _ in range(num_iter):
-        x_rec = decoder(z)
+        x_rec: Tensor = decoder(z)
         loss = loss_fn(x_rec, x)
 
         loss.backward()

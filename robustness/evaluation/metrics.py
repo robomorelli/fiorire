@@ -26,7 +26,7 @@ def compute_metrics(
         y_pred_np = x_rec.detach().float().cpu().numpy().flatten()
 
         if "mse" in metric_types:
-            metrics["mse"] = float(mean_squared_error(y_true_np, y_pred_np))
+            metrics["anomaly score"] = float(mean_squared_error(y_true_np, y_pred_np))
 
         if "mae" in metric_types:
             metrics["mae"] = float(mean_absolute_error(y_true_np, y_pred_np))
@@ -35,16 +35,15 @@ def compute_metrics(
             mse = mean_squared_error(y_true_np, y_pred_np)
             mae = mean_absolute_error(y_true_np, y_pred_np)
             metrics["mse/mae"] = float(mse / (mae + 1e-8))
+            metrics["anomaly score"] = mse
+            metrics["mae"] = mae
 
     # detection metrics
     if labels is not None and scores is not None:
         labels = labels.astype(np.int32).flatten()
         scores = scores.astype(np.float32).flatten()
-        try:
-            metrics["roc_auc"] = float(roc_auc_score(labels, scores))
-        except ValueError:
-            metrics["roc_auc"] = float("nan")
-
+        
+        metrics["roc_auc"] = float(roc_auc_score(labels, scores))
         precision, recall, _ = precision_recall_curve(labels, scores)
         metrics["pr_auc"] = float(auc(recall, precision))
 
