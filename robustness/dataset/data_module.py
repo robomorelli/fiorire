@@ -72,14 +72,22 @@ class DataModule(pl.LightningDataModule):
         Xok_ref = np.stack([val_data[i : i + W] for i in idx])  # shape: [n_ref, W, F]
 
         if self.mode == "train":
-            self.train_ds = TimeSeriesDataset(train_data, W, self.cfg["dataset"]["seq_stride_train"], scaler=self.scaler)
+            self.train_ds = TimeSeriesDataset(
+                train_data,
+                W,
+                self.cfg["dataset"]["seq_stride_train"],
+                scaler=self.scaler,
+            )
 
             self.val_ds = self._build_dataset_with_anomalies(
                 base_data=val_data,
                 stride=self.cfg["dataset"]["seq_stride_val"],
                 anomaly_ratio=self.cfg["dataset"]["val_anomaly_ratio"],
                 Xok_ref=Xok_ref,
-                delta_range=(self.cfg["dataset"]["delta_min"], self.cfg["dataset"]["delta_max"]),
+                delta_range=(
+                    self.cfg["dataset"]["delta_min"],
+                    self.cfg["dataset"]["delta_max"],
+                ),
             )
 
             self.val_sampler = RandomSampler(
@@ -91,7 +99,10 @@ class DataModule(pl.LightningDataModule):
         elif self.mode == "test":
             if self.test_mode == "anom":
                 ratio = self.cfg["dataset"]["test_anomaly_ratio"]
-                delta_range = (self.cfg["dataset"]["delta_min"], self.cfg["dataset"]["delta_max"])
+                delta_range = (
+                    self.cfg["dataset"]["delta_min"],
+                    self.cfg["dataset"]["delta_max"],
+                )
             else:
                 ratio = 0
                 delta_range = None
@@ -103,7 +114,6 @@ class DataModule(pl.LightningDataModule):
                 Xok_ref=Xok_ref,
                 delta_range=delta_range,
             )
-
 
     def train_dataloader(self) -> DataLoader:
         if self.mode != "train":
@@ -141,14 +151,14 @@ class DataModule(pl.LightningDataModule):
             num_workers=self.cfg["dataset"]["num_workers"],
             pin_memory=True,
         )
-    
+
     def _build_dataset_with_anomalies(
         self,
         base_data: np.ndarray,
         stride: int,
         anomaly_ratio: float,
         Xok_ref: Optional[np.ndarray] = None,
-        delta_range: Optional[tuple[float, float]] = None
+        delta_range: Optional[tuple[float, float]] = None,
     ):
         """
         Costruisce un dataset concatenando i dati 'clean' con un subset di anomalie.
@@ -184,4 +194,3 @@ class DataModule(pl.LightningDataModule):
             return combined_ds
 
         return clean_ds
-

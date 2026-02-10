@@ -11,7 +11,7 @@ from robustness.input_perturbation.real import (
 )
 
 
-def build_robustness_curves(model: nn.Module, cfg: DictConfig) -> dict[str, tuple]:
+def perturbation_dict(model: nn.Module, cfg: DictConfig) -> dict[str, tuple]:
     """
     Returns a dict:
         name -> (params, perturb_builder)
@@ -21,7 +21,9 @@ def build_robustness_curves(model: nn.Module, cfg: DictConfig) -> dict[str, tupl
     return {
         "adversarial": (
             cfg["curves"]["adversarial_epsilons"],
-            lambda steps: lambda alpha: lambda eps: lambda x: pgd_attack(model, x, eps, alpha, steps),
+            lambda steps: lambda alpha: lambda eps: lambda x: pgd_attack(
+                model, x, eps, alpha, steps
+            ),
         ),
         "gaussian": (
             cfg["curves"]["gaussian_stds"],

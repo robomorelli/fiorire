@@ -9,7 +9,7 @@ import numpy as np
 from models.conv_ae2D import CONV_AE2D
 from robustness.evaluation.robustness_curves import (
     plot_robustness_curves,
-    build_robustness_curves,
+    perturbation_dict,
 )
 from robustness.lightning_module.losses import (
     reconstruction_loss,
@@ -96,13 +96,16 @@ class LitAutoEncoder(pl.LightningModule):
             prog_bar=True,
             on_step=False,
             on_epoch=True,
+            sync_dist=True,
         )
         return loss
 
     def on_train_epoch_end(self):
         if not self.train_feat_errors:
             return
-        self.train_feat_median = torch.stack(self.train_feat_errors).median(dim=0).values
+        self.train_feat_median = (
+            torch.stack(self.train_feat_errors).median(dim=0).values
+        )
         self.train_feat_errors.clear()
 
     def validation_step(self, batch: tuple[Tensor, Tensor], batch_idx):
@@ -110,7 +113,7 @@ class LitAutoEncoder(pl.LightningModule):
         x_rec = self(x)
 
         loss = reconstruction_loss(x, x_rec)
-        self.log("val_loss", loss, prog_bar=True)
+        self.log("val_loss", loss, prog_bar=True, sync_dist=True)
 
         if self.cfg["metrics"]["compute_validation"]:
             metrics = compute_metrics(
@@ -118,13 +121,13 @@ class LitAutoEncoder(pl.LightningModule):
                 x_rec=x_rec,
                 labels=None,
                 scores=None,
-                metric_types=self.cfg["metrics"].types
+                metric_types=self.cfg["metrics"].types,
             )
             for k, v in metrics.items():
-                self.log(f"val_{k}", v, prog_bar=True)
+                self.log(f"val_{k}", v, prog_bar=True, sync_dist=True)
 
         return loss
-    
+
     def test_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, y = batch
         perturb = self.cfg["metrics"]["perturb_test"]
@@ -140,7 +143,9 @@ class LitAutoEncoder(pl.LightningModule):
                 alpha=epsilon_test / self.cfg["defense"]["pgd_steps"],
                 steps=self.cfg["defense"]["pgd_steps"],
             )
-            x_real = random_real_perturbation(x[n_adv:], self.cfg["metrics"]["real_noise_params"])
+            x_real = random_real_perturbation(
+                x[n_adv:], self.cfg["metrics"]["real_noise_params"]
+            )
             x = torch.cat([x_adv, x_real], dim=0)
 
         x_rec, rec_err = reconstruct_and_weight(
@@ -153,17 +158,25 @@ class LitAutoEncoder(pl.LightningModule):
         )
 
         # log reconstruction error per batch
-        self.log(f"{self.test_mode}_rec_error", rec_err.mean(), prog_bar=True, on_epoch=True)
+        self.log(
+            f"{self.test_mode}_rec_error",
+            rec_err.mean(),
+            prog_bar=True,
+            on_epoch=True,
+            sync_dist=True,
+        )
 
         # accumulo buffer per detection metrics
         self._test_scores.append(rec_err.detach().cpu().numpy())
         self._test_labels.append(y.detach().cpu().numpy())
 
         # batch-wise (solo anomaly score)
-        self._test_metrics_epoch.append({
-            "batch_idx": batch_idx,
-            "anomaly_score": rec_err.mean().item(),
-        })
+        self._test_metrics_epoch.append(
+            {
+                "batch_idx": batch_idx,
+                "anomaly_score": rec_err.mean().item(),
+            }
+        )
 
     def on_test_start(self):
         self._test_scores.clear()
@@ -181,9 +194,11 @@ class LitAutoEncoder(pl.LightningModule):
         # compute global detection metrics
         scores = np.concatenate(self._test_scores, axis=0)
         labels = np.concatenate(self._test_labels, axis=0)
-        
+
         # ricostruzione media batch-wise
-        anomaly_score_mean = float(np.mean([m["anomaly_score"] for m in self._test_metrics_epoch]))
+        anomaly_score_mean = float(
+            np.mean([m["anomaly_score"] for m in self._test_metrics_epoch])
+        )
 
         # calcola tutte le metriche (detection + reconstruction)
         all_metrics = compute_metrics(
@@ -207,7 +222,7 @@ class LitAutoEncoder(pl.LightningModule):
 
         # robustness curves (solo se non clean)
         if self.test_mode != "clean" and self.cfg["curves"]["enabled"]:
-            curves = build_robustness_curves(self, self.cfg)
+            curves = perturbation_dict(self, self.cfg)
             self._robustness_results = {}
             for name, (params, perturb_builder) in curves.items():
                 self._robustness_results[name] = {}
@@ -247,7 +262,6 @@ class LitAutoEncoder(pl.LightningModule):
         """
         self.eval()
         metrics_acc = []
-
         all_scores = []
         all_labels = []
 
@@ -303,8 +317,7 @@ class LitAutoEncoder(pl.LightningModule):
 
         # media batch-wise delle ricostruzioni
         recon_metrics = {
-            k: sum(m[k] for m in metrics_acc) / len(metrics_acc)
-            for k in metrics_acc[0]
+            k: sum(m[k] for m in metrics_acc) / len(metrics_acc) for k in metrics_acc[0]
         }
 
         # unisci tutto
