@@ -44,8 +44,8 @@ class LitAutoEncoder(pl.LightningModule):
         self._epoch_latent_loss = []
 
         # validation epoch buffers
-        self._epoch_val_loss = []
-        self._epoch_val_metrics = []
+        self._val_scores = []
+        self._val_labels = []
 
         # test buffers
         self.test_mode: Literal["clean", "anom"]
@@ -94,6 +94,13 @@ class LitAutoEncoder(pl.LightningModule):
             latent_loss = regularization_loss(self.model.encoder, x_adv_src, x_adv)
 
         loss = recon_loss + self.lambda_latent * latent_loss
+        # logging batch-wise
+        self.log_dict({
+            "train_loss_step": loss,
+            "train_recon_loss_step": recon_loss,
+            "train_latent_loss_step": latent_loss,
+        }, on_step=True, on_epoch=False, prog_bar=True, sync_dist=True)
+
         # accumulo per epoca
         self._epoch_train_loss.append(loss.detach())
         self._epoch_recon_loss.append(recon_loss.detach())
@@ -108,55 +115,69 @@ class LitAutoEncoder(pl.LightningModule):
         )
         self.train_feat_errors.clear()
 
+        self.train_loss = float(torch.stack(self._epoch_train_loss).mean())
+        self.train_recon_loss = float(torch.stack(self._epoch_recon_loss).mean())
+        self.train_latent_loss = float(torch.stack(self._epoch_latent_loss).mean())
+
+        # log per epoca
+        self.log_dict({
+            "train_loss": self.train_loss,
+            "train_recon_loss": self.train_recon_loss,
+            "train_latent_loss": self.train_latent_loss,
+        }, on_epoch=True, prog_bar=False, sync_dist=True)
+
+        self._epoch_train_loss.clear()
+        self._epoch_recon_loss.clear()
+        self._epoch_latent_loss.clear()
+
     def validation_step(self, batch: tuple[Tensor, Tensor], batch_idx):
-        x, _ = batch
+        x, y = batch
         x_rec = self(x)
 
         loss = reconstruction_loss(x, x_rec)
-        self._epoch_val_loss.append(loss.detach())
 
-        if self.cfg["metrics"]["compute_validation"]:
-            metrics = compute_metrics(
-                x=x,
-                x_rec=x_rec,
-                labels=None,
-                scores=None,
-                metric_types=self.cfg["metrics"].types,
-            )
-            # salva solo scalari python
-            self._epoch_val_metrics.append(
-                {k: float(v) for k, v in metrics.items()}
-            )
+        # batch-wsie logging
+        self.log("val_loss_step", loss, on_step=True, on_epoch=False, prog_bar=False, sync_dist=True)
+
+        self._val_scores.append(loss.detach().cpu().numpy())
+        self._val_labels.append(y.detach().cpu().numpy())
 
         return loss
 
     def on_validation_epoch_end(self):
-        if self.trainer.sanity_checking:
+        if self.trainer.sanity_checking or not self._epoch_val_loss:
             return
 
+        all_scores = np.concatenate(self._val_scores, axis=0)
+        all_labels = np.concatenate(self._val_labels, axis=0)
+
+        # log per epoca
+        self.log("val_loss", all_scores.mean(), on_epoch=True, prog_bar=False, sync_dist=True)
+
+        metrics = compute_metrics(
+            x=None,
+            x_rec=None,
+            labels=all_labels,
+            scores=all_scores,
+            metric_types=self.cfg["metrics"].types,
+        )
+
+        # scrivi CSV custom
+        # compute medie train/val
         row = {
             "epoch": self.current_epoch,
-            "train_loss": float(torch.stack(self._epoch_train_loss).mean()),
-            "train_recon_loss": float(torch.stack(self._epoch_recon_loss).mean()),
-            "train_latent_loss": float(torch.stack(self._epoch_latent_loss).mean()),
-            "val_loss": float(torch.stack(self._epoch_val_loss).mean()),
+            "train_loss": self.train_loss,
+            "train_recon_loss": self.train_recon_loss,
+            "train_latent_loss": self.train_latent_loss,
+            "val_loss": all_scores.mean(),
+            **metrics,
         }
-
-        if self._epoch_val_metrics:
-            for k in self._epoch_val_metrics[0]:
-                row[f"val_{k}"] = (
-                    sum(m[k] for m in self._epoch_val_metrics)
-                    / len(self._epoch_val_metrics)
-                )
-
         out_dir = Path(self.cfg["trainer"]["out_dir"]) / "train"
-        write_metrics_csv([row], out_dir)
+        write_metrics_csv([row], out_dir, filename="metrics_train.csv")
 
         # cleanup
-        self._epoch_val_loss.clear()
-        self._epoch_val_metrics.clear()
-
-
+        self._val_scores.clear()
+        self._val_labels.clear()
 
     def test_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, y = batch
