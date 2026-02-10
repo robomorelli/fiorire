@@ -3,19 +3,27 @@ from typing import Any
 import csv
 
 
-def write_test_metrics_csv(test_metrics_epoch: list[dict], out_dir: Path):
-    """Scrive le metriche di test batch-wise + aggregato in CSV"""
-    if len(test_metrics_epoch) == 0:
+def write_metrics_csv(
+    rows: list[dict[str, Any]],
+    out_dir: Path,
+    filename: str = "metrics.csv",
+):
+    if not rows:
         return
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = out_dir / "metrics.csv"
+    csv_path = out_dir / filename
 
-    fieldnames = list(test_metrics_epoch[0].keys())
+    fieldnames = rows[0].keys()
 
-    with open(csv_path, "w", newline="") as f:
+    write_header = not csv_path.exists()
+
+    with open(csv_path, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
 
-        for m in test_metrics_epoch:
-            writer.writerow(m)
+        if write_header:
+            writer.writeheader()
+
+        for row in rows:
+            writer.writerow(row)
+

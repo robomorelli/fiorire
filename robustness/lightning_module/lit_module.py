@@ -18,7 +18,7 @@ from robustness.lightning_module.losses import (
 )
 from robustness.lightning_module.scheduler import build_scheduler
 from robustness.evaluation.metrics import compute_metrics
-from robustness.evaluation.write_csv import write_test_metrics_csv
+from robustness.evaluation.write_csv import write_metrics_csv
 from robustness.input_perturbation.defenses import reconstruct_and_weight
 from robustness.input_perturbation.adv_train_utils import pgd_attack
 from robustness.input_perturbation.real import random_real_perturbation
@@ -39,6 +39,13 @@ class LitAutoEncoder(pl.LightningModule):
         # training buffers
         self.train_feat_errors = []
         self.train_feat_median = None
+        self._epoch_train_loss = []
+        self._epoch_recon_loss = []
+        self._epoch_latent_loss = []
+
+        # validation epoch buffers
+        self._epoch_val_loss = []
+        self._epoch_val_metrics = []
 
         # test buffers
         self.test_mode: Literal["clean", "anom"]
@@ -87,17 +94,10 @@ class LitAutoEncoder(pl.LightningModule):
             latent_loss = regularization_loss(self.model.encoder, x_adv_src, x_adv)
 
         loss = recon_loss + self.lambda_latent * latent_loss
-        self.log_dict(
-            {
-                "train_loss": loss,
-                "train_recon_loss": recon_loss,
-                "train_latent_loss": latent_loss,
-            },
-            prog_bar=True,
-            on_step=False,
-            on_epoch=True,
-            sync_dist=True,
-        )
+        # accumulo per epoca
+        self._epoch_train_loss.append(loss.detach())
+        self._epoch_recon_loss.append(recon_loss.detach())
+        self._epoch_latent_loss.append(latent_loss.detach())
         return loss
 
     def on_train_epoch_end(self):
@@ -113,7 +113,7 @@ class LitAutoEncoder(pl.LightningModule):
         x_rec = self(x)
 
         loss = reconstruction_loss(x, x_rec)
-        self.log("val_loss", loss, prog_bar=True, sync_dist=True)
+        self._epoch_val_loss.append(loss.detach())
 
         if self.cfg["metrics"]["compute_validation"]:
             metrics = compute_metrics(
@@ -123,10 +123,40 @@ class LitAutoEncoder(pl.LightningModule):
                 scores=None,
                 metric_types=self.cfg["metrics"].types,
             )
-            for k, v in metrics.items():
-                self.log(f"val_{k}", v, prog_bar=True, sync_dist=True)
+            # salva solo scalari python
+            self._epoch_val_metrics.append(
+                {k: float(v) for k, v in metrics.items()}
+            )
 
         return loss
+
+    def on_validation_epoch_end(self):
+        if self.trainer.sanity_checking:
+            return
+
+        row = {
+            "epoch": self.current_epoch,
+            "train_loss": float(torch.stack(self._epoch_train_loss).mean()),
+            "train_recon_loss": float(torch.stack(self._epoch_recon_loss).mean()),
+            "train_latent_loss": float(torch.stack(self._epoch_latent_loss).mean()),
+            "val_loss": float(torch.stack(self._epoch_val_loss).mean()),
+        }
+
+        if self._epoch_val_metrics:
+            for k in self._epoch_val_metrics[0]:
+                row[f"val_{k}"] = (
+                    sum(m[k] for m in self._epoch_val_metrics)
+                    / len(self._epoch_val_metrics)
+                )
+
+        out_dir = Path(self.cfg["trainer"]["out_dir"]) / "train"
+        write_metrics_csv([row], out_dir)
+
+        # cleanup
+        self._epoch_val_loss.clear()
+        self._epoch_val_metrics.clear()
+
+
 
     def test_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, y = batch
@@ -218,7 +248,7 @@ class LitAutoEncoder(pl.LightningModule):
         # scrive CSV batch-wise + aggregate epoca
         csv_data = self._test_metrics_epoch.copy()
         csv_data.append({"batch_idx": "ALL", **all_metrics})
-        write_test_metrics_csv(csv_data, out_dir)
+        write_metrics_csv(csv_data, out_dir)
 
         # robustness curves (solo se non clean)
         if self.test_mode != "clean" and self.cfg["curves"]["enabled"]:
