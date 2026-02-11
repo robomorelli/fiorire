@@ -94,12 +94,18 @@ class LitAutoEncoder(pl.LightningModule):
             latent_loss = regularization_loss(self.model.encoder, x_adv_src, x_adv)
 
         loss = recon_loss + self.lambda_latent * latent_loss
-        # logging batch-wise
-        self.log_dict({
-            "train_loss_step": loss,
-            "train_recon_loss_step": recon_loss,
-            "train_latent_loss_step": latent_loss,
-        }, on_step=True, on_epoch=False, prog_bar=True, sync_dist=True)
+        # epoch logging
+        self.log_dict(
+            {
+                "train_loss_step": loss,
+                "train_recon_loss_step": recon_loss,
+                "train_latent_loss_step": latent_loss,
+            },
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
 
         # accumulo per epoca
         self._epoch_train_loss.append(loss.detach())
@@ -115,44 +121,39 @@ class LitAutoEncoder(pl.LightningModule):
         )
         self.train_feat_errors.clear()
 
-        self.train_loss = float(torch.stack(self._epoch_train_loss).mean())
-        self.train_recon_loss = float(torch.stack(self._epoch_recon_loss).mean())
-        self.train_latent_loss = float(torch.stack(self._epoch_latent_loss).mean())
-
-        # log per epoca
-        self.log_dict({
-            "train_loss": self.train_loss,
-            "train_recon_loss": self.train_recon_loss,
-            "train_latent_loss": self.train_latent_loss,
-        }, on_epoch=True, prog_bar=False, sync_dist=True)
-
-        self._epoch_train_loss.clear()
-        self._epoch_recon_loss.clear()
-        self._epoch_latent_loss.clear()
-
     def validation_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, y = batch
         x_rec = self(x)
 
-        loss = reconstruction_loss(x, x_rec)
+        loss = reconstruction_loss(x, x_rec, reduction = "none")
+        rec_err = loss.view(x.size(0), -1).mean(dim=1)  # shape: (B,)
 
-        # batch-wsie logging
-        self.log("val_loss_step", loss, on_step=True, on_epoch=False, prog_bar=False, sync_dist=True)
+        # batch-wise logging
+        self.log(
+            "val_loss_step",
+            rec_err.mean(),
+            on_step=True,
+            on_epoch=False,
+            prog_bar=False,
+            sync_dist=True,
+        )
 
-        self._val_scores.append(loss.detach().cpu().numpy())
-        self._val_labels.append(y.detach().cpu().numpy())
+        self._val_scores.append(rec_err.detach())
+        self._val_labels.append(y.detach())
 
         return loss
 
     def on_validation_epoch_end(self):
-        if self.trainer.sanity_checking or not self._epoch_val_loss:
+        if self.trainer.sanity_checking or not self._val_scores:
             return
 
-        all_scores = np.concatenate(self._val_scores, axis=0)
-        all_labels = np.concatenate(self._val_labels, axis=0)
+        all_scores = torch.cat(self._val_scores, dim=0).cpu().numpy()
+        all_labels = torch.cat(self._val_labels, dim=0).cpu().numpy()
 
         # log per epoca
-        self.log("val_loss", all_scores.mean(), on_epoch=True, prog_bar=False, sync_dist=True)
+        self.log(
+            "val_loss", all_scores.mean(), prog_bar=True, sync_dist=True
+        )
 
         metrics = compute_metrics(
             x=None,
@@ -163,21 +164,31 @@ class LitAutoEncoder(pl.LightningModule):
         )
 
         # scrivi CSV custom
-        # compute medie train/val
+        # prima cosa: calcolare medie train 
+        train_loss = float(torch.stack(self._epoch_train_loss).mean())
+        train_recon_loss = float(torch.stack(self._epoch_recon_loss).mean())
+        train_latent_loss = float(torch.stack(self._epoch_latent_loss).mean())
         row = {
             "epoch": self.current_epoch,
-            "train_loss": self.train_loss,
-            "train_recon_loss": self.train_recon_loss,
-            "train_latent_loss": self.train_latent_loss,
+            "train_loss": train_loss,
+            "train_recon_loss": train_recon_loss,
+            "train_latent_loss": train_latent_loss,
             "val_loss": all_scores.mean(),
             **metrics,
         }
-        out_dir = Path(self.cfg["trainer"]["out_dir"]) / "train"
-        write_metrics_csv([row], out_dir, filename="metrics_train.csv")
+        csv_dir = (
+            Path(self.cfg["trainer"]["out_dir"])
+            / self.cfg["trainer"]["name_exp"]
+            / self.cfg["trainer"]["run_name"]
+        )
+        write_metrics_csv([row], csv_dir, filename="metrics_train.csv")
 
         # cleanup
         self._val_scores.clear()
         self._val_labels.clear()
+        self._epoch_train_loss.clear()
+        self._epoch_recon_loss.clear()
+        self._epoch_latent_loss.clear()
 
     def test_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, y = batch

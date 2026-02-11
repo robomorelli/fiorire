@@ -58,11 +58,11 @@ class TimeSeriesDataset(Dataset):
             return window
 
         W, F = window.shape
-        channel = np.random.randint(F)
+        feature = np.random.randint(F)
 
-        window[:, channel] = apply_random_wombats_anomaly(
-            signal=window[:, channel],
-            Xok_ref=self.Xok_ref[:, :, channel],
+        window[:, feature] = apply_random_wombats_anomaly(
+            signal=window[:, feature],
+            Xok_ref=self.Xok_ref[:, :, feature],
             delta_range=self.delta_range,
         )
 

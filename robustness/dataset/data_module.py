@@ -66,11 +66,6 @@ class DataModule(pl.LightningDataModule):
         # evita divisioni per zero
         self.scaler.scale_[self.scaler.scale_ == 0] = 1.0
 
-        W = self.cfg["dataset"]["seq_in_length"]
-        n_ref = min(self.cfg["dataset"]["n_wombats_ref"], len(val_data) - W)
-        idx = np.random.choice(len(val_data) - W, size=n_ref, replace=False)
-        Xok_ref = np.stack([val_data[i : i + W] for i in idx])  # shape: [n_ref, W, F]
-
         if self.mode == "train":
             self.train_ds = TimeSeriesDataset(
                 train_data,
@@ -83,7 +78,6 @@ class DataModule(pl.LightningDataModule):
                 base_data=val_data,
                 stride=self.cfg["dataset"]["seq_stride_val"],
                 anomaly_ratio=self.cfg["dataset"]["val_anomaly_ratio"],
-                Xok_ref=Xok_ref,
                 delta_range=(
                     self.cfg["dataset"]["delta_min"],
                     self.cfg["dataset"]["delta_max"],
@@ -111,7 +105,6 @@ class DataModule(pl.LightningDataModule):
                 base_data=test_data,
                 stride=self.cfg["dataset"]["seq_stride_test"],
                 anomaly_ratio=ratio,
-                Xok_ref=Xok_ref,
                 delta_range=delta_range,
             )
 
@@ -157,7 +150,6 @@ class DataModule(pl.LightningDataModule):
         base_data: np.ndarray,
         stride: int,
         anomaly_ratio: float,
-        Xok_ref: Optional[np.ndarray] = None,
         delta_range: Optional[tuple[float, float]] = None,
     ):
         """
@@ -168,6 +160,7 @@ class DataModule(pl.LightningDataModule):
         - Xok_ref: riferimento per perturbazioni
         - delta_range: range di perturbazioni
         """
+
         # dataset clean
         clean_ds = TimeSeriesDataset(
             base_data,
@@ -178,6 +171,10 @@ class DataModule(pl.LightningDataModule):
 
         # se vogliamo aggiungere anomalie
         if delta_range is not None and anomaly_ratio > 0:
+            W = self.cfg["dataset"]["seq_in_length"]
+            Xok_ref = np.stack(
+                [base_data[i : i + W] for i in range(len(base_data) - W + 1)]
+            )
             anom_ds = TimeSeriesDataset(
                 base_data,
                 self.cfg["dataset"]["seq_in_length"],

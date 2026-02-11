@@ -15,14 +15,14 @@ from robustness.dataset.data_module import DataModule
 torch.set_float32_matmul_precision("medium")
 
 
-def main(config_path: str | Path, name: str, mode: str = "train"):
+def main(config_path: str | Path, mode: str = "train"):
     cfg = OmegaConf.load(config_path)
     cfg = cast(DictConfig, cfg)
 
     loggers = [
         TensorBoardLogger(
             save_dir=cfg["trainer"]["out_dir"],
-            name=name,
+            name=cfg["trainer"]["name_exp"],
             version=cfg["trainer"]["run_name"],
         )
     ]

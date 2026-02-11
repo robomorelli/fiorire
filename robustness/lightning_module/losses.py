@@ -3,8 +3,8 @@ from torch import nn
 import torch.nn.functional as F
 
 
-def reconstruction_loss(x: Tensor, x_hat: Tensor):
-    return F.mse_loss(x_hat, x)
+def reconstruction_loss(x: Tensor, x_hat: Tensor, reduction: str = "mean"):
+    return F.mse_loss(x_hat, x, reduction=reduction)
 
 
 def feature_errors(x: Tensor, x_hat: Tensor):
