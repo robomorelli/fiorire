@@ -1,10 +1,10 @@
 {
     "python.terminal.activateEnvironment": true,
-    "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda",
     "python-envs.pythonProjects": [],
     "python.analysis.typeCheckingMode": "basic",
     "[python]": {
         "editor.defaultFormatter": "mikoz.black-py"
-    }
+    },
+    "python-envs.defaultEnvManager": "ms-python.python:conda"
 }

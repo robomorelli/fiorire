@@ -35,16 +35,16 @@ def main(config_path: str | Path, mode: str = "train"):
         print("Training from scratch (Lightning checkpoint will be saved)")
 
         early_stopping = EarlyStopping(
-            monitor="val_loss",
+            monitor=cfg["opt"]["monitor_metric"],
             patience=cfg["opt"]["es_patience"],
-            mode="min",
+            mode=cfg["opt"]["monitor_mode"],
             verbose=True,
         )
         checkpoint_cb = ModelCheckpoint(
             dirpath=None,
             filename="best-{epoch:03d}-{val_loss:.4f}",
-            monitor="val_loss",  # metrica da ottimizzare
-            mode="min",
+            monitor=cfg["opt"]["monitor_metric"],  # metrica da ottimizzare
+            mode=cfg["opt"]["monitor_mode"],
             save_top_k=1,  # salva SOLO il migliore
         )
 
