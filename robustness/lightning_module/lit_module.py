@@ -186,9 +186,6 @@ class LitAutoEncoder(pl.LightningModule):
         # cleanup
         self._val_scores.clear()
         self._val_labels.clear()
-        self._epoch_train_loss.clear()
-        self._epoch_recon_loss.clear()
-        self._epoch_latent_loss.clear()
 
     def test_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, y = batch
