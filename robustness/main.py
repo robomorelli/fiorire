@@ -40,10 +40,12 @@ def main(config_path: str | Path, mode: str = "train"):
             mode=cfg["opt"]["monitor_mode"],
             verbose=True,
         )
+        monitor_metric = cfg["opt"]["monitor_metric"]
+        filename = f"best-{{epoch:03d}}-{monitor_metric}={{{monitor_metric}:.4f}}"
         checkpoint_cb = ModelCheckpoint(
             dirpath=None,
-            filename="best-{epoch:03d}-{val_loss:.4f}",
-            monitor=cfg["opt"]["monitor_metric"],  # metrica da ottimizzare
+            filename=filename,
+            monitor=monitor_metric,  # metrica da ottimizzare
             mode=cfg["opt"]["monitor_mode"],
             save_top_k=1,  # salva SOLO il migliore
         )

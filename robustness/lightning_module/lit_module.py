@@ -161,7 +161,7 @@ class LitAutoEncoder(pl.LightningModule):
         for k, v in metrics.items():
             self.log(f"val_{k}", v, on_epoch=True, sync_dist=True)
 
-        # scrivi CSV SOLO su rank 0
+        # scriviamo CSV SOLO su rank 0
         if self.trainer.is_global_zero:
             csv_dir = (
                 Path(self.cfg["trainer"]["out_dir"])
