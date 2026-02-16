@@ -41,7 +41,7 @@ def main(config_path: str | Path, mode: str = "train"):
             verbose=True,
         )
         monitor_metric = cfg["opt"]["monitor_metric"]
-        filename = f"best-{{epoch:03d}}-{monitor_metric}={{{monitor_metric}:.4f}}"
+        filename = f"best-{{epoch:03d}}-{monitor_metric}={{:.4f}}"
         checkpoint_cb = ModelCheckpoint(
             dirpath=None,
             filename=filename,
