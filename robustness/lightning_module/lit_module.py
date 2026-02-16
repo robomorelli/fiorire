@@ -43,8 +43,8 @@ class LitAutoEncoder(pl.LightningModule):
         self._epoch_recon_loss = []
         self._epoch_latent_loss = []
         self.train_loss = 0
-        self.train_recon_loss = 0
         self.train_latent_loss = 0
+        self.train_recon_loss = 0
 
         # validation epoch buffers
         self._val_scores = []
@@ -119,9 +119,9 @@ class LitAutoEncoder(pl.LightningModule):
         self.train_recon_loss = float(torch.stack(self._epoch_recon_loss).mean())
         self.train_latent_loss = float(torch.stack(self._epoch_latent_loss).mean())
 
-        self.log("train_loss", self.train_loss, prog_bar=True, sync_dist=True)
-        self.log("train_recon_loss", self.train_recon_loss, prog_bar=True, sync_dist=True)
-        self.log("train_latent_loss", self.train_latent_loss, prog_bar=True, sync_dist=True)
+        self.log("train_loss", self.train_loss, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_recon_loss", self.train_recon_loss, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_latent_loss", self.train_latent_loss, on_epoch=True, prog_bar=True, sync_dist=True)
 
         self._epoch_train_loss.clear()
         self._epoch_recon_loss.clear()
@@ -147,14 +147,8 @@ class LitAutoEncoder(pl.LightningModule):
         all_labels = torch.cat(self._val_labels, dim=0).cpu().numpy()
 
         epoch_val_loss = torch.tensor(all_scores.mean(), device=self.device)
-
         # log per epoca
-        self.log(
-            "val_loss",
-            epoch_val_loss,
-            prog_bar=True,
-            sync_dist=True,
-        )
+        self.log("val_loss", epoch_val_loss, on_epoch=True, prog_bar=True, sync_dist=True)
 
         metrics = compute_metrics(
             x=None,
@@ -165,23 +159,24 @@ class LitAutoEncoder(pl.LightningModule):
         )
         # log tutte le altre metriche
         for k, v in metrics.items():
-            self.log(f"val_{k}", v, sync_dist=True)
+            self.log(f"val_{k}", v, on_epoch=True, sync_dist=True)
 
-        # scrivi CSV custom
-        row = {
-            "epoch": self.current_epoch,
-            "train_loss": self.train_loss,
-            "train_recon_loss": self.train_recon_loss,
-            "train_latent_loss": self.train_latent_loss,
-            "val_loss": all_scores.mean(),
-            **metrics,
-        }
-        csv_dir = (
-            Path(self.cfg["trainer"]["out_dir"])
-            / self.cfg["trainer"]["name_exp"]
-            / self.cfg["trainer"]["run_name"]
-        )
-        write_metrics_csv([row], csv_dir, filename="metrics_train.csv")
+        # scrivi CSV SOLO su rank 0
+        if self.trainer.is_global_zero:
+            csv_dir = (
+                Path(self.cfg["trainer"]["out_dir"])
+                / self.cfg["trainer"]["name_exp"]
+                / self.cfg["trainer"]["run_name"]
+            )
+            row = {
+                "epoch": self.current_epoch,
+                "train_loss": self.train_loss,
+                "train_recon_loss": self.train_recon_loss,
+                "train_latent_loss": self.train_latent_loss,
+                "val_loss": float(epoch_val_loss),
+                **metrics,
+            }
+            write_metrics_csv([row], csv_dir, filename="metrics_train.csv")
 
         # cleanup
         self._val_scores.clear()
