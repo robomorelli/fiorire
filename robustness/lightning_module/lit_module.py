@@ -70,46 +70,50 @@ class LitAutoEncoder(pl.LightningModule):
 
     def training_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, _ = batch
-        B = x.size(0)
+        x = x.requires_grad_(True)
 
-        if self.cfg["defense"]["adv_training"]:
-            n_adv = int(self.p_adv * B)
-            x_clean = x[:-n_adv]
-            x_adv_src = x[-n_adv:]
-        else:
-            n_adv = 0
-            x_clean = x
+        # clean forward
+        z = self.model.encoder(x)
+        x_hat = self.model.decoder(z)
 
-        x_hat_clean = self(x_clean)
-        recon_loss = reconstruction_loss(x_clean, x_hat_clean)
-        feat_err = feature_errors(x_clean, x_hat_clean)
+        recon_loss = reconstruction_loss(x, x_hat)
+        latent_loss = torch.tensor(0.0, device=self.device)
+
+        # feature meadian errors
+        feat_err = feature_errors(x, x_hat)
         self.train_feat_errors.append(feat_err.detach().cpu())
 
-        latent_loss = torch.tensor(0.0, device=self.device)
-        if n_adv > 0:
+        warmup_epochs = self.cfg["defense"]["warmup_epochs"]
+
+        if (
+            self.cfg["defense"]["adv_training"]
+            and self.current_epoch >= warmup_epochs
+        ):
             x_adv = pgd_attack(
                 self,
-                x_adv_src,
+                x,
                 epsilon=self.epsilon_train,
                 alpha=self.epsilon_train / self.cfg["defense"]["pgd_steps"],
                 steps=self.cfg["defense"]["pgd_steps"],
             )
-            latent_loss = regularization_loss(self.model.encoder, x_adv_src, x_adv)
+            # partial forward of adversarial
+            z_adv = self.model.encoder(x_adv)
+            # stop gradient on clean side
+            latent_loss = torch.mean((z_adv - z.detach()) ** 2)
 
         loss = recon_loss + self.lambda_latent * latent_loss
 
-        # accumulo per epoca
         self._epoch_train_loss.append(loss.detach())
         self._epoch_recon_loss.append(recon_loss.detach())
         self._epoch_latent_loss.append(latent_loss.detach())
+
         return loss
 
     def on_train_epoch_end(self):
         if not self.train_feat_errors:
             return
-        self.train_feat_median = (
-            torch.stack(self.train_feat_errors).median(dim=0).values
-        )
+        all_feat_err = torch.cat(self.train_feat_errors, dim=0)  # [N,F]
+        self.train_feat_median = all_feat_err.median(dim=0).values
         self.train_feat_errors.clear()
 
         # epoch logging

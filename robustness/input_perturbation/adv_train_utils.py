@@ -15,7 +15,8 @@ def pgd_attack(
 
     for _ in range(steps):
         x_hat = model(x_adv)
-        loss = reconstruction_loss(x_hat, x_adv)
+        # pgd searches perturbations far from clean manifold
+        loss = reconstruction_loss(x_hat, x_orig)
 
         grad = torch.autograd.grad(loss, x_adv)[0]
 
