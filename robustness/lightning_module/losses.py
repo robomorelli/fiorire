@@ -27,7 +27,7 @@ def regularization_loss(
     """
     Enforces consistency between latent representations.
     """
-    z_clean: Tensor = encoder(x_clean).detach()
+    z_clean: Tensor = encoder(x_clean)
     z_adv: Tensor = encoder(x_adv)
 
-    return reconstruction_loss(z_adv, z_clean)
+    return reconstruction_loss(z_adv, z_clean.detach())

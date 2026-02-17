@@ -34,7 +34,6 @@ class LitAutoEncoder(pl.LightningModule):
         self.lr = cfg["opt"]["lr"]
         self.epsilon_train = cfg["defense"]["epsilon"]
         self.lambda_latent = cfg["defense"]["lambda_latent"]
-        self.p_adv = cfg["defense"]["p_adv"]
 
         # training buffers
         self.train_feat_errors = []
@@ -73,8 +72,7 @@ class LitAutoEncoder(pl.LightningModule):
         x = x.requires_grad_(True)
 
         # clean forward
-        z = self.model.encoder(x)
-        x_hat = self.model.decoder(z)
+        x_hat = self(x)
 
         recon_loss = reconstruction_loss(x, x_hat)
         latent_loss = torch.tensor(0.0, device=self.device)
@@ -96,10 +94,8 @@ class LitAutoEncoder(pl.LightningModule):
                 alpha=self.epsilon_train / self.cfg["defense"]["pgd_steps"],
                 steps=self.cfg["defense"]["pgd_steps"],
             )
-            # partial forward of adversarial
-            z_adv = self.model.encoder(x_adv)
             # stop gradient on clean side
-            latent_loss = torch.mean((z_adv - z.detach()) ** 2)
+            latent_loss = regularization_loss(self.model.encoder, x, x_adv)
 
         loss = recon_loss + self.lambda_latent * latent_loss
 
