@@ -1,3 +1,5 @@
+import math
+import torch
 from torch import Tensor
 from torch import nn
 import torch.nn.functional as F
@@ -31,3 +33,75 @@ def regularization_loss(
     z_adv: Tensor = encoder(x_adv)
 
     return reconstruction_loss(z_adv, z_clean.detach())
+
+
+class LipschitzEMAController:
+    """
+    Controller per aggiornare dinamicamente il coefficiente lambda_latent
+    basato sulla norma Lipschitz stimata con EMA.
+
+    Attributes:
+        lambda_latent (float): Valore corrente di lambda per la regolarizzazione latente.
+        target_norm (float): Norma target desiderata.
+        ema_decay (float): Fattore di decadimento dell'EMA.
+        lr (float): Learning rate per l'aggiornamento esponenziale di lambda.
+        min_lambda (float): Valore minimo di lambda_latent.
+        max_lambda (float): Valore massimo di lambda_latent.
+        ema_norm (Optional[Tensor]): EMA corrente della norma calcolata.
+    """
+
+    def __init__(
+        self,
+        init_lambda: float = 1e-4,
+        target_norm: float = 1.0,
+        ema_decay: float = 0.95,
+        lr: float = 0.01,
+        min_lambda: float = 1e-6,
+        max_lambda: float = 1e-2,
+        ema_norm: float | None = None
+    ) -> None:
+        self.lambda_latent = init_lambda
+        self.target_norm = target_norm
+        self.ema_decay = ema_decay
+        self.lr = lr
+        self.min_lambda = min_lambda
+        self.max_lambda = max_lambda
+        self.ema_norm = ema_norm
+
+    def update(self, norm: Tensor) -> tuple[float, float]:
+        norm = norm.detach()
+        if self.ema_norm is None:
+            self.ema_norm = norm.item()
+        else:
+            self.ema_norm = self.ema_decay * self.ema_norm + (1 - self.ema_decay) * norm.item()
+
+        error = self.ema_norm - self.target_norm
+        self.lambda_latent *= math.exp(self.lr * error)
+        self.lambda_latent = max(self.min_lambda, min(self.lambda_latent, self.max_lambda))
+
+        return self.lambda_latent, self.ema_norm 
+
+
+def compute_jacobian_norm(encoder: nn.Module, x: Tensor) -> Tensor:
+    """
+    Calcola la norma media della Jacobiana dell'encoder rispetto all'input x.
+    Questa funzione è utile per misurare la sensibilità locale del modello.
+
+    Args:
+        encoder (torch.nn.Module): Encoder del modello.
+        x (Tensor): Input batch (B, C, H, W) con requires_grad=True.
+
+    Returns:
+        Tensor: Norma media della Jacobiana per il batch (scalar tensor).
+    """
+    z = encoder(x)
+    v = torch.randn_like(z, device=x.device)
+    JTv = torch.autograd.grad(
+        outputs=z,
+        inputs=x,
+        grad_outputs=v,
+        retain_graph=True,
+        create_graph=True,
+    )[0]
+    norm = JTv.flatten(1).norm(dim=1).mean()
+    return norm
