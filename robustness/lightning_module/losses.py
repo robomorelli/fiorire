@@ -21,20 +21,6 @@ def feature_errors(x: Tensor, x_hat: Tensor):
     return err                        # [B,F]
 
 
-def regularization_loss(
-    encoder: nn.Module,
-    x_clean: Tensor,
-    x_adv: Tensor,
-) -> Tensor:
-    """
-    Enforces consistency between latent representations.
-    """
-    z_clean: Tensor = encoder(x_clean)
-    z_adv: Tensor = encoder(x_adv)
-
-    return reconstruction_loss(z_adv, z_clean.detach())
-
-
 class LipschitzEMAController:
     """
     Controller per aggiornare dinamicamente il coefficiente lambda_latent

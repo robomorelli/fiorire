@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from omegaconf import DictConfig
 from torch import nn
 
-from robustness.input_perturbation.adv_train_utils import pgd_attack
+from robustness.input_perturbation.pgd import pgd_attack
 from robustness.input_perturbation.real import (
     gaussian_noise,
     dropout_noise,

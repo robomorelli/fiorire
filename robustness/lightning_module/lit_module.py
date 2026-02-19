@@ -14,7 +14,6 @@ from robustness.evaluation.robustness_curves import (
 from robustness.lightning_module.losses import (
     reconstruction_loss,
     feature_errors,
-    regularization_loss,
     LipschitzEMAController,
     compute_jacobian_norm
 )
@@ -22,7 +21,7 @@ from robustness.lightning_module.scheduler import build_scheduler
 from robustness.evaluation.metrics import compute_metrics
 from robustness.evaluation.write_csv import write_metrics_csv
 from robustness.input_perturbation.defenses import reconstruct_and_weight
-from robustness.input_perturbation.adv_train_utils import pgd_attack
+from robustness.input_perturbation.pgd import pgd_attack
 from robustness.input_perturbation.real import random_real_perturbation
 
 
@@ -44,10 +43,10 @@ class LitAutoEncoder(pl.LightningModule):
         self._epoch_recon_loss = []
         self._epoch_lipschitz_norm = []
         self._epoch_lambda = []
-        self.train_loss = 0
-        self.train_lipschitz_norm = 0
-        self.train_lambda = 0
-        self.train_recon_loss = 0
+        self.train_loss = 0.0
+        self.train_lipschitz_norm = 0.0
+        self.train_lambda = 0.0
+        self.train_recon_loss = 0.0
         self.lipschitz_ctrl = LipschitzEMAController(
             init_lambda=cfg["defense"]["lambda_latent"],
             target_norm=cfg["defense"]["lipschitz_target"],
@@ -57,7 +56,7 @@ class LitAutoEncoder(pl.LightningModule):
             max_lambda=cfg["defense"]["lambda_latent_max"]
         )
         self.current_lambda = cfg["defense"]["lambda_latent"]
-        self.current_lipschitz = 0
+        self.current_lipschitz = 0.0
 
         # validation epoch buffers
         self._val_scores = []
@@ -116,8 +115,8 @@ class LitAutoEncoder(pl.LightningModule):
 
         self._epoch_train_loss.append(loss.detach())
         self._epoch_recon_loss.append(recon_loss.detach())
-        self._epoch_lipschitz_norm.append(torch.tensor(self.current_lipschitz, device=self.device).detach())
-        self._epoch_lambda.append(torch.tensor(self.current_lambda, device=self.device).detach())
+        self._epoch_lipschitz_norm.append(torch.tensor(self.current_lipschitz, device=self.device))
+        self._epoch_lambda.append(torch.tensor(self.current_lambda, device=self.device))
 
         return loss
 
@@ -133,13 +132,13 @@ class LitAutoEncoder(pl.LightningModule):
             return
         self.train_loss = torch.stack(self._epoch_train_loss).mean()
         self.train_recon_loss = torch.stack(self._epoch_recon_loss).mean()
-        self.train_lipschitz_norm = torch.stack(self._epoch_lipschitz_norm).float().mean().item()
-        self.train_lambda = torch.stack(self._epoch_lambda).float().mean().item()
+        self.train_lipschitz_norm = torch.stack(self._epoch_lipschitz_norm).mean()
+        self.train_lambda = torch.stack(self._epoch_lambda).mean()
 
         self.log("train_loss", self.train_loss, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("train_recon_loss", self.train_recon_loss, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_lipschitz_norm", self.train_lipschitz_norm, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_lambda", self.train_lambda, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_lipschitz_norm", self.train_lipschitz_norm.item(), on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_lambda", self.train_lambda.item(), on_epoch=True, prog_bar=True, sync_dist=True)
 
         self._epoch_train_loss.clear()
         self._epoch_recon_loss.clear()
@@ -191,9 +190,8 @@ class LitAutoEncoder(pl.LightningModule):
                 "epoch": self.current_epoch,
                 "train_loss": self.train_loss,
                 "train_recon_loss": self.train_recon_loss,
-                "train_lipschitz_norm": self.train_lipschitz_norm,
-                "train_lambda": self.current_lambda,
-                # "train_latent_loss": self.train_latent_loss,
+                "train_lipschitz_norm": float(self.train_lipschitz_norm),
+                "train_lambda": float(self.current_lambda),
                 "val_loss": float(epoch_val_loss),
                 **metrics,
             }
