@@ -137,8 +137,8 @@ class LitAutoEncoder(pl.LightningModule):
 
         self.log("train_loss", self.train_loss, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("train_recon_loss", self.train_recon_loss, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_lipschitz_norm", self.train_lipschitz_norm.item(), on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_lambda", self.train_lambda.item(), on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_lipschitz_norm", self.train_lipschitz_norm, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_lambda", self.train_lambda, on_epoch=True, prog_bar=True, sync_dist=True)
 
         self._epoch_train_loss.clear()
         self._epoch_recon_loss.clear()

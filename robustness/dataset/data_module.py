@@ -24,6 +24,7 @@ class DataModule(pl.LightningDataModule):
         df = df.dropna()
         data = df.values.astype(np.float32)
         T, F = data.shape
+        # overwrite - not used here, only in the model
         self.cfg["dataset"]["n_features"] = F
 
         W = self.cfg["dataset"]["seq_in_length"]
