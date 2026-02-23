@@ -41,12 +41,14 @@ class LitAutoEncoder(pl.LightningModule):
         self.train_feat_median = None
         self._epoch_train_loss = []
         self._epoch_recon_loss = []
+        self._epoch_jac_loss = []
         self._epoch_lipschitz_norm = []
         self._epoch_lambda = []
         self.train_loss = 0.0
+        self.train_recon_loss = 0.0
+        self.train_jac_loss = 0.0
         self.train_lipschitz_norm = 0.0
         self.train_lambda = 0.0
-        self.train_recon_loss = 0.0
         self.lipschitz_ctrl = LipschitzEMAController(
             init_lambda=cfg["defense"]["lambda_latent"],
             target_norm=cfg["defense"]["lipschitz_target"],
@@ -98,7 +100,7 @@ class LitAutoEncoder(pl.LightningModule):
         warmup_epochs = self.cfg["defense"]["warmup_epochs"]
 
         if (
-            self.cfg["defense"]["adv_training"]
+            self.cfg["defense"]["regularization"]
             and self.current_epoch >= warmup_epochs
         ):
             lipschitz_norm = compute_jacobian_norm(
@@ -111,10 +113,12 @@ class LitAutoEncoder(pl.LightningModule):
             # adaptive lambda update
             self.current_lambda, self.current_lipschitz = self.lipschitz_ctrl.update(lipschitz_norm)
 
+        jac_contrib = self.current_lambda * jac_loss
         loss = recon_loss + self.current_lambda * jac_loss
 
         self._epoch_train_loss.append(loss.detach())
         self._epoch_recon_loss.append(recon_loss.detach())
+        self._epoch_jac_loss.append(jac_contrib.detach())
         self._epoch_lipschitz_norm.append(torch.tensor(self.current_lipschitz, device=self.device))
         self._epoch_lambda.append(torch.tensor(self.current_lambda, device=self.device))
 
@@ -132,16 +136,19 @@ class LitAutoEncoder(pl.LightningModule):
             return
         self.train_loss = torch.stack(self._epoch_train_loss).mean()
         self.train_recon_loss = torch.stack(self._epoch_recon_loss).mean()
+        self.train_jac_loss = torch.stack(self._epoch_jac_loss).mean()
         self.train_lipschitz_norm = torch.stack(self._epoch_lipschitz_norm).mean()
         self.train_lambda = torch.stack(self._epoch_lambda).mean()
 
         self.log("train_loss", self.train_loss, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("train_recon_loss", self.train_recon_loss, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_lipschitz_norm", self.train_lipschitz_norm, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_jac_loss", self.train_jac_loss, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_lipschitz_norm", self.train_lipschitz_norm, on_epoch=True, sync_dist=True)
         self.log("train_lambda", self.train_lambda, on_epoch=True, prog_bar=True, sync_dist=True)
 
         self._epoch_train_loss.clear()
         self._epoch_recon_loss.clear()
+        self._epoch_jac_loss.clear()
         self._epoch_lipschitz_norm.clear()
         self._epoch_lambda.clear()
 
@@ -190,12 +197,12 @@ class LitAutoEncoder(pl.LightningModule):
                 "epoch": self.current_epoch,
                 "train_loss": self.train_loss,
                 "train_recon_loss": self.train_recon_loss,
-                "train_lipschitz_norm": float(self.train_lipschitz_norm),
+                "train_jac_loss": self.train_jac_loss,
                 "train_lambda": float(self.current_lambda),
                 "val_loss": float(epoch_val_loss),
                 **metrics,
             }
-            write_metrics_csv([row], csv_dir, filename="metrics_train.csv")
+            write_metrics_csv([row], csv_dir, filename="metrics.csv")
 
         # cleanup
         self._val_scores.clear()
