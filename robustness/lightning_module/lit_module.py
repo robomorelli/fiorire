@@ -42,11 +42,13 @@ class LitAutoEncoder(pl.LightningModule):
         self._epoch_train_loss = []
         self._epoch_recon_loss = []
         self._epoch_jac_loss = []
+        self._epoch_ratio = []
         self._epoch_lipschitz_norm = []
         self._epoch_lambda = []
         self.train_loss = 0.0
         self.train_recon_loss = 0.0
         self.train_jac_loss = 0.0
+        self.train_ratio = 0.0
         self.train_lipschitz_norm = 0.0
         self.train_lambda = 0.0
         self.lipschitz_ctrl = LipschitzEMAController(
@@ -114,11 +116,13 @@ class LitAutoEncoder(pl.LightningModule):
             self.current_lambda, self.current_lipschitz = self.lipschitz_ctrl.update(lipschitz_norm)
 
         jac_contrib = self.current_lambda * jac_loss
+        ratio = jac_contrib / recon_loss
         loss = recon_loss + self.current_lambda * jac_loss
 
         self._epoch_train_loss.append(loss.detach())
         self._epoch_recon_loss.append(recon_loss.detach())
         self._epoch_jac_loss.append(jac_contrib.detach())
+        self._epoch_ratio.append(ratio.detach())
         self._epoch_lipschitz_norm.append(torch.tensor(self.current_lipschitz, device=self.device))
         self._epoch_lambda.append(torch.tensor(self.current_lambda, device=self.device))
 
@@ -137,18 +141,21 @@ class LitAutoEncoder(pl.LightningModule):
         self.train_loss = torch.stack(self._epoch_train_loss).mean()
         self.train_recon_loss = torch.stack(self._epoch_recon_loss).mean()
         self.train_jac_loss = torch.stack(self._epoch_jac_loss).mean()
+        self.train_ratio = torch.stack(self._epoch_ratio).mean()
         self.train_lipschitz_norm = torch.stack(self._epoch_lipschitz_norm).mean()
         self.train_lambda = torch.stack(self._epoch_lambda).mean()
 
         self.log("train_loss", self.train_loss, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_recon_loss", self.train_recon_loss, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_jac_loss", self.train_jac_loss, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_recon_loss", self.train_recon_loss, on_epoch=True, sync_dist=True)
+        self.log("train_jac_loss", self.train_jac_loss, on_epoch=True, sync_dist=True)
+        self.log("train_ratio", self.train_ratio, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("train_lipschitz_norm", self.train_lipschitz_norm, on_epoch=True, sync_dist=True)
-        self.log("train_lambda", self.train_lambda, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train_lambda", self.train_lambda, on_epoch=True, sync_dist=True)
 
         self._epoch_train_loss.clear()
         self._epoch_recon_loss.clear()
         self._epoch_jac_loss.clear()
+        self._epoch_ratio.clear()
         self._epoch_lipschitz_norm.clear()
         self._epoch_lambda.clear()
 
@@ -198,6 +205,7 @@ class LitAutoEncoder(pl.LightningModule):
                 "train_loss": self.train_loss,
                 "train_recon_loss": self.train_recon_loss,
                 "train_jac_loss": self.train_jac_loss,
+                "train_ratio": self.train_ratio,
                 "train_lambda": float(self.current_lambda),
                 "val_loss": float(epoch_val_loss),
                 **metrics,
