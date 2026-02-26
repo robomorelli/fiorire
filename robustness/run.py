@@ -18,6 +18,7 @@ torch.set_float32_matmul_precision("medium")
 def main(config_path: str | Path, mode: str = "train"):
     cfg = OmegaConf.load(config_path)
     cfg = cast(DictConfig, cfg)
+    cfg["metrics"]["test_mode"] = "anom" if cfg["metrics"]["perturb_test"] else "clean"
 
     loggers = [
         TensorBoardLogger(
@@ -27,7 +28,7 @@ def main(config_path: str | Path, mode: str = "train"):
         )
     ]
 
-    datamodule = DataModule(cfg, mode=mode, test_mode=None)
+    datamodule = DataModule(cfg, mode=mode)
     datamodule.setup()
     model = LitAutoEncoder(cfg)
 
@@ -67,26 +68,23 @@ def main(config_path: str | Path, mode: str = "train"):
     elif mode == "test":
         print("Test: carico modello da checkpoint Lightning")
 
-        model = LitAutoEncoder.load_from_checkpoint(
-            cfg["opt"]["checkpoint_path"],
-            cfg=cfg,
-            strict=True,
-        )
-
         trainer = Trainer(
             accelerator=cfg["trainer"]["accelerator"],
             devices=cfg["trainer"]["devices"],
             strategy=cfg["trainer"]["strategy"],
             accumulate_grad_batches=cfg["trainer"]["accumulate_grad_batches"],
             logger=loggers,
+            inference_mode=False,
         )
 
-        print("Running CLEAN test")
-        datamodule_clean = DataModule(cfg, mode="test", test_mode="clean")
-        trainer.test(model, datamodule=datamodule_clean)
-
-        print("Running ANOMALOUS test")
-        datamodule_anom = DataModule(cfg, mode="test", test_mode="anom")
+        print(f"Running {cfg["metrics"]["test_mode"]} test")
+        datamodule_anom = DataModule(cfg, mode="test")
+        model = LitAutoEncoder.load_from_checkpoint(
+            cfg["defense"]["checkpoint_path"],
+            cfg=cfg,
+            strict=True,
+            weights_only=False,
+        )
         trainer.test(model, datamodule=datamodule_anom)
 
     else:

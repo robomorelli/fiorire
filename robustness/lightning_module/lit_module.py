@@ -54,7 +54,7 @@ class LitAutoEncoder(pl.LightningModule):
         self.lipschitz_ctrl = LipschitzEMAController(
             init_lambda=cfg["defense"]["lambda_latent"],
             target_norm=cfg["defense"]["lipschitz_target"],
-            ema_decay=cfg["defense"]["lipschitz_ema"],
+            ema_decay = cfg["defense"].get("ema_decay", 0.0),
             lr=cfg["defense"]["lipschitz_lr"],
             min_lambda=cfg["defense"]["lambda_latent_min"],
             max_lambda=cfg["defense"]["lambda_latent_max"]
@@ -67,7 +67,6 @@ class LitAutoEncoder(pl.LightningModule):
         self._val_labels = []
 
         # test buffers
-        self.test_mode: Literal["clean", "anom"]
         self._test_scores = []
         self._test_labels = []
         self._test_metrics_epoch = []
@@ -96,7 +95,6 @@ class LitAutoEncoder(pl.LightningModule):
         feat_err = feature_errors(x, x_hat)
         self.train_feat_errors.append(feat_err.detach())
 
-        lipschitz_norm = torch.tensor(0.0, device=self.device)
         jac_loss = torch.tensor(0.0, device=self.device)
 
         warmup_epochs = self.cfg["defense"]["warmup_epochs"]
@@ -111,9 +109,6 @@ class LitAutoEncoder(pl.LightningModule):
             )
 
             jac_loss = lipschitz_norm ** 2
-
-            # adaptive lambda update
-            self.current_lambda, self.current_lipschitz = self.lipschitz_ctrl.update(lipschitz_norm)
 
         jac_contrib = self.current_lambda * jac_loss
         ratio = jac_contrib / recon_loss
@@ -134,6 +129,11 @@ class LitAutoEncoder(pl.LightningModule):
         all_feat_err = torch.cat(self.train_feat_errors, dim=0)  # [N,F]
         self.train_feat_median = all_feat_err.median(dim=0).values
         self.train_feat_errors.clear()
+
+        # calcola la media EMA della norma sui batch della epoca
+        avg_norm = torch.tensor(self._epoch_lipschitz_norm).mean()
+        # adaptive lambda update
+        self.current_lambda, self.current_lipschitz = self.lipschitz_ctrl.update(avg_norm)
 
         # epoch logging
         if not self._epoch_train_loss:
@@ -219,37 +219,38 @@ class LitAutoEncoder(pl.LightningModule):
     def test_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, y = batch
         perturb = self.cfg["metrics"]["perturb_test"]
-        epsilon_test = self.cfg["metrics"]["epsilon"]
+        epsilon = self.cfg["defense"]["epsilon"]
 
-        if perturb:
-            B = x.size(0)
-            n_adv = int(self.cfg["metrics"]["perturb_fraction"] * B)
-            x_adv = pgd_attack(
-                self,
-                x[:n_adv].detach().clone(),
-                epsilon=epsilon_test,
-                alpha=epsilon_test / self.cfg["defense"]["pgd_steps"],
-                steps=self.cfg["defense"]["pgd_steps"],
-            )
-            x_real = random_real_perturbation(
-                x[n_adv:], self.cfg["metrics"]["real_noise_params"]
-            )
-            x = torch.cat([x_adv, x_real], dim=0)
+        with torch.enable_grad():  # attiva grad per tutto ciò che ha backward
+            if perturb:
+                B = x.size(0)
+                n_adv = int(self.cfg["metrics"]["perturb_fraction"] * B)
+                x_adv = pgd_attack(
+                    self,
+                    x[:n_adv].detach().clone(),
+                    epsilon=epsilon,
+                    alpha=epsilon / self.cfg["defense"]["pgd_steps"],
+                    steps=self.cfg["defense"]["pgd_steps"],
+                )
+                x_real = random_real_perturbation(
+                    x[n_adv:], self.cfg["metrics"]["real_noise_params"]
+                )
+                x = torch.cat([x_adv, x_real], dim=0)
 
-        x_rec, rec_err = reconstruct_and_weight(
-            self.model.encoder,
-            self.model.decoder,
-            x,
-            self.cfg["defense"]["alpha"],
-            self.cfg["defense"]["num_iter"],
-            self.train_feat_median,
-        )
+            # backward-safe
+            x_rec, rec_err = reconstruct_and_weight(
+                self.model.encoder,
+                self.model.decoder,
+                x,
+                self.cfg["defense"]["alpha"],
+                self.cfg["defense"]["num_iter"],
+                self.train_feat_median,
+            )
 
         # log reconstruction error per batch
         self.log(
-            f"{self.test_mode}_rec_error",
+            f"{self.cfg['metrics']['test_mode']}_rec_error",
             rec_err.mean(),
-            prog_bar=True,
             on_epoch=True,
             sync_dist=True,
         )
@@ -271,7 +272,7 @@ class LitAutoEncoder(pl.LightningModule):
         self._test_labels.clear()
         self._test_metrics_epoch.clear()
         assert self.trainer.test_dataloaders is not None
-        self._test_dataloader = self.trainer.test_dataloaders[0]
+        self._test_dataloader = self.trainer.test_dataloaders
 
     def on_test_epoch_end(self):
         if not self.trainer.is_global_zero:
@@ -301,32 +302,12 @@ class LitAutoEncoder(pl.LightningModule):
 
         # log globale
         for k, v in all_metrics.items():
-            self.log(f"{self.test_mode}_{k}", v)
+            self.log(f"{self.cfg['metrics']['test_mode']}_{k}", v, sync_dist=True)
 
         # scrive CSV batch-wise + aggregate epoca
         csv_data = self._test_metrics_epoch.copy()
         csv_data.append({"batch_idx": "ALL", **all_metrics})
         write_metrics_csv(csv_data, out_dir)
-
-        # robustness curves (solo se non clean)
-        if self.test_mode != "clean" and self.cfg["curves"]["enabled"]:
-            curves = perturbation_dict(self, self.cfg)
-            self._robustness_results = {}
-            for name, (params, perturb_builder) in curves.items():
-                self._robustness_results[name] = {}
-                for p in params:
-                    self._robustness_results[name][p] = self._evaluate_on_loader(
-                        self._test_dataloader,
-                        perturb_fn=perturb_builder(p),
-                    )
-
-            out_dir_curves = out_dir / "curves"
-            out_dir_curves.mkdir(parents=True, exist_ok=True)
-            plot_robustness_curves(
-                clean_metrics=self._clean_metrics,
-                results=self._robustness_results,
-                out_dir=str(out_dir_curves),
-            )
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -341,74 +322,40 @@ class LitAutoEncoder(pl.LightningModule):
         self.train_feat_median = checkpoint.get("train_feat_median", None)
 
     def _test_out_dir(self) -> Path:
-        return Path(self.cfg["trainer"]["out_dir"]) / self.test_mode
-
-    def _evaluate_on_loader(self, dataloader, perturb_fn=None, requires_grad=False):
-        """
-        Calcola tutte le metriche (reconstruction + detection) batch-wise.
-        Restituisce la media su tutti i batch.
-        """
-        self.eval()
-        metrics_acc = []
-        all_scores = []
-        all_labels = []
-
-        for batch in dataloader:
-            batch: tuple[Tensor, Tensor]
-            x, y = batch
-            x = x.to(self.device)
-
-            if perturb_fn is not None:
-                if requires_grad:
-                    x = perturb_fn(x)
-                else:
-                    with torch.no_grad():
-                        x = perturb_fn(x)
-
-            with torch.no_grad():
-                x_rec, rec_err = reconstruct_and_weight(
-                    self.model.encoder,
-                    self.model.decoder,
-                    x,
-                    self.cfg["defense"]["alpha"],
-                    self.cfg["defense"]["num_iter"],
-                    self.train_feat_median,
-                )
-
-            # accumula scores e labels
-            all_scores.append(rec_err.detach().cpu().numpy())
-            all_labels.append(y.detach().cpu().numpy())
-
-            # calcola metriche di ricostruzione batch-wise
-            metrics = compute_metrics(
-                x=x,
-                x_rec=x_rec,
-                labels=None,
-                scores=None,
-                metric_types=self.cfg["metrics"].types,
-            )
-            metrics["rec_error"] = rec_err.mean().item()
-            metrics_acc.append(metrics)
-
-        # concatena per detection globale
-        all_scores = np.concatenate(all_scores, axis=0)
-        all_labels = np.concatenate(all_labels, axis=0)
-
-        # calcola detection metrics globali
-        detection_metrics = compute_metrics(
-            x=None,
-            x_rec=None,
-            labels=all_labels,
-            scores=all_scores,
-            metric_types=self.cfg["metrics"].types,
+        return (
+            Path(self.cfg["trainer"]["out_dir"])
+            / self.cfg["trainer"]["name_exp"]
+            / self.cfg["trainer"]["run_name"]
+            / self.cfg["metrics"]["test_mode"]
         )
+    
+    def set_test_configuration(
+        self,
+        test_mode: str,
+        perturb: bool,
+        epsilon: float = 0.0,
+        gaussian_std: float = 0.0,
+        dropout_prob: float = 0.0,
+        impulse_std: float = 0.0,
+    ):
+        """
+        Aggiorna dinamicamente la configurazione di test
+        senza ricreare il modello.
+        """
 
-        # media batch-wise delle ricostruzioni
-        recon_metrics = {
-            k: sum(m[k] for m in metrics_acc) / len(metrics_acc) for k in metrics_acc[0]
-        }
+        self.cfg["metrics"]["test_mode"] = test_mode
+        self.cfg["metrics"]["perturb_test"] = perturb
 
-        # unisci tutto
-        recon_metrics.update(detection_metrics)
+        # reset
+        self.cfg["defense"]["epsilon"] = 0.0
+        self.cfg["metrics"]["real_noise_params"]["gaussian_std"] = 0.0
+        self.cfg["metrics"]["real_noise_params"]["dropout_prob"] = 0.0
+        self.cfg["metrics"]["real_noise_params"]["impulse_std"] = 0.0
 
-        return recon_metrics
+        # set specifico
+        self.cfg["defense"]["epsilon"] = float(epsilon)
+        self.cfg["metrics"]["real_noise_params"]["gaussian_std"] = float(gaussian_std)
+        self.cfg["metrics"]["real_noise_params"]["dropout_prob"] = float(dropout_prob)
+        self.cfg["metrics"]["real_noise_params"]["impulse_std"] = float(impulse_std)
+
+        print(f"\n Test mode set to: {test_mode}")

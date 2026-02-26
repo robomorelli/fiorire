@@ -12,11 +12,10 @@ from robustness.dataset.dataset import TimeSeriesDataset
 
 
 class DataModule(pl.LightningDataModule):
-    def __init__(self, cfg: DictConfig, mode: str, test_mode: Optional[str]):
+    def __init__(self, cfg: DictConfig, mode: str):
         super().__init__()
         self.cfg = cfg
         self.mode = mode
-        self.test_mode = test_mode
 
     def setup(self, stage: str | None = None) -> None:
 
@@ -92,15 +91,11 @@ class DataModule(pl.LightningDataModule):
             )
 
         elif self.mode == "test":
-            if self.test_mode == "anom":
-                ratio = self.cfg["dataset"]["test_anomaly_ratio"]
-                delta_range = (
-                    self.cfg["dataset"]["delta_min"],
-                    self.cfg["dataset"]["delta_max"],
-                )
-            else:
-                ratio = 0
-                delta_range = None
+            ratio = self.cfg["dataset"]["test_anomaly_ratio"]
+            delta_range = (
+                self.cfg["dataset"]["delta_min"],
+                self.cfg["dataset"]["delta_max"],
+            )
 
             self.test_ds = self._build_dataset_with_anomalies(
                 base_data=test_data,
@@ -108,6 +103,14 @@ class DataModule(pl.LightningDataModule):
                 anomaly_ratio=ratio,
                 delta_range=delta_range,
             )
+
+            self.test_sampler = None
+            if self.cfg["dataset"]["shuffle_test"] == True:
+                self.test_sampler = RandomSampler(
+                    self.test_ds,
+                    replacement=False,
+                    generator=torch.Generator().manual_seed(42),
+                )
 
     def train_dataloader(self) -> DataLoader:
         if self.mode != "train":
@@ -141,6 +144,7 @@ class DataModule(pl.LightningDataModule):
         return DataLoader(
             self.test_ds,
             batch_size=self.cfg["opt"]["batch_size"],
+            sampler=self.test_sampler,
             shuffle=False,
             num_workers=self.cfg["dataset"]["num_workers"],
             pin_memory=True,

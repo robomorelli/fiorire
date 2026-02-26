@@ -21,8 +21,12 @@ def perturbation_dict(model: nn.Module, cfg: DictConfig) -> dict[str, tuple]:
     return {
         "adversarial": (
             cfg["curves"]["adversarial_epsilons"],
-            lambda steps: lambda alpha: lambda eps: lambda x: pgd_attack(
-                model, x, eps, alpha, steps
+            lambda eps: lambda x: pgd_attack(
+                model,
+                x,
+                eps,
+                alpha=cfg["defense"]["alpha"],
+                steps=cfg["defense"]["pgd_steps"],
             ),
         ),
         "gaussian": (
@@ -42,6 +46,7 @@ def perturbation_dict(model: nn.Module, cfg: DictConfig) -> dict[str, tuple]:
 
 def plot_robustness_curves(
     clean_metrics: dict[str, float],
+    anom_metrics: dict[str, float],
     results: dict[str, dict[float, dict[str, float]]],
     out_dir: str,
 ):
@@ -60,13 +65,17 @@ def plot_robustness_curves(
 
     for metric in metrics:
         plt.figure(figsize=(6, 4))
-
-        # clean baseline
         plt.axhline(
             clean_metrics[metric],
             linestyle="--",
             color="black",
             label="clean baseline",
+        )
+        plt.axhline(
+            anom_metrics[metric],
+            linestyle=":",
+            color="red",
+            label="anom baseline",
         )
 
         for perturb_type, values in results.items():

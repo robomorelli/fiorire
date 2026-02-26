@@ -17,11 +17,11 @@ def approximate_projection(
     Approximate projection in latent space.
 
     Args:
-        encoder: callable, maps x -> z
-        decoder: callable, maps z -> x_hat
-        x: input batch [B, W, F]
+        encoder: maps x -> z
+        decoder: maps z -> x_hat
+        x: input batch [B, ...]
         alpha: step size
-        num_iter: number of projection steps
+        num_iter: number of latent optimization steps
         loss_fn: reconstruction loss (default: SmoothL1 sum)
 
     Returns:
@@ -31,26 +31,26 @@ def approximate_projection(
     if loss_fn is None:
         loss_fn = torch.nn.SmoothL1Loss(reduction="sum")
 
-    with torch.no_grad():
-        z: Tensor = encoder(x)
+    # ottieni latent
+    z = encoder(x).detach()  # partiamo da detached
+    z.requires_grad_(True)
 
-    z = z.detach().clone().requires_grad_(True)
+    if num_iter > 0:
+        for _ in range(num_iter):
+            x_rec = decoder(z)
+            loss = loss_fn(x_rec, x)
+            
+            # backward su z
+            loss.backward()
 
-    for _ in range(num_iter):
-        x_rec: Tensor = decoder(z)
-        loss = loss_fn(x_rec, x)
-
-        loss.backward()
-
-        assert z.grad is not None
-        grad = z.grad
-
+            with torch.no_grad():
+                z -= alpha * z.grad  # gradient step
+                z.grad.zero_()       # reset grad per step successivo
+    else:
         with torch.no_grad():
-            z -= alpha * grad
-            grad.zero_()
+            x_rec = decoder(z)
 
     return x_rec.detach(), z.detach()
-
 
 def apply_feature_weighting(
     rec_err_feat: Tensor,
