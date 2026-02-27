@@ -33,7 +33,6 @@ class LitAutoEncoder(pl.LightningModule):
         self.cfg = cfg
         self.model = CONV_AE2D(cfg)
         self.lr = cfg["opt"]["lr"]
-        # self.epsilon_train = cfg["defense"]["epsilon"]
         self.lambda_latent = cfg["defense"]["lambda_latent"]
 
         # training buffers
@@ -118,7 +117,7 @@ class LitAutoEncoder(pl.LightningModule):
         self._epoch_recon_loss.append(recon_loss.detach())
         self._epoch_jac_loss.append(jac_contrib.detach())
         self._epoch_ratio.append(ratio.detach())
-        self._epoch_lipschitz_norm.append(torch.tensor(self.current_lipschitz, device=self.device))
+        self._epoch_lipschitz_norm.append(torch.tensor(lipschitz_norm, device=self.device))
         self._epoch_lambda.append(torch.tensor(self.current_lambda, device=self.device))
 
         return loss
@@ -218,13 +217,17 @@ class LitAutoEncoder(pl.LightningModule):
 
     def test_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, y = batch
+        apply_defense = self.cfg["defense"]["apply_defense"]
         perturb = self.cfg["metrics"]["perturb_test"]
-        epsilon = self.cfg["defense"]["epsilon"]
+        epsilon = self.cfg["metrics"]["epsilon"]
+        need_grad = perturb or apply_defense
 
-        with torch.enable_grad():  # attiva grad per tutto ciò che ha backward
+        with torch.enable_grad() if need_grad else torch.no_grad():
+
             if perturb:
                 B = x.size(0)
                 n_adv = int(self.cfg["metrics"]["perturb_fraction"] * B)
+
                 x_adv = pgd_attack(
                     self,
                     x[:n_adv].detach().clone(),
@@ -232,20 +235,26 @@ class LitAutoEncoder(pl.LightningModule):
                     alpha=epsilon / self.cfg["defense"]["pgd_steps"],
                     steps=self.cfg["defense"]["pgd_steps"],
                 )
+
                 x_real = random_real_perturbation(
                     x[n_adv:], self.cfg["metrics"]["real_noise_params"]
                 )
+
                 x = torch.cat([x_adv, x_real], dim=0)
 
-            # backward-safe
-            x_rec, rec_err = reconstruct_and_weight(
-                self.model.encoder,
-                self.model.decoder,
-                x,
-                self.cfg["defense"]["alpha"],
-                self.cfg["defense"]["num_iter"],
-                self.train_feat_median,
-            )
+            if apply_defense:
+                x_rec, rec_err = reconstruct_and_weight(
+                    self.model.encoder,
+                    self.model.decoder,
+                    x,
+                    self.cfg["defense"]["alpha"],
+                    self.cfg["defense"]["num_iter"],
+                    self.train_feat_median,
+                )
+            else:
+                # normal test
+                x_rec = self.model.decoder(self.model.encoder(x))
+                rec_err = ((x_rec - x) ** 2).mean(dim=(1, 2, 3))  # MSE puro per sample
 
         # log reconstruction error per batch
         self.log(
@@ -279,26 +288,18 @@ class LitAutoEncoder(pl.LightningModule):
             return
 
         out_dir = self._test_out_dir()
-
+        
         # compute global detection metrics
         scores = np.concatenate(self._test_scores, axis=0)
         labels = np.concatenate(self._test_labels, axis=0)
-
-        # ricostruzione media batch-wise
-        anomaly_score_mean = float(
-            np.mean([m["anomaly_score"] for m in self._test_metrics_epoch])
-        )
-
-        # calcola tutte le metriche (detection + reconstruction)
         all_metrics = compute_metrics(
-            x=None,  # non serve ricostruzione globale, già nel rec_error
+            x=None,
             x_rec=None,
             labels=labels,
             scores=scores,
             metric_types=self.cfg["metrics"].types,
         )
-        # aggiungi il rec_error medio
-        all_metrics["anomaly_score"] = anomaly_score_mean
+        all_metrics["anomaly_score"] = float(scores.mean())
 
         # log globale
         for k, v in all_metrics.items():
@@ -307,7 +308,16 @@ class LitAutoEncoder(pl.LightningModule):
         # scrive CSV batch-wise + aggregate epoca
         csv_data = self._test_metrics_epoch.copy()
         csv_data.append({"batch_idx": "ALL", **all_metrics})
-        write_metrics_csv(csv_data, out_dir)
+
+        # se è una perturbation, il nome del CSV include il parametro
+        test_mode_parts = self.cfg["metrics"]["test_mode"].split("/")
+        if "perturbations" in test_mode_parts:
+            param = test_mode_parts[-1]  # prendi sempre l'ultimo pezzo
+            out_dir.mkdir(parents=True, exist_ok=True)
+            write_metrics_csv(csv_data, out_dir, filename=f"{param}_metrics.csv")
+        else:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            write_metrics_csv(csv_data, out_dir, filename="metrics.csv")
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -322,18 +332,31 @@ class LitAutoEncoder(pl.LightningModule):
         self.train_feat_median = checkpoint.get("train_feat_median", None)
 
     def _test_out_dir(self) -> Path:
-        return (
+        base = (
             Path(self.cfg["trainer"]["out_dir"])
             / self.cfg["trainer"]["name_exp"]
             / self.cfg["trainer"]["run_name"]
-            / self.cfg["metrics"]["test_mode"]
         )
+
+        suffix = self.cfg["metrics"].get("defense_suffix", "")
+        if suffix:
+            base = base / suffix
+
+        test_mode = self.cfg["metrics"]["test_mode"]
+
+        if "perturbations/" in test_mode:
+            parts = test_mode.split("/")
+            perturb_type = parts[2]  # suffix/perturbations/<tipo>/<param>
+            return base / "perturbations" / perturb_type
+        else:
+            return base / test_mode.split("/")[-1]
     
     def set_test_configuration(
         self,
         test_mode: str,
         perturb: bool,
-        epsilon: float = 0.0,
+        apply_defense: bool = False,   
+        pgd_epsilon: float = 0.0,
         gaussian_std: float = 0.0,
         dropout_prob: float = 0.0,
         impulse_std: float = 0.0,
@@ -345,15 +368,16 @@ class LitAutoEncoder(pl.LightningModule):
 
         self.cfg["metrics"]["test_mode"] = test_mode
         self.cfg["metrics"]["perturb_test"] = perturb
+        self.cfg["defense"]["apply_defense"] = apply_defense
 
         # reset
-        self.cfg["defense"]["epsilon"] = 0.0
+        self.cfg["metrics"]["pgd_epsilon"] = 0.0
         self.cfg["metrics"]["real_noise_params"]["gaussian_std"] = 0.0
         self.cfg["metrics"]["real_noise_params"]["dropout_prob"] = 0.0
         self.cfg["metrics"]["real_noise_params"]["impulse_std"] = 0.0
 
         # set specifico
-        self.cfg["defense"]["epsilon"] = float(epsilon)
+        self.cfg["metrics"]["pgd_epsilon"] = float(pgd_epsilon)
         self.cfg["metrics"]["real_noise_params"]["gaussian_std"] = float(gaussian_std)
         self.cfg["metrics"]["real_noise_params"]["dropout_prob"] = float(dropout_prob)
         self.cfg["metrics"]["real_noise_params"]["impulse_std"] = float(impulse_std)

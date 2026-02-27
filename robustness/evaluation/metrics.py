@@ -26,7 +26,7 @@ def compute_metrics(
         y_pred_np = x_rec.detach().float().cpu().numpy().flatten()
 
         if "mse" in metric_types:
-            metrics["anomaly score"] = float(mean_squared_error(y_true_np, y_pred_np))
+            metrics["anomaly_score"] = float(mean_squared_error(y_true_np, y_pred_np))
 
         if "mae" in metric_types:
             metrics["mae"] = float(mean_absolute_error(y_true_np, y_pred_np))
@@ -35,7 +35,7 @@ def compute_metrics(
             mse = mean_squared_error(y_true_np, y_pred_np)
             mae = mean_absolute_error(y_true_np, y_pred_np)
             metrics["mse/mae"] = float(mse / (mae + 1e-8))
-            metrics["anomaly score"] = mse
+            metrics["anomaly_score"] = mse
             metrics["mae"] = mae
 
     # detection metrics

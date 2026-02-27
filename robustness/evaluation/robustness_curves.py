@@ -20,7 +20,7 @@ def perturbation_dict(model: nn.Module, cfg: DictConfig) -> dict[str, tuple]:
     """
     return {
         "adversarial": (
-            cfg["curves"]["adversarial_epsilons"],
+            cfg["curves"]["pgd_epsilons"],
             lambda eps: lambda x: pgd_attack(
                 model,
                 x,

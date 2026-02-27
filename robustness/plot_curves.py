@@ -1,31 +1,30 @@
-import copy
 from pathlib import Path
 from typing import cast
 import pandas as pd
 from omegaconf import OmegaConf, DictConfig
 from fire import Fire
-
+import torch
 from pytorch_lightning import Trainer
-from pytorch_lightning.loggers import TensorBoardLogger
 
-# importa il tuo main
-from robustness.run import main  # <-- cambia nome file se diverso
 from robustness.lightning_module.lit_module import LitAutoEncoder
 from robustness.dataset.data_module import DataModule
-# importa la funzione di plotting che hai già
 from robustness.evaluation.robustness_curves import plot_robustness_curves
+
+torch.set_float32_matmul_precision('medium')
 
 
 def _load_all_metrics(csv_file: Path) -> dict:
     df = pd.read_csv(csv_file)
+    # tieni solo la riga aggregata
     row = df[df["batch_idx"] == "ALL"]
     if row.empty:
         raise ValueError(f"{csv_file} non contiene riga ALL")
+    # rimuovi batch_idx prima di plottare
+    row = row.drop(columns=["batch_idx"])
     return row.iloc[0].to_dict()
 
 
 def run_and_plot(config_path: str | Path):
-
     base_cfg = OmegaConf.load(config_path)
     base_cfg = cast(DictConfig, base_cfg)
 
@@ -33,10 +32,7 @@ def run_and_plot(config_path: str | Path):
         raise ValueError("curves.enabled è False nel config")
 
     base_run_name = base_cfg["trainer"]["run_name"]
-    out_root = (
-        Path(base_cfg["trainer"]["out_dir"])
-        / base_cfg["trainer"]["name_exp"]
-    )
+    out_root = Path(base_cfg["trainer"]["out_dir"]) / base_cfg["trainer"]["name_exp"]
 
     datamodule = DataModule(base_cfg, mode="test")
     model = LitAutoEncoder.load_from_checkpoint(
@@ -54,97 +50,90 @@ def run_and_plot(config_path: str | Path):
     )
     print("Model loaded.\n")
 
-    print("Running CLEAN test")
-    model.set_test_configuration(
-        test_mode="clean",
-        perturb=False,
-    )
-    trainer.test(model, datamodule=datamodule)
-    clean_csv = (
-        out_root
-        / base_run_name
-        / "clean"
-        / "metrics.csv"
-    )
-    clean_metrics = _load_all_metrics(clean_csv)
+    # loop su defense off/on
+    for defense_flag in [False, True]:
+        suffix = "def_on" if defense_flag else "def_off"
+        print(f"\nRunning tests with defense = {defense_flag} ({suffix})")
 
-    print("Running ANOM test")
-    model.set_test_configuration(
-        test_mode="anom",
-        perturb=True,
-    )
-    trainer.test(model, datamodule=datamodule)
-    anom_csv = (
-        out_root
-        / base_run_name
-        / "anom"
-        / "metrics.csv"
-    )
-    anom_metrics = _load_all_metrics(anom_csv)
+        defense_folder = out_root / base_run_name / suffix
+        defense_folder.mkdir(parents=True, exist_ok=True)
+        model.cfg["defense"]["apply_defense"] = defense_flag
+        model.cfg["metrics"]["defense_suffix"] = suffix
 
-    # Perturbations
-    perturbation_map = {
-        "adversarial": base_cfg["curves"]["adversarial_epsilons"],
-        "gaussian": base_cfg["curves"]["gaussian_stds"],
-        "dropout": base_cfg["curves"]["dropout_probs"],
-        "impulse": base_cfg["curves"]["impulse_stds"],
-    }
+        # clean & anom folders
+        clean_dir = defense_folder / "clean"
+        clean_dir.mkdir(parents=True, exist_ok=True)
+        anom_dir = defense_folder / "anom"
+        anom_dir.mkdir(parents=True, exist_ok=True)
 
-    results = {}
-    for perturb_type, param_list in perturbation_map.items():
-        results[perturb_type] = {}
-        for p in param_list:
-            print(f"Running {perturb_type} | param={p}")
+        # ---------- CLEAN ----------
+        print("Running CLEAN test")
+        model.set_test_configuration(test_mode="clean", perturb=False, apply_defense=defense_flag)
+        model.cfg["metrics"]["test_mode"] = f"{suffix}/clean"
+        trainer.test(model, datamodule=datamodule)
+        clean_metrics = _load_all_metrics(clean_dir / "metrics.csv")
 
-            if perturb_type == "adversarial":
+        # ---------- ANOM ----------
+        print("Running ANOM test")
+        model.set_test_configuration(test_mode="anom", perturb=True, apply_defense=defense_flag)
+        model.cfg["metrics"]["test_mode"] = f"{suffix}/anom"
+        trainer.test(model, datamodule=datamodule)
+        anom_metrics = _load_all_metrics(anom_dir / "metrics.csv")
+
+        # ---------- PERTURBATIONS ----------
+        perturbation_map = {
+            "pgd_epsilon": base_cfg["curves"]["pgd_epsilons"],
+            "gaussian_std": base_cfg["curves"]["gaussian_stds"],
+            "dropout_prob": base_cfg["curves"]["dropout_probs"],
+            "impulse_std": base_cfg["curves"]["impulse_stds"],
+        }
+
+        perturb_base = defense_folder / "perturbations"
+        perturb_base.mkdir(exist_ok=True)
+
+        for perturb_type, param_list in perturbation_map.items():
+            perturb_type_dir = perturb_base / perturb_type
+            perturb_type_dir.mkdir(exist_ok=True)
+
+            for p in param_list:
+                print(f"Running {perturb_type}={p}")
+                test_mode_name = f"{perturb_type}_{p}"
+
+                # setta i parametri corretti
+                kwargs = {perturb_type: float(p)}
                 model.set_test_configuration(
-                    test_mode=f"{perturb_type}_{p}",
+                    test_mode=test_mode_name,
                     perturb=True,
-                    epsilon=float(p),
+                    apply_defense=defense_flag,
+                    **kwargs
                 )
 
-            elif perturb_type == "gaussian":
-                model.set_test_configuration(
-                    test_mode=f"{perturb_type}_{p}",
-                    perturb=True,
-                    gaussian_std=float(p),
-                )
+                # test
+                model.cfg["metrics"]["test_mode"] = f"{suffix}/perturbations/{perturb_type}/{p}"
+                trainer.test(model, datamodule=datamodule)
 
-            elif perturb_type == "dropout":
-                model.set_test_configuration(
-                    test_mode=f"{perturb_type}_{p}",
-                    perturb=True,
-                    dropout_prob=float(p),
-                )
+        # ---------- LEGGI TUTTI I CSV DELLE PERTURBAZIONI ----------
+        results = {}
+        for perturb_type, param_list in perturbation_map.items():
+            results[perturb_type] = {}
+            perturb_type_dir = perturb_base / perturb_type
+            for csv_file in perturb_type_dir.glob("*_metrics.csv"):
+                # estrae il parametro dal nome del file
+                param = float(csv_file.stem.split("_")[0])
+                results[perturb_type][param] = _load_all_metrics(csv_file)
 
-            elif perturb_type == "impulse":
-                model.set_test_configuration(
-                    test_mode=f"{perturb_type}_{p}",
-                    perturb=True,
-                    impulse_std=float(p),
-                )
+        print("RESULTS STRUCTURE:", results)
 
-            trainer.test(model, datamodule=datamodule)
+        # ---------- PLOT CURVES ----------
+        print("\nPlotting robustness curves")
+        plot_robustness_curves(
+            clean_metrics=clean_metrics,
+            anom_metrics=anom_metrics,
+            results=results,
+            out_dir=str(defense_folder / "robustness_curves"),
+        )
+        print(f"Robustness curves saved ({suffix})")
 
-            csv_path = (
-                out_root
-                / base_run_name
-                / f"{perturb_type}_{p}"
-                / "metrics.csv"
-            )
-
-            metrics_dict = _load_all_metrics(csv_path)
-            results[perturb_type][float(p)] = metrics_dict
-
-    # Ploting curves
-    print("\nPlotting robustness curves")
-    plot_robustness_curves(
-        clean_metrics=clean_metrics,
-        anom_metrics=anom_metrics,
-        results=results,
-        out_dir=str(out_root / base_run_name / "robustness_curves"),
-    )
-    print("Robustness curves saved.")
 
 if __name__ == "__main__":
     Fire(run_and_plot)
