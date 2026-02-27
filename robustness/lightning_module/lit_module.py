@@ -64,6 +64,8 @@ class LitAutoEncoder(pl.LightningModule):
         # validation epoch buffers
         self._val_scores = []
         self._val_labels = []
+        self._val_lipschitz_norm = []
+        self.val_lipschitz_norm = None
 
         # test buffers
         self._test_scores = []
@@ -95,20 +97,18 @@ class LitAutoEncoder(pl.LightningModule):
         self.train_feat_errors.append(feat_err.detach())
 
         jac_loss = torch.tensor(0.0, device=self.device)
-
+        lipschitz_norm = compute_jacobian_norm(
+                self.model.encoder,
+                x,
+            )
         warmup_epochs = self.cfg["defense"]["warmup_epochs"]
 
         if (
             self.cfg["defense"]["regularization"]
             and self.current_epoch >= warmup_epochs
         ):
-            lipschitz_norm = compute_jacobian_norm(
-                self.model.encoder,
-                x,
-            )
-
             jac_loss = lipschitz_norm ** 2
-
+        
         jac_contrib = self.current_lambda * jac_loss
         ratio = jac_contrib / recon_loss
         loss = recon_loss + self.current_lambda * jac_loss
@@ -117,7 +117,7 @@ class LitAutoEncoder(pl.LightningModule):
         self._epoch_recon_loss.append(recon_loss.detach())
         self._epoch_jac_loss.append(jac_contrib.detach())
         self._epoch_ratio.append(ratio.detach())
-        self._epoch_lipschitz_norm.append(torch.tensor(lipschitz_norm, device=self.device))
+        self._epoch_lipschitz_norm.append(lipschitz_norm.detach())
         self._epoch_lambda.append(torch.tensor(self.current_lambda, device=self.device))
 
         return loss
@@ -129,10 +129,12 @@ class LitAutoEncoder(pl.LightningModule):
         self.train_feat_median = all_feat_err.median(dim=0).values
         self.train_feat_errors.clear()
 
-        # calcola la media EMA della norma sui batch della epoca
-        avg_norm = torch.tensor(self._epoch_lipschitz_norm).mean()
-        # adaptive lambda update
-        self.current_lambda, self.current_lipschitz = self.lipschitz_ctrl.update(avg_norm)
+        avg_norm = torch.stack(self._epoch_lipschitz_norm).mean()
+
+        if self.cfg["defense"]["regularization"]:
+            self.current_lambda, self.current_lipschitz = self.lipschitz_ctrl.update(avg_norm)
+        else:
+            self.current_lipschitz = avg_norm
 
         # epoch logging
         if not self._epoch_train_loss:
@@ -141,7 +143,7 @@ class LitAutoEncoder(pl.LightningModule):
         self.train_recon_loss = torch.stack(self._epoch_recon_loss).mean()
         self.train_jac_loss = torch.stack(self._epoch_jac_loss).mean()
         self.train_ratio = torch.stack(self._epoch_ratio).mean()
-        self.train_lipschitz_norm = torch.stack(self._epoch_lipschitz_norm).mean()
+        self.train_lipschitz_norm = avg_norm
         self.train_lambda = torch.stack(self._epoch_lambda).mean()
 
         self.log("train_loss", self.train_loss, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -157,16 +159,31 @@ class LitAutoEncoder(pl.LightningModule):
         self._epoch_ratio.clear()
         self._epoch_lipschitz_norm.clear()
         self._epoch_lambda.clear()
-
+    
     def validation_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, y = batch
+        x = x.requires_grad_(True)
+
         x_rec = self(x)
 
-        loss = reconstruction_loss(x, x_rec, reduction = "none")
-        rec_err = loss.view(x.size(0), -1).mean(dim=1)  # shape: (B,)
+        loss = reconstruction_loss(x, x_rec, reduction="none")
+        rec_err = loss.view(x.size(0), -1).mean(dim=1) # shape: (B,)
 
         self._val_scores.append(rec_err.detach())
         self._val_labels.append(y.detach())
+
+        # compute Lipschitz only at target epoch
+        target_epoch = self.cfg["defense"]["save_lipschitz"]
+
+        if (
+            not self.cfg["defense"]["regularization"]
+            and self.current_epoch == target_epoch
+        ):
+            lipschitz_norm = compute_jacobian_norm(
+                self.model.encoder,
+                x,
+            )
+            self._val_lipschitz_norm.append(lipschitz_norm.detach())
 
         return loss
 
@@ -180,6 +197,18 @@ class LitAutoEncoder(pl.LightningModule):
         epoch_val_loss = torch.tensor(all_scores.mean(), device=self.device)
         # log per epoca
         self.log("val_loss", epoch_val_loss, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        target_epoch = self.cfg["defense"]["save_lipschitz"]
+        if (
+            not self.cfg["defense"]["regularization"]
+            and self.current_epoch == target_epoch
+            and self._val_lipschitz_norm
+        ):
+            self.val_lipschitz_norm = torch.stack(
+                self._val_lipschitz_norm
+            ).mean()
+
+            self._val_lipschitz_norm.clear()
 
         metrics = compute_metrics(
             x=None,
@@ -327,6 +356,8 @@ class LitAutoEncoder(pl.LightningModule):
     def on_save_checkpoint(self, checkpoint):
         if hasattr(self, "train_feat_median"):
             checkpoint["train_feat_median"] = self.train_feat_median
+        if self.val_lipschitz_norm is not None:
+            checkpoint["val_lipschitz_norm"] = float(self.val_lipschitz_norm)
 
     def on_load_checkpoint(self, checkpoint):
         self.train_feat_median = checkpoint.get("train_feat_median", None)
