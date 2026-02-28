@@ -3,7 +3,7 @@ from omegaconf import DictConfig
 import pytorch_lightning as pl
 import torch
 from torch import Tensor
-from typing import Literal
+from typing import Literal, cast
 import numpy as np
 
 from models.conv_ae2D import CONV_AE2D
@@ -64,7 +64,7 @@ class LitAutoEncoder(pl.LightningModule):
         # validation epoch buffers
         self._val_scores = []
         self._val_labels = []
-        self._val_lipschitz_norm = []
+        self._val_lipschitz_norm: list[Tensor] = []
         self.val_lipschitz_norm = None
 
         # test buffers
@@ -179,10 +179,14 @@ class LitAutoEncoder(pl.LightningModule):
             not self.cfg["defense"]["regularization"]
             and self.current_epoch == target_epoch
         ):
-            lipschitz_norm = compute_jacobian_norm(
-                self.model.encoder,
-                x,
-            )
+            with torch.enable_grad():
+                x = x.requires_grad_(True)
+
+                lipschitz_norm = compute_jacobian_norm(
+                    self.model.encoder,
+                    x,
+                )
+
             self._val_lipschitz_norm.append(lipschitz_norm.detach())
 
         return loss
@@ -197,16 +201,19 @@ class LitAutoEncoder(pl.LightningModule):
         epoch_val_loss = torch.tensor(all_scores.mean(), device=self.device)
         # log per epoca
         self.log("val_loss", epoch_val_loss, on_epoch=True, prog_bar=True, sync_dist=True)
-
+        
         target_epoch = self.cfg["defense"]["save_lipschitz"]
         if (
             not self.cfg["defense"]["regularization"]
             and self.current_epoch == target_epoch
             and self._val_lipschitz_norm
         ):
-            self.val_lipschitz_norm = torch.stack(
-                self._val_lipschitz_norm
-            ).mean()
+            local_mean = torch.stack(self._val_lipschitz_norm).mean()
+
+            # media tra GPU
+            gathered = cast(Tensor, self.all_gather(local_mean))
+            global_mean = gathered.mean()
+            self.val_lipschitz_norm = global_mean
 
             self._val_lipschitz_norm.clear()
 
