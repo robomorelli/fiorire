@@ -3,14 +3,10 @@ from omegaconf import DictConfig
 import pytorch_lightning as pl
 import torch
 from torch import Tensor
-from typing import Literal, cast
+from typing import cast
 import numpy as np
 
 from models.conv_ae2D import CONV_AE2D
-from robustness.evaluation.robustness_curves import (
-    plot_robustness_curves,
-    perturbation_dict,
-)
 from robustness.lightning_module.losses import (
     reconstruction_loss,
     feature_errors,
@@ -260,24 +256,40 @@ class LitAutoEncoder(pl.LightningModule):
 
         with torch.enable_grad() if need_grad else torch.no_grad():
             if perturb:
-                # trova solo gli anomali
                 anomaly_mask = (y == 1)
                 anomaly_idx = anomaly_mask.nonzero(as_tuple=True)[0]
 
                 if len(anomaly_idx) > 0:
-                    x_anom = x[anomaly_idx].detach().clone()
 
-                    x_adv = pgd_attack(
-                        self,
-                        x_anom,
-                        epsilon=epsilon,
-                        alpha=epsilon / self.cfg["defense"]["pgd_steps"],
-                        steps=self.cfg["defense"]["pgd_steps"],
-                    )
+                    # shuffle indici anomali
+                    perm = torch.randperm(len(anomaly_idx), device=x.device)
+                    anomaly_idx = anomaly_idx[perm]
 
-                    # reinserisci nei punti originali
+                    n_adv = int(self.cfg["metrics"]["perturb_fraction"] * len(anomaly_idx))
+
+                    adv_idx = anomaly_idx[:n_adv]
+                    real_idx = anomaly_idx[n_adv:]
+
                     x = x.clone()
-                    x[anomaly_idx] = x_adv
+
+                    # PGD adversarial (minimizza rec loss)
+                    if len(adv_idx) > 0:
+                        x_adv = pgd_attack(
+                            self,
+                            x[adv_idx].detach().clone(),
+                            epsilon=epsilon,
+                            alpha=epsilon / self.cfg["defense"]["pgd_steps"],
+                            steps=self.cfg["defense"]["pgd_steps"],
+                        )
+                        x[adv_idx] = x_adv
+
+                    # Perturbazioni reali
+                    if len(real_idx) > 0:
+                        x_real = random_real_perturbation(
+                            x[real_idx],
+                            self.cfg["metrics"]["real_noise_params"],
+                        )
+                        x[real_idx] = x_real
 
             if apply_defense:
                 x_rec, rec_err = reconstruct_and_weight(
