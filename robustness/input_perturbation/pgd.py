@@ -29,7 +29,7 @@ def pgd_attack(
             )[0]
 
         with torch.no_grad():
-            x_adv = x_adv + alpha * grad.sign()
+            x_adv = x_adv - alpha * grad.sign()
             x_adv = torch.clamp(x_adv, x_orig - epsilon, x_orig + epsilon)
 
     return x_adv.detach()

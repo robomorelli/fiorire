@@ -66,21 +66,19 @@ def run_and_plot(config_path: str | Path):
         anom_dir = defense_folder / "anom"
         anom_dir.mkdir(parents=True, exist_ok=True)
 
-        # ---------- CLEAN ----------
         print("Running CLEAN test")
         model.set_test_configuration(test_mode="clean", perturb=False, apply_defense=defense_flag)
         model.cfg["metrics"]["test_mode"] = f"{suffix}/clean"
         trainer.test(model, datamodule=datamodule)
         clean_metrics = _load_all_metrics(clean_dir / "metrics.csv")
 
-        # ---------- ANOM ----------
         print("Running ANOM test")
         model.set_test_configuration(test_mode="anom", perturb=True, apply_defense=defense_flag)
         model.cfg["metrics"]["test_mode"] = f"{suffix}/anom"
         trainer.test(model, datamodule=datamodule)
         anom_metrics = _load_all_metrics(anom_dir / "metrics.csv")
 
-        # ---------- PERTURBATIONS ----------
+        # perturbations for plotting univariate curves
         perturbation_map = {
             "pgd_epsilon": base_cfg["curves"]["pgd_epsilons"],
             "gaussian_std": base_cfg["curves"]["gaussian_stds"],
@@ -112,7 +110,7 @@ def run_and_plot(config_path: str | Path):
                 model.cfg["metrics"]["test_mode"] = f"{suffix}/perturbations/{perturb_type}/{p}"
                 trainer.test(model, datamodule=datamodule)
 
-        # ---------- LEGGI TUTTI I CSV DELLE PERTURBAZIONI ----------
+        # read all the csv of perturbations
         results = {}
         for perturb_type, param_list in perturbation_map.items():
             results[perturb_type] = {}
@@ -124,7 +122,6 @@ def run_and_plot(config_path: str | Path):
 
         print("RESULTS STRUCTURE:", results)
 
-        # ---------- PLOT CURVES ----------
         print("\nPlotting robustness curves")
         plot_robustness_curves(
             clean_metrics=clean_metrics,

@@ -255,28 +255,29 @@ class LitAutoEncoder(pl.LightningModule):
         x, y = batch
         apply_defense = self.cfg["defense"]["apply_defense"]
         perturb = self.cfg["metrics"]["perturb_test"]
-        epsilon = self.cfg["metrics"]["epsilon"]
+        epsilon = self.cfg["metrics"]["pgd_epsilon"]
         need_grad = perturb or apply_defense
 
         with torch.enable_grad() if need_grad else torch.no_grad():
-
             if perturb:
-                B = x.size(0)
-                n_adv = int(self.cfg["metrics"]["perturb_fraction"] * B)
+                # trova solo gli anomali
+                anomaly_mask = (y == 1)
+                anomaly_idx = anomaly_mask.nonzero(as_tuple=True)[0]
 
-                x_adv = pgd_attack(
-                    self,
-                    x[:n_adv].detach().clone(),
-                    epsilon=epsilon,
-                    alpha=epsilon / self.cfg["defense"]["pgd_steps"],
-                    steps=self.cfg["defense"]["pgd_steps"],
-                )
+                if len(anomaly_idx) > 0:
+                    x_anom = x[anomaly_idx].detach().clone()
 
-                x_real = random_real_perturbation(
-                    x[n_adv:], self.cfg["metrics"]["real_noise_params"]
-                )
+                    x_adv = pgd_attack(
+                        self,
+                        x_anom,
+                        epsilon=epsilon,
+                        alpha=epsilon / self.cfg["defense"]["pgd_steps"],
+                        steps=self.cfg["defense"]["pgd_steps"],
+                    )
 
-                x = torch.cat([x_adv, x_real], dim=0)
+                    # reinserisci nei punti originali
+                    x = x.clone()
+                    x[anomaly_idx] = x_adv
 
             if apply_defense:
                 x_rec, rec_err = reconstruct_and_weight(
