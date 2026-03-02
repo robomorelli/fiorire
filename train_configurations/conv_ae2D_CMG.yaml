@@ -22,7 +22,7 @@ tune_config:
   opt.config_file_path: tune.choice(["conv_ae2D_CMG.yaml"])
   opt.lr: tune.choice([0.0001, 0.0009, 0.001, 0.0003])
   opt.batch_size: tune.choice([300, 500, 800])
-  opt.epochs: tune.choice([300])
+  opt.epochs: tune.choice([200])
   opt.lr_patience: tune.choice([5, 10, 15])
   opt.es_patience: tune.choice([10])
 
