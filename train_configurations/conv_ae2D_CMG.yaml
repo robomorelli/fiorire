@@ -1,12 +1,15 @@
 # Optimization
 tune_config:
   model.num_layers: tune.choice([2, 3])
-  model.base_filters: tune.choice([32, 64, 128])
-  model.activation: tune.choice(['Relu', 'Elu'])
+  model.base_filters: tune.choice([16,32,64,86])
+  model.activation: tune.choice(['Relu'])
   #model.bottleneck_activation: tune.choice(['Relu', 'Elu']) # 'Tanh'
-  model.kernel_size: tune.choice([3,5,7])
+  model.kernel_size: tune.choice([3,5,7, 9])
+  model.bottleneck_conv: tune.choice([0, 1])
   model.double_deconv: tune.choice([1])
+  model.decoder_mode: tune.choice(['progressive'])  #'standard', 'progressive', 'mirror'
   model.compression_factor: tune.choice([1, 2, 3, 4])
+  model.compression_factor_on_inputs: tune.choice([4, 8, 16, 32, 64])
   model.halve_both: tune.choice([1])
   model.halve_time: tune.choice([0])
   model.halve_features: tune.choice([0])
@@ -16,14 +19,15 @@ tune_config:
   model.stride: tune.choice([1])
   model.dilation: tune.choice([1])
 
-  opt.lr: tune.choice([0.0009, 0.0003, 0.0001])
+  opt.config_file_path: tune.choice(["conv_ae2D_CMG.yaml"])
+  opt.lr: tune.choice([0.0001, 0.0009, 0.001, 0.0003])
   opt.batch_size: tune.choice([300, 500, 800])
-  opt.epochs: tune.choice([200])
+  opt.epochs: tune.choice([300])
   opt.lr_patience: tune.choice([5, 10, 15])
   opt.es_patience: tune.choice([10])
-  opt.config_file_path: tune.choice(["conv_ae2D_CMG.yaml"])
 
-  dataset.perc_overlap: tune.choice([0.5, 0.7, 0.9])
+  dataset.perc_overlap: tune.choice([0.8])
+
 
 
 dataset:
