@@ -77,7 +77,7 @@ def main(config_path: str | Path, mode: str = "train"):
             inference_mode=False,
         )
 
-        print(f"Running {cfg["metrics"]["test_mode"]} test")
+        print(f"Running {cfg['metrics']['test_mode']} test")
         datamodule_anom = DataModule(cfg, mode="test")
         model = LitAutoEncoder.load_from_checkpoint(
             cfg["defense"]["checkpoint_path"],
