@@ -9,7 +9,6 @@ from sklearn.preprocessing import StandardScaler
 
 from robustness.dataset.dataset import TimeSeriesDataset
 
-rng = np.random.default_rng(42)
 
 class DataModule(pl.LightningDataModule):
     def __init__(self, cfg: DictConfig, mode: str):
@@ -18,6 +17,7 @@ class DataModule(pl.LightningDataModule):
         self.mode = mode
 
     def setup(self, stage: str | None = None) -> None:
+        rng = np.random.default_rng(42)
         df = pd.read_csv(self.cfg["dataset"]["csv_path"])
         df = df.dropna()
         data = df.values.astype(np.float32)
