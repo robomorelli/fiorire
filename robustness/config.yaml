@@ -2,7 +2,7 @@ model:
   kernel_size: 7
   base_filters: 32
   num_layers: 2
-  compression_factor: 3
+  compression_factor: 4
   bottleneck_conv: 0
   decoder_mode: "base_filters"
   activation: "Relu"

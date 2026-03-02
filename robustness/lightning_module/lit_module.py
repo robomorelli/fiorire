@@ -11,7 +11,7 @@ from robustness.lightning_module.losses import (
     reconstruction_loss,
     feature_errors,
     LipschitzEMAController,
-    compute_jacobian_norm
+    compute_jacobian_norm,
 )
 from robustness.lightning_module.scheduler import build_scheduler
 from robustness.evaluation.metrics import compute_metrics
@@ -49,10 +49,10 @@ class LitAutoEncoder(pl.LightningModule):
         self.lipschitz_ctrl = LipschitzEMAController(
             init_lambda=cfg["defense"]["lambda_latent"],
             target_norm=cfg["defense"]["lipschitz_target"],
-            ema_decay = cfg["defense"].get("ema_decay", 0.0),
+            ema_decay=cfg["defense"].get("ema_decay", 0.0),
             lr=cfg["defense"]["lipschitz_lr"],
             min_lambda=cfg["defense"]["lambda_latent_min"],
-            max_lambda=cfg["defense"]["lambda_latent_max"]
+            max_lambda=cfg["defense"]["lambda_latent_max"],
         )
         self.current_lambda = cfg["defense"]["lambda_latent"]
         self.current_lipschitz = 0.0
@@ -94,17 +94,17 @@ class LitAutoEncoder(pl.LightningModule):
 
         jac_loss = torch.tensor(0.0, device=self.device)
         lipschitz_norm = compute_jacobian_norm(
-                self.model.encoder,
-                x,
-            )
+            self.model.encoder,
+            x,
+        )
         warmup_epochs = self.cfg["defense"]["warmup_epochs"]
 
         if (
             self.cfg["defense"]["regularization"]
             and self.current_epoch >= warmup_epochs
         ):
-            jac_loss = lipschitz_norm ** 2
-        
+            jac_loss = lipschitz_norm**2
+
         jac_contrib = self.current_lambda * jac_loss
         ratio = jac_contrib / recon_loss
         loss = recon_loss + self.current_lambda * jac_loss
@@ -128,7 +128,9 @@ class LitAutoEncoder(pl.LightningModule):
         avg_norm = torch.stack(self._epoch_lipschitz_norm).mean()
 
         if self.cfg["defense"]["regularization"]:
-            self.current_lambda, self.current_lipschitz = self.lipschitz_ctrl.update(avg_norm)
+            self.current_lambda, self.current_lipschitz = self.lipschitz_ctrl.update(
+                avg_norm
+            )
         else:
             self.current_lipschitz = avg_norm
 
@@ -142,11 +144,26 @@ class LitAutoEncoder(pl.LightningModule):
         self.train_lipschitz_norm = avg_norm
         self.train_lambda = torch.stack(self._epoch_lambda).mean()
 
-        self.log("train_loss", self.train_loss, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_recon_loss", self.train_recon_loss, on_epoch=True, sync_dist=True)
+        self.log(
+            "train_loss", self.train_loss, on_epoch=True, prog_bar=True, sync_dist=True
+        )
+        self.log(
+            "train_recon_loss", self.train_recon_loss, on_epoch=True, sync_dist=True
+        )
         self.log("train_jac_loss", self.train_jac_loss, on_epoch=True, sync_dist=True)
-        self.log("train_ratio", self.train_ratio, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("train_lipschitz_norm", self.train_lipschitz_norm, on_epoch=True, sync_dist=True)
+        self.log(
+            "train_ratio",
+            self.train_ratio,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+        )
+        self.log(
+            "train_lipschitz_norm",
+            self.train_lipschitz_norm,
+            on_epoch=True,
+            sync_dist=True,
+        )
         self.log("train_lambda", self.train_lambda, on_epoch=True, sync_dist=True)
 
         self._epoch_train_loss.clear()
@@ -155,7 +172,7 @@ class LitAutoEncoder(pl.LightningModule):
         self._epoch_ratio.clear()
         self._epoch_lipschitz_norm.clear()
         self._epoch_lambda.clear()
-    
+
     def validation_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, y = batch
         x = x.requires_grad_(True)
@@ -163,7 +180,7 @@ class LitAutoEncoder(pl.LightningModule):
         x_rec = self(x)
 
         loss = reconstruction_loss(x, x_rec, reduction="none")
-        rec_err = loss.view(x.size(0), -1).mean(dim=1) # shape: (B,)
+        rec_err = loss.view(x.size(0), -1).mean(dim=1)  # shape: (B,)
 
         self._val_scores.append(rec_err.detach())
         self._val_labels.append(y.detach())
@@ -194,10 +211,25 @@ class LitAutoEncoder(pl.LightningModule):
         all_scores = torch.cat(self._val_scores, dim=0).cpu().numpy()
         all_labels = torch.cat(self._val_labels, dim=0).cpu().numpy()
 
+        # print(
+        #     f"VAL Clean scores - mean: {all_scores[all_labels==0].mean():.4f}, std: {all_scores[all_labels==0].std():.4f}"
+        # )
+        # print(
+        #     f"VAL Anomaly scores - mean: {all_scores[all_labels==1].mean():.4f}, std: {all_scores[all_labels==1].std():.4f}"
+        # )
+        # print(
+        #     f"VAL Clean percentiles: 25%={np.percentile(all_scores[all_labels==0],25):.4f}, 50%={np.percentile(all_scores[all_labels==0],50):.4f}, 75%={np.percentile(all_scores[all_labels==0],75):.4f}"
+        # )
+        # print(
+        #     f"VAL Anomaly percentiles: 25%={np.percentile(all_scores[all_labels==1],25):.4f}, 50%={np.percentile(all_scores[all_labels==1],50):.4f}, 75%={np.percentile(all_scores[all_labels==1],75):.4f}"
+        # )
+
         epoch_val_loss = torch.tensor(all_scores.mean(), device=self.device)
         # log per epoca
-        self.log("val_loss", epoch_val_loss, on_epoch=True, prog_bar=True, sync_dist=True)
-        
+        self.log(
+            "val_loss", epoch_val_loss, on_epoch=True, prog_bar=True, sync_dist=True
+        )
+
         target_epoch = self.cfg["defense"]["save_lipschitz"]
         if (
             not self.cfg["defense"]["regularization"]
@@ -219,7 +251,7 @@ class LitAutoEncoder(pl.LightningModule):
             labels=all_labels,
             scores=all_scores,
             metric_types=self.cfg["metrics"].types,
-            return_curves=self.cfg["metrics"]["return_curves"]
+            return_curves=self.cfg["metrics"]["return_curves"],
         )
         metrics.pop("_roc_curve", None)
         metrics.pop("_pr_curve", None)
@@ -259,7 +291,7 @@ class LitAutoEncoder(pl.LightningModule):
 
         with torch.enable_grad() if need_grad else torch.no_grad():
             if perturb:
-                anomaly_mask = (y == 1)
+                anomaly_mask = y == 1
                 anomaly_idx = anomaly_mask.nonzero(as_tuple=True)[0]
 
                 if len(anomaly_idx) > 0:
@@ -268,7 +300,9 @@ class LitAutoEncoder(pl.LightningModule):
                     perm = torch.randperm(len(anomaly_idx), device=x.device)
                     anomaly_idx = anomaly_idx[perm]
 
-                    n_adv = int(self.cfg["metrics"]["perturb_fraction"] * len(anomaly_idx))
+                    n_adv = int(
+                        self.cfg["metrics"]["perturb_fraction"] * len(anomaly_idx)
+                    )
 
                     adv_idx = anomaly_idx[:n_adv]
                     real_idx = anomaly_idx[n_adv:]
@@ -277,7 +311,7 @@ class LitAutoEncoder(pl.LightningModule):
 
                     # PGD adversarial (minimizza rec loss)
                     if len(adv_idx) > 0:
-                        alpha = self.cfg["defense"]["alpha"]   # fisso
+                        alpha = self.cfg["defense"]["alpha"]  # fisso
                         steps = adaptive_pgd_steps(epsilon, alpha)
 
                         x_adv = pgd_attack(
@@ -343,17 +377,28 @@ class LitAutoEncoder(pl.LightningModule):
             return
 
         out_dir = self._test_out_dir()
-        
+
         # compute global detection metrics
         scores = np.concatenate(self._test_scores, axis=0)
         labels = np.concatenate(self._test_labels, axis=0)
+        # in on_test_epoch_end, dopo aver concatenato scores e labels
+        anom_scores = scores[labels == 1]
+        print(
+            f"Anomaly scores percentiles: 25%={np.percentile(anom_scores,25):.4f}, 50%={np.percentile(anom_scores,50):.4f}, 75%={np.percentile(anom_scores,75):.4f}"
+        )
+        clean_scores = scores[labels == 0]
+        print(
+            f"Clean scores percentiles: 25%={np.percentile(clean_scores,25):.4f}, 50%={np.percentile(clean_scores,50):.4f}, 75%={np.percentile(clean_scores,75):.4f}"
+        )
+        # print("Clean scores - mean:", scores[labels==0].mean(), "std:", scores[labels==0].std())
+        # print("Anomaly scores - mean:", scores[labels==1].mean(), "std:", scores[labels==1].std())
         all_metrics = compute_metrics(
             x=None,
             x_rec=None,
             labels=labels,
             scores=scores,
             metric_types=self.cfg["metrics"].types,
-            return_curves=self.cfg["metrics"]["return_curves"]
+            return_curves=self.cfg["metrics"]["return_curves"],
         )
         all_metrics["anomaly_score"] = float(scores.mean())
 
@@ -423,12 +468,12 @@ class LitAutoEncoder(pl.LightningModule):
             return base / "perturbations" / perturb_type
         else:
             return base / test_mode.split("/")[-1]
-    
+
     def set_test_configuration(
         self,
         test_mode: str,
         perturb: bool,
-        apply_defense: bool = False,   
+        apply_defense: bool = False,
         pgd_epsilon: float = 0.0,
         gaussian_std: float = 0.0,
         dropout_prob: float = 0.0,
