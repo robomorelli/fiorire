@@ -1,0 +1,94 @@
+model:
+  kernel_size: 7
+  base_filters: 32
+  num_layers: 2
+  compression_factor: 3
+  bottleneck_conv: 0
+  decoder_mode: "base_filters"
+  activation: "Relu"
+  bottleneck_activation: null
+  aux_channels: 1
+  increasing: 1
+  flattened: 1
+  pool: 1
+  halve_both: 1        # dimezza feature + time
+  halve_time: 0
+  halve_features: 0
+  double_deconv: 1
+  # - usati se pool = false ----
+  stride: 1
+  dilation: 1
+
+dataset:
+  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_CMG.csv"
+  n_seq_chunk: 200                    # how many sequences for each chunk
+  test_chunk_ratio: 0.2               # % test set
+  val_ratio: 0.2                      # % validation set
+  n_features: null                    # dimensione features F - sovrascritto
+  seq_in_length: 16                   # dimensione temporale T
+  seq_stride_train: 4                 # stride per train
+  seq_stride_val: 16                  # stride per validation
+  seq_stride_test: 16                 # stride per test
+  num_workers: 16                     # workers for the dataloader
+  val_anomaly_ratio: 1.0              # % di finestre da corrompere da aggiungere nel validation set
+  test_anomaly_ratio: 1.0             # % di finestre da corrompere da aggiungere nel test set
+  shuffle_train: true                 # se shuffle le finestre di training
+  shuffle_test: false                 # se usare random sampler sul test (come sul val)
+  delta_min: 0.5                      # delta range of anomalies - extract from uniform distribution
+  delta_max: 0.5
+
+opt:
+  lr: 1e-3
+  batch_size: 300
+  lr_patience: 10                     # patience for the scheduler
+  es_patience: 30                     # patience for early stopping
+  lr_factor: 0.5                      # factor for the scheduler
+  lr_min: 1e-6                        # min learning to stop when reached
+  monitor_metric: "val_roc_auc"       # metrica da monitorare
+  monitor_mode: "max"                 # "min" o "max"
+
+defense:
+  # path to load the checkpoint from
+  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/reg_train_2/checkpoints/best-epoch=433-val_roc_auc=0.9814.ckpt"
+  apply_defense: false                # if applying defense in test or not
+  alpha: 1e-2                         # intensity for each step size of pgd
+  num_iter: 1                         # number of projection steps
+  # adversarial training
+  regularization: false               # flag to use jacobian regularization
+  save_lipschitz: 5                   # number of epochs after we save the norm on validation set
+  warmup_epochs: 10
+  lambda_latent: 1e-2                 # max lambda allowed (lambda for latent loss)
+  lambda_latent_min: 1e-6             # lambda minimo consentito
+  lambda_latent_max: 1e-1             # max lambda consentito
+  lipschitz_target: 5.0               # target norma Jacobiano
+  lipschitz_lr: 0.01                  # velocità adattamento lambda
+  ema_decay: 0.95                     # smoothing EMA norma
+
+trainer:
+  accelerator: "gpu"
+  devices: 1
+  strategy: "auto"
+  epochs: 1000
+  precision: "bf16-mixed"
+  accumulate_grad_batches: 4
+  out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
+  name_exp: AOC
+  run_name: test_1_reg_train_2
+
+metrics:
+  types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
+  return_curves: true                      # to plot pr/roc curves
+  perturb_test: false                      # flag to decide to perturb (bot adv e real) the test set or not
+  perturb_fraction: 0.5                    # % adversarial w.r.t. total (the rest are real perturbed)
+  pgd_epsilon: 1e-2                        # epsilon to perturb data in test
+  real_noise_params:                       # params to build real perturbations
+    gaussian_std: 0.01
+    dropout_prob: 0.1
+    impulse_std: 0.1
+
+curves:
+  enabled: true
+  pgd_epsilons:    [0.01, 0.05, 0.1, 0.15, 0.2, 0.25]
+  gaussian_stds:   [0.01, 0.05, 0.1, 0.15, 0.2, 0.25]
+  dropout_probs:   [0.01, 0.05, 0.1, 0.15, 0.2, 0.25]
+  impulse_stds:    [0.01, 0.05, 0.1, 0.15, 0.2, 0.25]
