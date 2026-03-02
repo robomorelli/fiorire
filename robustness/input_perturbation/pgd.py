@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import Tensor, nn
 from robustness.lightning_module.losses import reconstruction_loss
@@ -33,3 +34,7 @@ def pgd_attack(
             x_adv = torch.clamp(x_adv, x_orig - epsilon, x_orig + epsilon)
 
     return x_adv.detach()
+
+
+def adaptive_pgd_steps(epsilon, alpha=0.01):
+    return max(1, int(np.ceil(epsilon / alpha)))

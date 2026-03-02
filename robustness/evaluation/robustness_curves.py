@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from omegaconf import DictConfig
 from torch import nn
 
-from robustness.input_perturbation.pgd import pgd_attack
+from robustness.input_perturbation.pgd import pgd_attack, adaptive_pgd_steps
 from robustness.input_perturbation.real import (
     gaussian_noise,
     dropout_noise,
@@ -26,7 +26,7 @@ def perturbation_dict(model: nn.Module, cfg: DictConfig) -> dict[str, tuple]:
                 x,
                 eps,
                 alpha=cfg["defense"]["alpha"],
-                steps=cfg["defense"]["pgd_steps"],
+                steps=adaptive_pgd_steps(eps, cfg["defense"]["alpha"]),
             ),
         ),
         "gaussian": (

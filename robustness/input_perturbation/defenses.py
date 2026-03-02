@@ -55,7 +55,7 @@ def approximate_projection(
 def apply_feature_weighting(
     rec_err_feat: Tensor,
     train_feat_median: Optional[Tensor],
-    epsilon: float = 1e-4,
+    epsilon: float = 1e-5,
     warn: bool = True,
     batch_idx: Optional[int] = None,
 ):
@@ -79,8 +79,9 @@ def apply_feature_weighting(
                 "feature weighting DISABLED during test."
             )
         return rec_err_feat.sum(dim=1)
-
     weights = 1.0 / (epsilon + train_feat_median.to(rec_err_feat.device))
+    # normalize so sum(weights) = num_features
+    weights = weights / weights.sum() * rec_err_feat.shape[1]
     return (rec_err_feat * weights).sum(dim=1)
 
 

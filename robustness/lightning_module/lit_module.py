@@ -17,7 +17,7 @@ from robustness.lightning_module.scheduler import build_scheduler
 from robustness.evaluation.metrics import compute_metrics
 from robustness.evaluation.write_csv import write_metrics_csv
 from robustness.input_perturbation.defenses import reconstruct_and_weight
-from robustness.input_perturbation.pgd import pgd_attack
+from robustness.input_perturbation.pgd import adaptive_pgd_steps, pgd_attack
 from robustness.input_perturbation.real import random_real_perturbation
 
 
@@ -219,6 +219,7 @@ class LitAutoEncoder(pl.LightningModule):
             labels=all_labels,
             scores=all_scores,
             metric_types=self.cfg["metrics"].types,
+            return_curves=self.cfg["metrics"]["return_curves"]
         )
         # log tutte le altre metriche
         for k, v in metrics.items():
@@ -274,12 +275,15 @@ class LitAutoEncoder(pl.LightningModule):
 
                     # PGD adversarial (minimizza rec loss)
                     if len(adv_idx) > 0:
+                        alpha = self.cfg["defense"]["alpha"]   # fisso
+                        steps = adaptive_pgd_steps(epsilon, alpha)
+
                         x_adv = pgd_attack(
                             self,
                             x[adv_idx].detach().clone(),
                             epsilon=epsilon,
-                            alpha=epsilon / self.cfg["defense"]["pgd_steps"],
-                            steps=self.cfg["defense"]["pgd_steps"],
+                            alpha=alpha,
+                            steps=steps,
                         )
                         x[adv_idx] = x_adv
 
@@ -347,9 +351,13 @@ class LitAutoEncoder(pl.LightningModule):
             labels=labels,
             scores=scores,
             metric_types=self.cfg["metrics"].types,
+            return_curves=self.cfg["metrics"]["return_curves"]
         )
         all_metrics["anomaly_score"] = float(scores.mean())
 
+        # rimuovi curve prima del log
+        roc_data = all_metrics.pop("_roc_curve", None)
+        pr_data = all_metrics.pop("_pr_curve", None)
         # log globale
         for k, v in all_metrics.items():
             self.log(f"{self.cfg['metrics']['test_mode']}_{k}", v, sync_dist=True)
@@ -367,6 +375,18 @@ class LitAutoEncoder(pl.LightningModule):
         else:
             out_dir.mkdir(parents=True, exist_ok=True)
             write_metrics_csv(csv_data, out_dir, filename="metrics.csv")
+
+        # salva curve separatamente
+        if roc_data is not None and pr_data is not None:
+            np.savez(
+                out_dir / "curves.npz",
+                fpr=roc_data["fpr"],
+                tpr=roc_data["tpr"],
+                roc_thresholds=roc_data["thresholds"],
+                precision=pr_data["precision"],
+                recall=pr_data["recall"],
+                pr_thresholds=pr_data["thresholds"],
+            )
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
