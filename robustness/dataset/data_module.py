@@ -50,8 +50,8 @@ class DataModule(pl.LightningDataModule):
 
         n_val = int(len(trainval_chunks) * self.cfg["dataset"]["val_ratio"])
 
-        val_chunks = trainval_chunks[:n_val]
-        train_chunks = trainval_chunks[n_val:]
+        train_chunks = trainval_chunks[:-n_val]
+        val_chunks = trainval_chunks[-n_val:]
 
         # shuffle solo il validation
         np.random.shuffle(val_chunks)
@@ -119,7 +119,7 @@ class DataModule(pl.LightningDataModule):
         return DataLoader(
             self.train_ds,
             batch_size=self.cfg["opt"]["batch_size"],
-            shuffle=False,
+            shuffle=self.cfg["dataset"]["shuffle_train"],
             num_workers=self.cfg["dataset"]["num_workers"],
             pin_memory=True,
         )
@@ -180,6 +180,14 @@ class DataModule(pl.LightningDataModule):
             Xok_ref = np.stack(
                 [base_data[i : i + W] for i in range(len(base_data) - W + 1)]
             )
+
+            # scala Xok_ref con lo stesso scaler
+            if self.scaler is not None:
+                N, W_, F = Xok_ref.shape
+                Xok_ref = Xok_ref.reshape(-1, F)
+                Xok_ref = self.scaler.transform(Xok_ref)
+                Xok_ref = Xok_ref.reshape(N, W_, F)
+            
             anom_ds = TimeSeriesDataset(
                 base_data,
                 self.cfg["dataset"]["seq_in_length"],
@@ -188,6 +196,7 @@ class DataModule(pl.LightningDataModule):
                 delta_range=delta_range,
                 Xok_ref=Xok_ref,
             )
+            
             n_anom = int(anomaly_ratio * len(clean_ds))
             idx = np.random.choice(len(anom_ds), size=n_anom, replace=False).tolist()
             anom_ds = torch.utils.data.Subset(anom_ds, idx)

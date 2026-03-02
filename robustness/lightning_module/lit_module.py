@@ -221,6 +221,8 @@ class LitAutoEncoder(pl.LightningModule):
             metric_types=self.cfg["metrics"].types,
             return_curves=self.cfg["metrics"]["return_curves"]
         )
+        metrics.pop("_roc_curve", None)
+        metrics.pop("_pr_curve", None)
         # log tutte le altre metriche
         for k, v in metrics.items():
             self.log(f"val_{k}", v, on_epoch=True, sync_dist=True)
@@ -345,6 +347,9 @@ class LitAutoEncoder(pl.LightningModule):
         # compute global detection metrics
         scores = np.concatenate(self._test_scores, axis=0)
         labels = np.concatenate(self._test_labels, axis=0)
+        print("Unique labels:", np.unique(labels))
+        print("Mean score clean:", scores[labels==0].mean())
+        print("Mean score anom:", scores[labels==1].mean() if (labels==1).any() else "no anom")
         all_metrics = compute_metrics(
             x=None,
             x_rec=None,
