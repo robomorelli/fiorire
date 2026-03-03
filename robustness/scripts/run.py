@@ -18,7 +18,7 @@ torch.set_float32_matmul_precision("medium")
 def main(config_path: str | Path, mode: str = "train"):
     cfg = OmegaConf.load(config_path)
     cfg = cast(DictConfig, cfg)
-    cfg["metrics"]["test_mode"] = "anom" if cfg["metrics"]["perturb_test"] else "clean"
+    cfg["metrics"]["test_mode"] = "perturbed" if cfg["metrics"]["perturb_test"] else "clean"
 
     loggers = [
         TensorBoardLogger(

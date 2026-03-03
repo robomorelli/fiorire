@@ -344,6 +344,7 @@ class LitAutoEncoder(pl.LightningModule):
                     self.cfg["defense"]["alpha"],
                     self.cfg["defense"]["num_iter"],
                     self.train_feat_median,
+                    self.cfg["defense"]["use_feature_weighting"]
                 )
             else:
                 # normal test

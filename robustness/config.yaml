@@ -74,13 +74,14 @@ trainer:
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
   name_exp: CMG
-  run_name: vanilla_4
+  run_name: vanilla
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
   return_curves: true                      # to plot pr/roc curves
   perturb_test: false                      # flag to decide to perturb (bot adv e real) the test set or not
   perturb_fraction: 0.5                    # % adversarial w.r.t. total (the rest are real perturbed)
+  pgd_epsilon: 1                           # epsilon to perturb data in test
   real_noise_params:                       # params to build real perturbations
     gaussian_std: 0.01
     dropout_prob: 0.1

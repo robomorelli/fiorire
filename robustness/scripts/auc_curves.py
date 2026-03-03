@@ -7,7 +7,7 @@ from sklearn.metrics import auc
 def plot_compare(exp_dir: str):
     """
     Plotta PR e ROC AUC di tutti i run nella stessa cartella exp_dir.
-    Cerca dentro clean/ e anom/ ogni run per i file curves.npz.
+    Cerca dentro clean/ e perturbed/ ogni run per i file curves.npz.
     """
     exp_path = Path(exp_dir)
     run_dirs = [d for d in exp_path.iterdir() if d.is_dir()]
@@ -21,7 +21,7 @@ def plot_compare(exp_dir: str):
         plt.figure(figsize=(6, 4))
 
         for run_dir in run_dirs:
-            for subdir_name in ["clean", "anom"]:
+            for subdir_name in ["clean", "perturbed"]:
                 subdir = run_dir / subdir_name
                 npz_file = subdir / "curves.npz"
                 if not npz_file.exists():

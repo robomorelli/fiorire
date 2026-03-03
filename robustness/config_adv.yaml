@@ -42,7 +42,7 @@ opt:
   lr: 1e-3
   batch_size: 300
   lr_patience: 10                     # patience for the scheduler
-  es_patience: 50                     # patience for early stopping
+  es_patience: 30                     # patience for early stopping
   lr_factor: 0.8                      # factor for the scheduler
   lr_min: 1e-6                        # min learning to stop when reached
   monitor_metric: "val_roc_auc"       # metrica da monitorare
@@ -61,7 +61,7 @@ defense:
   lambda_latent: 1e-1                 # max lambda allowed (lambda for latent loss)
   lambda_latent_min: 1e-4             # lambda minimo consentito
   lambda_latent_max: 1                # max lambda consentito
-  lipschitz_target: 3.0               # target norma Jacobiano
+  lipschitz_target: 1.0               # target norma Jacobiano
   lipschitz_lr: 0.01                  # velocità adattamento lambda
   ema_decay: 0.9                      # smoothing EMA norma
 
@@ -81,6 +81,7 @@ metrics:
   return_curves: true                      # to plot pr/roc curves
   perturb_test: true                       # flag to decide to perturb (both adv e real) the test set or not
   perturb_fraction: 0.5                    # % adversarial w.r.t. total (the rest are real perturbed)
+  pgd_epsilon: 1                           # epsilon to perturb data in test
   real_noise_params:                       # params to build real perturbations
     gaussian_std: 0.01
     dropout_prob: 0.1

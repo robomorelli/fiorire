@@ -66,7 +66,7 @@ def plot_robustness_curves(
 
             # baseline orizzontali
             ax.axhline(clean_metrics[metric], linestyle="--", color="black", label="clean baseline")
-            ax.axhline(anom_metrics[metric], linestyle=":", color="red", label="anom baseline")
+            ax.axhline(anom_metrics[metric], linestyle=":", color="red", label="perturbed baseline")
 
             # curva perturbazione
             y = [values[v][metric] for v in x]

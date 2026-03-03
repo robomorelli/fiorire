@@ -60,10 +60,10 @@ def run_and_plot(config_path: str | Path):
         model.cfg["defense"]["apply_defense"] = defense_flag
         model.cfg["metrics"]["defense_suffix"] = suffix
 
-        # clean & anom folders
+        # clean & perturbed folders
         clean_dir = defense_folder / "clean"
         clean_dir.mkdir(parents=True, exist_ok=True)
-        anom_dir = defense_folder / "anom"
+        anom_dir = defense_folder / "perturbed"
         anom_dir.mkdir(parents=True, exist_ok=True)
 
         print("Running CLEAN test")
@@ -72,9 +72,9 @@ def run_and_plot(config_path: str | Path):
         trainer.test(model, datamodule=datamodule)
         clean_metrics = _load_all_metrics(clean_dir / "metrics.csv")
 
-        print("Running ANOM test")
-        model.set_test_configuration(test_mode="anom", perturb=True, apply_defense=defense_flag)
-        model.cfg["metrics"]["test_mode"] = f"{suffix}/anom"
+        print("Running PERTURBED test")
+        model.set_test_configuration(test_mode="perturbed", perturb=True, apply_defense=defense_flag)
+        model.cfg["metrics"]["test_mode"] = f"{suffix}/perturbed"
         trainer.test(model, datamodule=datamodule)
         anom_metrics = _load_all_metrics(anom_dir / "metrics.csv")
 

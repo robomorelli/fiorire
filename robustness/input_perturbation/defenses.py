@@ -93,6 +93,7 @@ def reconstruct_and_weight(
     num_iter: int,
     train_feat_median: Optional[Tensor],
     epsilon: float = 1e-4,
+    use_feature_weighting: bool = True
 ) -> tuple[Tensor, Tensor]:
     """
     Apply approximate projection + feature weighting in one shot.
@@ -112,5 +113,9 @@ def reconstruct_and_weight(
     """
     x_rec, _ = approximate_projection(encoder, decoder, x, alpha, num_iter)
     rec_err_feat = (x_rec - x).pow(2).mean(dim=(1, 3))
+    if use_feature_weighting:
+        rec_err = apply_feature_weighting(rec_err_feat, train_feat_median, epsilon)
+    else:
+        rec_err = rec_err_feat.mean(dim=1)
     rec_err = apply_feature_weighting(rec_err_feat, train_feat_median, epsilon)
     return x_rec, rec_err
