@@ -50,46 +50,33 @@ def plot_robustness_curves(
     results: dict[str, dict[float, dict[str, float]]],
     out_dir: str,
 ):
-    """
-    results = {
-        "adversarial": {epsilon: {metric: value}},
-        "gaussian": {std: {...}},
-        "dropout": {p: {...}},
-        "impulse": {std: {...}},
-    }
-    """
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
     metrics = list(clean_metrics.keys())
 
-    for metric in metrics:
-        plt.figure(figsize=(6, 4))
-        plt.axhline(
-            clean_metrics[metric],
-            linestyle="--",
-            color="black",
-            label="clean baseline",
-        )
-        plt.axhline(
-            anom_metrics[metric],
-            linestyle=":",
-            color="red",
-            label="anom baseline",
-        )
+    for perturb_type, values in results.items():
+        if not values:
+            continue
 
-        for perturb_type, values in results.items():
-            if not values:
-                continue
-            x = sorted(values.keys())
+        x = sorted(values.keys())
+
+        for metric in metrics:
+            fig, ax = plt.subplots(figsize=(7, 4))
+
+            # baseline orizzontali
+            ax.axhline(clean_metrics[metric], linestyle="--", color="black", label="clean baseline")
+            ax.axhline(anom_metrics[metric], linestyle=":", color="red", label="anom baseline")
+
+            # curva perturbazione
             y = [values[v][metric] for v in x]
-            plt.plot(x, y, marker="o", label=perturb_type)
+            ax.plot(x, y, marker="o", color="steelblue", label=perturb_type)
 
-        plt.xlabel("Perturbation intensity")
-        plt.ylabel(metric)
-        plt.title(f"Robustness curve {metric}")
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig(out_path / f"{metric}_robustness.png")
-        plt.close()
+            ax.set_xlabel("Perturbation intensity")
+            ax.set_ylabel(metric)
+            ax.set_title(f"{perturb_type} — {metric}")
+            ax.legend()
+            ax.grid(True)
+            fig.tight_layout()
+            fig.savefig(out_path / f"{perturb_type}_{metric}.png")
+            plt.close(fig)

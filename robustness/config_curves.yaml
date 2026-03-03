@@ -32,8 +32,9 @@ dataset:
   num_workers: 16                     # workers for the dataloader
   val_anomaly_ratio: 1.0              # % di finestre da corrompere da aggiungere nel validation set
   test_anomaly_ratio: 1.0             # % di finestre da corrompere da aggiungere nel test set
-  shuffle_train: true                 # se shuffle le finestre di training
-  shuffle_test: false                 # se usare random sampler sul test (come sul val)
+  shuffle_train: false                # se usare random sampler sul train
+  shuffle_val: false                  # se usare random sampler sul validation
+  shuffle_test: false                 # se usare random sampler sul test
   delta_min: 0.5                      # delta range of anomalies - extract from uniform distribution
   delta_max: 0.5
 
@@ -49,7 +50,7 @@ opt:
 
 defense:
   # path to load the checkpoint from
-  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/reg_train_2/checkpoints/best-epoch=433-val_roc_auc=0.9814.ckpt"
+  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/vanilla_3/checkpoints/best-epoch=167-val_roc_auc=0.9438.ckpt"
   apply_defense: false                # if applying defense in test or not
   alpha: 1e-2                         # intensity for each step size of pgd
   num_iter: 1                         # number of projection steps
@@ -72,23 +73,23 @@ trainer:
   precision: "bf16-mixed"
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
-  name_exp: AOC
-  run_name: test_1_reg_train_2
+  name_exp: CMG
+  run_name: test_vanilla_3
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
   return_curves: true                      # to plot pr/roc curves
   perturb_test: false                      # flag to decide to perturb (bot adv e real) the test set or not
   perturb_fraction: 0.5                    # % adversarial w.r.t. total (the rest are real perturbed)
-  pgd_epsilon: 1e-2                        # epsilon to perturb data in test
+  pgd_epsilon: 1                           # epsilon to perturb data in test
   real_noise_params:                       # params to build real perturbations
-    gaussian_std: 0.01
-    dropout_prob: 0.1
-    impulse_std: 0.1
+    gaussian_std: 0.5
+    dropout_prob: 0.5
+    impulse_std: 0.5
 
 curves:
   enabled: true
-  pgd_epsilons:    [0.01, 0.05, 0.1, 0.15, 0.2, 0.25]
-  gaussian_stds:   [0.01, 0.05, 0.1, 0.15, 0.2, 0.25]
-  dropout_probs:   [0.01, 0.05, 0.1, 0.15, 0.2, 0.25]
-  impulse_stds:    [0.01, 0.05, 0.1, 0.15, 0.2, 0.25]
+  pgd_epsilons:    [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+  gaussian_stds:   [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+  dropout_probs:   [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+  impulse_stds:    [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]

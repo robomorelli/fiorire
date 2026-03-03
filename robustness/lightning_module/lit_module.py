@@ -20,6 +20,11 @@ from robustness.input_perturbation.defenses import reconstruct_and_weight
 from robustness.input_perturbation.pgd import adaptive_pgd_steps, pgd_attack
 from robustness.input_perturbation.real import random_real_perturbation
 
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message="Attempting to run cuBLAS, but there was no current CUDA context"
+)
 
 class LitAutoEncoder(pl.LightningModule):
     def __init__(self, cfg: DictConfig):
@@ -242,7 +247,7 @@ class LitAutoEncoder(pl.LightningModule):
             gathered = cast(Tensor, self.all_gather(local_mean))
             global_mean = gathered.mean()
             self.val_lipschitz_norm = global_mean
-
+            print(f"Saved Lipschitz norm. Value: {self.val_lipschitz_norm}.")
             self._val_lipschitz_norm.clear()
 
         metrics = compute_metrics(

@@ -40,7 +40,9 @@ class DataModule(pl.LightningDataModule):
         sequences = sequences[: n_chunks * n_seq_chunk]
 
         chunks = np.split(sequences, n_chunks)
+        # print("Before shuffle:", [c[0,0,0] for c in chunks[:3]])
         rng.shuffle(chunks)
+        # print("After shuffle:", [c[0,0,0] for c in chunks[:3]])
         # list[NDArray] con shape [n_seq_chunk, W, F]
 
         n_test = int(n_chunks * self.cfg["dataset"]["test_chunk_ratio"])
@@ -94,11 +96,21 @@ class DataModule(pl.LightningDataModule):
                 ),
             )
 
-            self.val_sampler = RandomSampler(
-                self.val_ds,
-                replacement=False,
-                generator=torch.Generator().manual_seed(42),
-            )
+            self.train_sampler = None
+            if self.cfg["dataset"]["shuffle_train"]:
+                self.train_sampler = RandomSampler(
+                    self.train_ds,
+                    replacement=False,
+                    generator=torch.Generator().manual_seed(42),
+                )
+
+            self.val_sampler = None
+            if self.cfg["dataset"]["shuffle_val"]:
+                self.val_sampler = RandomSampler(
+                    self.val_ds,
+                    replacement=False,
+                    generator=torch.Generator().manual_seed(42),
+                )
 
         elif self.mode == "test":
             ratio = self.cfg["dataset"]["test_anomaly_ratio"]
@@ -115,7 +127,7 @@ class DataModule(pl.LightningDataModule):
             )
 
             self.test_sampler = None
-            if self.cfg["dataset"]["shuffle_test"] == True:
+            if self.cfg["dataset"]["shuffle_test"]:
                 self.test_sampler = RandomSampler(
                     self.test_ds,
                     replacement=False,
@@ -129,7 +141,8 @@ class DataModule(pl.LightningDataModule):
         return DataLoader(
             self.train_ds,
             batch_size=self.cfg["opt"]["batch_size"],
-            shuffle=self.cfg["dataset"]["shuffle_train"],
+            sampler=self.train_sampler,
+            shuffle=False,
             num_workers=self.cfg["dataset"]["num_workers"],
             pin_memory=True,
         )

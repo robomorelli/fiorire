@@ -81,7 +81,11 @@ def compute_jacobian_norm(encoder: nn.Module, x: Tensor) -> Tensor:
         Tensor: Norma media della Jacobiana per il batch (scalar tensor).
     """
     z = encoder(x)
-    v = torch.randn_like(z, device=x.device)
+    
+    # v ~ N(0,1) normalizzato per-sample come nel paper
+    v = torch.randn_like(z)
+    v = v / (v.flatten(1).norm(dim=1, keepdim=True).reshape(-1, *([1]*(v.dim()-1))) + 1e-8)
+    
     JTv = torch.autograd.grad(
         outputs=z,
         inputs=x,
@@ -89,5 +93,9 @@ def compute_jacobian_norm(encoder: nn.Module, x: Tensor) -> Tensor:
         retain_graph=True,
         create_graph=True,
     )[0]
-    norm = JTv.flatten(1).norm(dim=1).mean()
+    
+    # stima norma di Frobenius: n_out * ||J^T v||^2, media sul batch
+    n_out = z.flatten(1).shape[1]
+    frob_sq = n_out * JTv.flatten(1).norm(dim=1).pow(2)
+    norm = frob_sq.mean().sqrt()
     return norm

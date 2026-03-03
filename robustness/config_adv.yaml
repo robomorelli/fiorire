@@ -20,7 +20,7 @@ model:
   dilation: 1
 
 dataset:
-  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_AOC.csv"
+  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_CMG.csv"
   n_seq_chunk: 200                    # how many sequences for each chunk
   test_chunk_ratio: 0.2               # % test set
   val_ratio: 0.2                      # % validation set
@@ -32,8 +32,9 @@ dataset:
   num_workers: 16                     # workers for the dataloader
   val_anomaly_ratio: 1.0              # % di finestre da corrompere da aggiungere nel validation set
   test_anomaly_ratio: 1.0             # % di finestre da corrompere da aggiungere nel test set
-  shuffle_train: true                 # se shuffle le finestre di training
-  shuffle_test: true                  # se usare random sampler sul test (come sul val)
+  shuffle_train: false                # se usare random sampler sul train
+  shuffle_val: false                  # se usare random sampler sul validation
+  shuffle_test: false                 # se usare random sampler sul test
   delta_min: 0.5                      # delta range of anomalies - extract from uniform distribution
   delta_max: 0.5
 
@@ -41,7 +42,7 @@ opt:
   lr: 1e-3
   batch_size: 300
   lr_patience: 10                     # patience for the scheduler
-  es_patience: 150                    # patience for early stopping
+  es_patience: 50                     # patience for early stopping
   lr_factor: 0.8                      # factor for the scheduler
   lr_min: 1e-6                        # min learning to stop when reached
   monitor_metric: "val_roc_auc"       # metrica da monitorare
@@ -50,9 +51,8 @@ opt:
 defense:
   # path to load the checkpoint from
   checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/cmg_prova/reg_train_1/checkpoints/best-epoch=376-val_roc_auc=0.9004.ckpt"
-  alpha: 1e-2                         # intensity for each step size of pgd
-  epsilon: 1e-2                       # epsilon to perturb data in test
-  pgd_steps: 1                        # number of pgd steps perturbation
+  apply_defense: false                # if applying defense in test or not
+  alpha: 1e-1                         # intensity for each step size of pgd
   num_iter: 1                         # number of projection steps
   # adversarial training
   regularization: true                # flag to use jacobian regularization
@@ -61,7 +61,7 @@ defense:
   lambda_latent: 1e-1                 # max lambda allowed (lambda for latent loss)
   lambda_latent_min: 1e-4             # lambda minimo consentito
   lambda_latent_max: 1                # max lambda consentito
-  lipschitz_target: 0.5               # target norma Jacobiano
+  lipschitz_target: 3.0               # target norma Jacobiano
   lipschitz_lr: 0.01                  # velocità adattamento lambda
   ema_decay: 0.9                      # smoothing EMA norma
 
@@ -73,8 +73,8 @@ trainer:
   precision: "bf16-mixed"
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
-  name_exp: AOC
-  run_name: reg_train_2
+  name_exp: CMG
+  run_name: reg_train_3
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test

@@ -36,5 +36,5 @@ def pgd_attack(
     return x_adv.detach()
 
 
-def adaptive_pgd_steps(epsilon, alpha=0.01):
+def adaptive_pgd_steps(epsilon, alpha):
     return max(1, int(np.ceil(epsilon / alpha)))
