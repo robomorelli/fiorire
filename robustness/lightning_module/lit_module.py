@@ -296,45 +296,31 @@ class LitAutoEncoder(pl.LightningModule):
 
         with torch.enable_grad() if need_grad else torch.no_grad():
             if perturb:
+                x = x.clone()
+
+                # rumore reale su TUTTI i campioni
+                if any(v > 0 for v in [
+                    self.cfg["metrics"]["real_noise_params"]["gaussian_std"],
+                    self.cfg["metrics"]["real_noise_params"]["dropout_prob"],
+                    self.cfg["metrics"]["real_noise_params"]["impulse_std"],
+                ]):
+                    x = random_real_perturbation(x, self.cfg["metrics"]["real_noise_params"])
+
+                # PGD solo sulle anomalie
                 anomaly_mask = y == 1
                 anomaly_idx = anomaly_mask.nonzero(as_tuple=True)[0]
-
-                if len(anomaly_idx) > 0:
-
-                    # shuffle indici anomali
-                    perm = torch.randperm(len(anomaly_idx), device=x.device)
-                    anomaly_idx = anomaly_idx[perm]
-
-                    n_adv = int(
-                        self.cfg["metrics"]["perturb_fraction"] * len(anomaly_idx)
+                if len(anomaly_idx) > 0 and self.cfg["metrics"]["pgd_epsilon"] > 0:
+                    x_adv = pgd_attack(
+                        self,
+                        x[anomaly_idx].detach().clone(),
+                        epsilon=self.cfg["metrics"]["pgd_epsilon"],
+                        alpha=self.cfg["defense"]["alpha"],
+                        steps=adaptive_pgd_steps(
+                            self.cfg["metrics"]["pgd_epsilon"],
+                            self.cfg["defense"]["alpha"]
+                        ),
                     )
-
-                    adv_idx = anomaly_idx[:n_adv]
-                    real_idx = anomaly_idx[n_adv:]
-
-                    x = x.clone()
-
-                    # PGD adversarial (minimizza rec loss)
-                    if len(adv_idx) > 0:
-                        alpha = self.cfg["defense"]["alpha"]  # fisso
-                        steps = adaptive_pgd_steps(epsilon, alpha)
-
-                        x_adv = pgd_attack(
-                            self,
-                            x[adv_idx].detach().clone(),
-                            epsilon=epsilon,
-                            alpha=alpha,
-                            steps=steps,
-                        )
-                        x[adv_idx] = x_adv
-
-                    # Perturbazioni reali
-                    if len(real_idx) > 0:
-                        x_real = random_real_perturbation(
-                            x[real_idx],
-                            self.cfg["metrics"]["real_noise_params"],
-                        )
-                        x[real_idx] = x_real
+                    x[anomaly_idx] = x_adv
 
             if apply_defense:
                 x_rec, rec_err = reconstruct_and_weight(
@@ -485,22 +471,10 @@ class LitAutoEncoder(pl.LightningModule):
         dropout_prob: float = 0.0,
         impulse_std: float = 0.0,
     ):
-        """
-        Aggiorna dinamicamente la configurazione di test
-        senza ricreare il modello.
-        """
-
         self.cfg["metrics"]["test_mode"] = test_mode
         self.cfg["metrics"]["perturb_test"] = perturb
         self.cfg["defense"]["apply_defense"] = apply_defense
 
-        # reset
-        self.cfg["metrics"]["pgd_epsilon"] = 0.0
-        self.cfg["metrics"]["real_noise_params"]["gaussian_std"] = 0.0
-        self.cfg["metrics"]["real_noise_params"]["dropout_prob"] = 0.0
-        self.cfg["metrics"]["real_noise_params"]["impulse_std"] = 0.0
-
-        # set specifico
         self.cfg["metrics"]["pgd_epsilon"] = float(pgd_epsilon)
         self.cfg["metrics"]["real_noise_params"]["gaussian_std"] = float(gaussian_std)
         self.cfg["metrics"]["real_noise_params"]["dropout_prob"] = float(dropout_prob)

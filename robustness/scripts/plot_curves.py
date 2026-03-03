@@ -67,13 +67,25 @@ def run_and_plot(config_path: str | Path):
         anom_dir.mkdir(parents=True, exist_ok=True)
 
         print("Running CLEAN test")
-        model.set_test_configuration(test_mode="clean", perturb=False, apply_defense=defense_flag)
+        model.set_test_configuration(
+            test_mode="clean",
+            perturb=False, 
+            apply_defense=defense_flag
+        )
         model.cfg["metrics"]["test_mode"] = f"{suffix}/clean"
         trainer.test(model, datamodule=datamodule)
         clean_metrics = _load_all_metrics(clean_dir / "metrics.csv")
 
         print("Running PERTURBED test")
-        model.set_test_configuration(test_mode="perturbed", perturb=True, apply_defense=defense_flag)
+        model.set_test_configuration(
+            test_mode="perturbed",
+            perturb=True,
+            apply_defense=defense_flag,
+            pgd_epsilon=base_cfg["metrics"]["pgd_epsilon"],
+            gaussian_std=base_cfg["metrics"]["real_noise_params"]["gaussian_std"],
+            dropout_prob=base_cfg["metrics"]["real_noise_params"]["dropout_prob"],
+            impulse_std=base_cfg["metrics"]["real_noise_params"]["impulse_std"]
+        )
         model.cfg["metrics"]["test_mode"] = f"{suffix}/perturbed"
         trainer.test(model, datamodule=datamodule)
         anom_metrics = _load_all_metrics(anom_dir / "metrics.csv")

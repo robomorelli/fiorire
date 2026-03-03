@@ -37,4 +37,4 @@ def pgd_attack(
 
 
 def adaptive_pgd_steps(epsilon, alpha):
-    return max(1, int(np.ceil(epsilon / alpha)))
+    return max(20, int(np.ceil(epsilon / alpha)))

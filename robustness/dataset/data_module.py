@@ -74,6 +74,8 @@ class DataModule(pl.LightningDataModule):
         # Xok_ref costruito SOLO su train_data, scaled
         W = self.cfg["dataset"]["seq_in_length"]
         train_data_scaled = self.scaler.transform(train_data)
+        # print(f"Min: {train_data_scaled.min():.3f}, Max: {train_data_scaled.max():.3f}")
+        # print(f"1%: {np.percentile(train_data_scaled, 1):.3f}, 99%: {np.percentile(train_data_scaled, 99):.3f}")
         self.Xok_ref_train = np.stack(
             [train_data_scaled[i : i + W] for i in range(len(train_data_scaled) - W + 1)]
         )  # [N_train, W, F]

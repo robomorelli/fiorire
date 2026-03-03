@@ -35,8 +35,8 @@ dataset:
   shuffle_train: false                # se usare random sampler sul train
   shuffle_val: false                  # se usare random sampler sul validation
   shuffle_test: false                 # se usare random sampler sul test
-  delta_min: 0.5                      # delta range of anomalies - extract from uniform distribution
-  delta_max: 0.5
+  delta_min: 0.05                      # delta range of anomalies - extract from uniform distribution
+  delta_max: 0.05
 
 opt:
   lr: 1e-3
@@ -58,11 +58,11 @@ defense:
   # adversarial training
   regularization: false               # flag to use jacobian regularization
   save_lipschitz: 5                   # number of epochs after we save the norm on validation set
-  warmup_epochs: 10
+  warmup_epochs: 0
   lambda_latent: 1e-2                 # max lambda allowed (lambda for latent loss)
   lambda_latent_min: 1e-6             # lambda minimo consentito
   lambda_latent_max: 1e-1             # max lambda consentito
-  lipschitz_target: 5.0               # target norma Jacobiano
+  lipschitz_target: 1.0               # target norma Jacobiano
   lipschitz_lr: 0.01                  # velocità adattamento lambda
   ema_decay: 0.95                     # smoothing EMA norma
 
@@ -81,16 +81,15 @@ metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
   return_curves: true                      # to plot pr/roc curves
   perturb_test: true                       # flag to decide to perturb (bot adv e real) the test set or not
-  perturb_fraction: 0.8                    # % adversarial w.r.t. total (the rest are real perturbed)
-  pgd_epsilon: 1                           # epsilon to perturb data in test
+  pgd_epsilon: 0.001                         # epsilon to perturb data in test
   real_noise_params:                       # params to build real perturbations
-    gaussian_std: 0.5
-    dropout_prob: 0.5
-    impulse_std: 0.5
+    gaussian_std: 0.1
+    dropout_prob: 0.01
+    impulse_std: 0.1
 
 curves:
   enabled: true
-  pgd_epsilons:    [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
-  gaussian_stds:   [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
-  dropout_probs:   [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
-  impulse_stds:    [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+  pgd_epsilons:  [0.001, 0.005, 0.009, 0.013, 0.017, 0.021, 0.025] # 0.1 bad
+  gaussian_stds: [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]
+  dropout_probs: [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 0.9]
+  impulse_stds:  [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]
