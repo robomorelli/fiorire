@@ -30,6 +30,7 @@ dataset:
   seq_stride_val: 16                  # stride per validation
   seq_stride_test: 16                 # stride per test
   num_workers: 16                     # workers for the dataloader
+  anomaly_threshold: 1e-5             # threshold per decidere se un timestamp è anomalo
   val_anomaly_ratio: 1.0              # % di finestre da corrompere da aggiungere nel validation set
   test_anomaly_ratio: 1.0             # % di finestre da corrompere da aggiungere nel test set
   shuffle_train: false                # se usare random sampler sul train
@@ -81,7 +82,7 @@ metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
   return_curves: true                      # to plot pr/roc curves
   perturb_test: true                       # flag to decide to perturb (bot adv e real) the test set or not
-  pgd_epsilon: 0.001                         # epsilon to perturb data in test
+  pgd_epsilon: 0.05                        # epsilon to perturb data in test
   real_noise_params:                       # params to build real perturbations
     gaussian_std: 0.1
     dropout_prob: 0.01
@@ -89,7 +90,7 @@ metrics:
 
 curves:
   enabled: true
-  pgd_epsilons:  [0.001, 0.005, 0.009, 0.013, 0.017, 0.021, 0.025] # 0.1 bad
+  pgd_epsilons:  [0.001, 0.005, 0.010, 0.015, 0.020, 0.025, 0.030, 0.035, 0.040, 0.045, 0.050, 0.055, 0.060, 0.065] # 0.1 bad
   gaussian_stds: [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]
   dropout_probs: [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 0.9]
   impulse_stds:  [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]

@@ -62,8 +62,6 @@ class DataModule(pl.LightningDataModule):
         # print("Test mean/std:", test_data.mean(), test_data.std())
 
         self.scaler = StandardScaler().fit(train_data)
-        assert self.scaler.scale_ is not None  # per Pylance / mypy
-        self.scaler.scale_[self.scaler.scale_ == 0] = 1.0
 
         train_data_scaled = self.scaler.transform(train_data)
         test_data_scaled = self.scaler.transform(test_data)
@@ -82,9 +80,11 @@ class DataModule(pl.LightningDataModule):
 
         if self.mode == "train":
             self.train_ds = TimeSeriesDataset(
-                train_data,
-                W,
-                self.cfg["dataset"]["seq_stride_train"],
+                data=train_data,
+                seq_len=W,
+                label_granularity=self.cfg["dataset"]["label_granularity"],
+                anomaly_threshold=self.cfg["dataset"]["anomaly_threshold"],
+                stride=self.cfg["dataset"]["seq_stride_train"],
                 scaler=self.scaler,
             )
 
@@ -176,16 +176,25 @@ class DataModule(pl.LightningDataModule):
         )
 
     def _build_dataset_with_anomalies(self, base_data, stride, anomaly_ratio, delta_range=None):
-        clean_ds = TimeSeriesDataset(base_data, self.cfg["dataset"]["seq_in_length"], stride, scaler=self.scaler)
+        clean_ds = TimeSeriesDataset(
+            base_data, 
+            self.cfg["dataset"]["seq_in_length"], 
+            stride, 
+            label_granularity=self.cfg["dataset"]["label_granularity"],
+            anomaly_threshold=self.cfg["dataset"]["anomaly_threshold"], 
+            scaler=self.scaler
+        )
 
         if delta_range is not None and anomaly_ratio > 0:
             anom_ds = TimeSeriesDataset(
                 base_data,
                 self.cfg["dataset"]["seq_in_length"],
                 stride,
+                label_granularity=self.cfg["dataset"]["label_granularity"],
+                anomaly_threshold=self.cfg["dataset"]["anomaly_threshold"],
                 scaler=self.scaler,
                 delta_range=delta_range,
-                Xok_ref=self.Xok_ref_train,  # ← sempre dal train
+                Xok_ref=self.Xok_ref_train,  # sempre dal train
             )
             n_anom = int(anomaly_ratio * len(clean_ds))
             idx = np.random.choice(len(anom_ds), size=n_anom, replace=False).tolist()

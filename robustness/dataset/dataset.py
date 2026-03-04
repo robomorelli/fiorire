@@ -14,6 +14,8 @@ class TimeSeriesDataset(Dataset):
         data: NDArray,  # [T, F]
         seq_len: int,
         stride: int,
+        label_granularity: str,
+        anomaly_threshold: float,
         scaler: Optional[StandardScaler] = None,
         delta_range: Optional[tuple[float, float]] = None,
         Xok_ref: Optional[NDArray] = None,  # [N, W]
@@ -21,6 +23,8 @@ class TimeSeriesDataset(Dataset):
         self.data = data
         self.seq_len = seq_len
         self.stride = stride
+        self.anomaly_threshold = anomaly_threshold
+        self.label_granularity = label_granularity
         self.scaler = scaler
         self.delta_range = delta_range
         self.Xok_ref = Xok_ref
@@ -33,32 +37,47 @@ class TimeSeriesDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
         i = self.indices[idx]
         window = self.data[i : i + self.seq_len]  # [W, F]
-        label = 0  # default: clean
 
+        # copia pulita
+        window_clean = window.copy()
         if self.scaler is not None:
-            window = self.scaler.transform(window)
+            window_clean = self.scaler.transform(window_clean)
+        window_clean = np.nan_to_num(window_clean, nan=0.0, posinf=0.0, neginf=0.0)
 
-        window = np.nan_to_num(window, nan=0.0, posinf=0.0, neginf=0.0)
-
+        # applica anomalie se necessario
         if self.delta_range is not None:
-            window = self._inject_anomaly(window)
-            label = 1
+            window_modified, mask = self._inject_anomaly(window_clean)
+        else:
+            window_modified = window_clean
+            mask = np.zeros(self.seq_len, dtype=np.int64)
 
-        # [W, F] → [1, F, W]
-        window = torch.from_numpy(window.T).unsqueeze(0).float()
-        label = torch.tensor(label, dtype=torch.long)
-        return window, label
+        # costruzione label
+        if self.label_granularity == "sequence":
+            # 1 se almeno un timestep modificato
+            label = torch.tensor(1 if mask.any() else 0, dtype=torch.long)
+        elif self.label_granularity == "timestamp":
+            # 1 per timestep modificato, 0 altrimenti
+            label = torch.from_numpy(mask).float()
+        else:
+            raise ValueError("Invalid label_granularity")
 
-    def _inject_anomaly(self, window: NDArray) -> NDArray:
+        # [1, F, W] per conv1d in canale-wise
+        window_modified = torch.from_numpy(window_modified.T).unsqueeze(0).float()
+
+        return window_modified, label
+
+    def _inject_anomaly(self, window: NDArray) -> tuple[NDArray, NDArray]:
         """
-        Applica una anomalia WOMBATS canale-wise
+        Applica una anomalia WOMBATS canale-wise.
+        Restituisce (window, mask) dove mask[t]=1 se il timestep t è stato modificato.
         """
         # guard obbligatori (per pylance)
         if self.delta_range is None or self.Xok_ref is None:
-            return window
+            return window, np.zeros(window.shape[0], dtype=np.int64)
 
         W, F = window.shape
         feature = np.random.randint(F)
+        original_col = window[:, feature].copy()
 
         window[:, feature] = apply_random_wombats_anomaly(
             signal=window[:, feature],
@@ -66,4 +85,5 @@ class TimeSeriesDataset(Dataset):
             delta_range=self.delta_range,
         )
 
-        return window
+        mask = (~np.isclose(window[:, feature], original_col)).astype(np.int64)  # [W]
+        return window, mask

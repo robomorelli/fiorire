@@ -20,7 +20,7 @@ model:
   dilation: 1
 
 dataset:
-  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_CMG.csv"
+  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_AOC.csv"
   n_seq_chunk: 200                    # how many sequences for each chunk
   test_chunk_ratio: 0.2               # % test set
   val_ratio: 0.2                      # % validation set
@@ -30,6 +30,8 @@ dataset:
   seq_stride_val: 16                  # stride per validation
   seq_stride_test: 16                 # stride per test
   num_workers: 16                     # workers for the dataloader
+  label_granularity: "sequence"       # una label sequenza ("sequence") o una per timestamp ("timestamp")
+  anomaly_threshold: 1e-5             # threshold per decidere se un timestamp è anomalo
   val_anomaly_ratio: 1.0              # % di finestre da corrompere da aggiungere nel validation set
   test_anomaly_ratio: 1.0             # % di finestre da corrompere da aggiungere nel test set
   shuffle_train: false                # se usare random sampler sul train
@@ -74,14 +76,14 @@ trainer:
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
   name_exp: CMG
-  run_name: reg_train_3
+  run_name: reg_train
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
   return_curves: true                      # to plot pr/roc curves
   perturb_test: true                       # flag to decide to perturb (both adv e real) the test set or not
   perturb_fraction: 0.5                    # % adversarial w.r.t. total (the rest are real perturbed)
-  pgd_epsilon: 1                           # epsilon to perturb data in test
+  pgd_epsilon: 0.01                        # epsilon to perturb data in test
   real_noise_params:                       # params to build real perturbations
     gaussian_std: 0.01
     dropout_prob: 0.1

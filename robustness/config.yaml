@@ -32,9 +32,11 @@ dataset:
   num_workers: 16                     # workers for the dataloader
   val_anomaly_ratio: 1.0              # % di finestre da corrompere da aggiungere nel validation set
   test_anomaly_ratio: 1.0             # % di finestre da corrompere da aggiungere nel test set
+  label_granularity: "timestamp"       # una label sequenza ("sequence") o una per timestamp ("timestamp")
+  anomaly_threshold: 1e-5             # threshold per decidere se un timestamp è anomalo
   shuffle_train: false                # se usare random sampler sul train
-  shuffle_val: false                  # se usare random sampler sul validation
-  shuffle_test: false                 # se usare random sampler sul test
+  shuffle_val: true                   # se usare random sampler sul validation
+  shuffle_test: true                  # se usare random sampler sul test
   delta_min: 0.5                      # delta range of anomalies - extract from uniform distribution
   delta_max: 0.5
 
@@ -74,7 +76,7 @@ trainer:
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
   name_exp: CMG
-  run_name: vanilla
+  run_name: vanilla_aaaaaa
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test

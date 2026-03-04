@@ -35,6 +35,7 @@ class LitAutoEncoder(pl.LightningModule):
         self.model = CONV_AE2D(cfg)
         self.lr = cfg["opt"]["lr"]
         self.lambda_latent = cfg["defense"]["lambda_latent"]
+        self.label_granularity = self.cfg["dataset"]["label_granularity"]
 
         # training buffers
         self.train_feat_errors = []
@@ -86,12 +87,12 @@ class LitAutoEncoder(pl.LightningModule):
         return self.model(x)
 
     def training_step(self, batch: tuple[Tensor, Tensor], batch_idx):
-        x, _ = batch
+        x, y = batch  # y shape [B, W]
         x = x.requires_grad_(True)
 
         # clean forward
         x_hat = self(x)
-        recon_loss = reconstruction_loss(x, x_hat)
+        recon_loss = reconstruction_loss(x, x_hat, dimensions=[1,2]).mean()
 
         # feature meadian errors
         feat_err = feature_errors(x, x_hat)
@@ -178,18 +179,24 @@ class LitAutoEncoder(pl.LightningModule):
         self._epoch_lipschitz_norm.clear()
         self._epoch_lambda.clear()
 
+    def _rec_dimensions(self):
+        """Return reduction dimensions based on label_granularity.
+        sequence  → [1, 2]  : one score per sequence  [B]
+        timestamp → [1]     : one score per timestep  [B, W]
+        """
+        if self.label_granularity == "timestamp":
+            return [1]
+        return [1, 2]
+
     def validation_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, y = batch
         x = x.requires_grad_(True)
-
         x_rec = self(x)
-
-        loss = reconstruction_loss(x, x_rec, reduction="none")
-        rec_err = loss.view(x.size(0), -1).mean(dim=1)  # shape: (B,)
-
-        self._val_scores.append(rec_err.detach())
-        self._val_labels.append(y.detach())
-
+        
+        rec_err = reconstruction_loss(x, x_rec, dimensions=self._rec_dimensions())  # [B,W] or [B]
+        self._val_scores.append(rec_err.detach().reshape(-1))
+        self._val_labels.append(y.detach().reshape(-1))
+        
         # compute Lipschitz only at target epoch
         target_epoch = self.cfg["defense"]["save_lipschitz"]
 
@@ -207,7 +214,7 @@ class LitAutoEncoder(pl.LightningModule):
 
             self._val_lipschitz_norm.append(lipschitz_norm.detach())
 
-        return loss
+        return rec_err
 
     def on_validation_epoch_end(self):
         if self.trainer.sanity_checking or not self._val_scores:
@@ -291,20 +298,22 @@ class LitAutoEncoder(pl.LightningModule):
         x, y = batch
         apply_defense = self.cfg["defense"]["apply_defense"]
         perturb = self.cfg["metrics"]["perturb_test"]
-        epsilon = self.cfg["metrics"]["pgd_epsilon"]
         need_grad = perturb or apply_defense
 
         with torch.enable_grad() if need_grad else torch.no_grad():
             if perturb:
                 x = x.clone()
 
+                clean_mask = y == 0
+                clean_idx = clean_mask.nonzero(as_tuple=True)[0]
                 # rumore reale su TUTTI i campioni
                 if any(v > 0 for v in [
                     self.cfg["metrics"]["real_noise_params"]["gaussian_std"],
                     self.cfg["metrics"]["real_noise_params"]["dropout_prob"],
                     self.cfg["metrics"]["real_noise_params"]["impulse_std"],
                 ]):
-                    x = random_real_perturbation(x, self.cfg["metrics"]["real_noise_params"])
+                    x_real = random_real_perturbation(x[clean_idx], self.cfg["metrics"]["real_noise_params"])
+                    x[clean_idx] = x_real
 
                 # PGD solo sulle anomalie
                 anomaly_mask = y == 1
@@ -330,12 +339,13 @@ class LitAutoEncoder(pl.LightningModule):
                     self.cfg["defense"]["alpha"],
                     self.cfg["defense"]["num_iter"],
                     self.train_feat_median,
+                    self.label_granularity,            # <-- aggiunto
                     self.cfg["defense"]["use_feature_weighting"]
                 )
             else:
                 # normal test
-                x_rec = self.model.decoder(self.model.encoder(x))
-                rec_err = ((x_rec - x) ** 2).mean(dim=(1, 2, 3))  # MSE puro per sample
+                x_rec = self(x)
+                rec_err = reconstruction_loss(x, x_rec, dimensions=self._rec_dimensions())
 
         # log reconstruction error per batch
         self.log(
@@ -346,8 +356,8 @@ class LitAutoEncoder(pl.LightningModule):
         )
 
         # accumulo buffer per detection metrics
-        self._test_scores.append(rec_err.detach().cpu().numpy())
-        self._test_labels.append(y.detach().cpu().numpy())
+        self._test_scores.append(rec_err.detach().cpu().numpy().reshape(-1))
+        self._test_labels.append(y.detach().cpu().numpy().reshape(-1))
 
         # batch-wise (solo anomaly score)
         self._test_metrics_epoch.append(

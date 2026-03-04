@@ -4,6 +4,8 @@ from typing import Optional
 from torch import Tensor
 from models.conv_ae2D import Encoder, Decoder
 
+from robustness.lightning_module.losses import reconstruction_loss
+
 
 def approximate_projection(
     encoder: Encoder,
@@ -60,17 +62,10 @@ def apply_feature_weighting(
     batch_idx: Optional[int] = None,
 ):
     """
-    Apply feature weighting to reconstruction errors.
-
     Args:
-        rec_err_feat: [B, F] per-feature reconstruction error
-        train_feat_median: [F] median train feature errors or None
-        epsilon: numerical stability term
-        warn: whether to emit warning if weighting disabled
-        batch_idx: for emitting warning only once
-
+        rec_err_feat: [B, F] or [B, F, W] per-feature reconstruction error
     Returns:
-        rec_err: [B] weighted reconstruction error
+        rec_err: [B] or [B, W] weighted reconstruction error
     """
     if train_feat_median is None:
         if warn and (batch_idx is None or batch_idx == 0):
@@ -79,10 +74,11 @@ def apply_feature_weighting(
                 "feature weighting DISABLED during test."
             )
         return rec_err_feat.sum(dim=1)
-    weights = 1.0 / (epsilon + train_feat_median.to(rec_err_feat.device))
-    # normalize so sum(weights) = num_features
-    weights = weights / weights.sum() * rec_err_feat.shape[1]
-    return (rec_err_feat * weights).sum(dim=1)
+    weights = 1.0 / (epsilon + train_feat_median.to(rec_err_feat.device))  # [F]
+    weights = weights / weights.sum() * rec_err_feat.shape[1]              # [F]
+    # works for both [B, F] and [B, F, W] since dim=1 is always F
+    return (rec_err_feat * weights.unsqueeze(0).unsqueeze(-1) if rec_err_feat.ndim == 3
+            else rec_err_feat * weights).sum(dim=1)
 
 
 def reconstruct_and_weight(
@@ -92,30 +88,22 @@ def reconstruct_and_weight(
     alpha: float,
     num_iter: int,
     train_feat_median: Optional[Tensor],
+    label_granularity: str = "sequence",   # <-- aggiunto
     epsilon: float = 1e-4,
-    use_feature_weighting: bool = True
+    use_feature_weighting: bool = True,
 ) -> tuple[Tensor, Tensor]:
     """
-    Apply approximate projection + feature weighting in one shot.
-
-    Args:
-        encoder: torch module, maps x -> latent z
-        decoder: torch module, maps latent z -> reconstructed x_hat
-        x: input batch [B, C, F, W]
-        alpha: step size for projection
-        num_iter: number of projection steps
-        train_feat_median: [F] median of training feature errors (or None)
-        epsilon: small constant for numerical stability in weighting
-
     Returns:
-        x_rec: reconstructed batch [B, C, F, W]
-        rec_err: weighted reconstruction error [B]
+        x_rec: [B, C, F, W]
+        rec_err: [B] if label_granularity=="sequence", [B, W] if "timestamp"
     """
     x_rec, _ = approximate_projection(encoder, decoder, x, alpha, num_iter)
-    rec_err_feat = (x_rec - x).pow(2).mean(dim=(1, 3))
+    # sequence → dimensions=[2] → [B, F]
+    # timestamp → dimensions=[]  → [B, F, W]  (no reduction on W)
+    dimensions = [2] if label_granularity == "sequence" else []
+    rec_err_feat = reconstruction_loss(x, x_rec, dimensions=dimensions)
     if use_feature_weighting:
         rec_err = apply_feature_weighting(rec_err_feat, train_feat_median, epsilon)
     else:
         rec_err = rec_err_feat.mean(dim=1)
-    rec_err = apply_feature_weighting(rec_err_feat, train_feat_median, epsilon)
     return x_rec, rec_err

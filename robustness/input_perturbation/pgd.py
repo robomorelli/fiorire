@@ -16,11 +16,11 @@ def pgd_attack(
     x_orig = x.detach()
 
     for _ in range(steps):
-        with torch.enable_grad():   # ← FONDAMENTALE
+        with torch.enable_grad():
             x_adv.requires_grad_(True)
 
             x_hat = model(x_adv)
-            loss = reconstruction_loss(x_hat, x_orig)
+            loss = reconstruction_loss(x_hat, x_orig, dimensions=[1,2])
 
             grad = torch.autograd.grad(
                 loss,
