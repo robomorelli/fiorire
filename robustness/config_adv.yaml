@@ -20,7 +20,7 @@ model:
   dilation: 1
 
 dataset:
-  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_AOC.csv"
+  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_CMG.csv"
   n_seq_chunk: 200                    # how many sequences for each chunk
   test_chunk_ratio: 0.2               # % test set
   val_ratio: 0.2                      # % validation set
@@ -57,14 +57,15 @@ defense:
   num_iter: 1                         # number of projection steps
   # adversarial training
   regularization: true                # flag to use jacobian regularization
-  warmup_epochs: 0
+  controller: "ratio"                 # decide which EMA is used: "ratio" | "norm"
+  target_norm: 1.0                    # parametro specifico per "norm"
+  target_ratio: 0.2                   # parametro specifico per "ratio"
   save_lipschitz: 5                   # number of epochs after we save the norm on validation set (before overfitting ideally)
-  lambda_latent: 1e-1                 # max lambda allowed (lambda for latent loss)
-  lambda_latent_min: 1e-4             # lambda minimo consentito
-  lambda_latent_max: 1                # max lambda consentito
-  lipschitz_target: 1.0               # target norma Jacobiano
-  lipschitz_lr: 0.01                  # velocità adattamento lambda
-  ema_decay: 0.9                      # smoothing EMA norma
+  lambda_init: 1e-1                   # max lambda allowed (lambda for latent loss)
+  lambda_min: 1e-4                    # lambda minimo consentito
+  lambda_max: 1                       # max lambda consentito
+  lr_lambda: 0.01                     # velocità adattamento lambda
+  ema_decay: 0.95                     # smoothing EMA norma
 
 trainer:
   accelerator: "gpu"
@@ -74,8 +75,8 @@ trainer:
   precision: "bf16-mixed"
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
-  name_exp: AOC
-  run_name: reg_train
+  name_exp: CMG
+  run_name: reg_train_1
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test

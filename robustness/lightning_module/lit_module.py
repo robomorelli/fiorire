@@ -8,6 +8,7 @@ import numpy as np
 
 from models.conv_ae2D import CONV_AE2D
 from robustness.lightning_module.losses import (
+    RatioEMAController,
     reconstruction_loss,
     feature_errors,
     LipschitzEMAController,
@@ -34,7 +35,7 @@ class LitAutoEncoder(pl.LightningModule):
         self.cfg = cfg
         self.model = CONV_AE2D(cfg)
         self.lr = cfg["opt"]["lr"]
-        self.lambda_latent = cfg["defense"]["lambda_latent"]
+        self.lambda_init = cfg["defense"]["lambda_init"]
         self.label_granularity = self.cfg.get("dataset", {}).get("label_granularity", "sequence")
 
         # training buffers
@@ -43,6 +44,7 @@ class LitAutoEncoder(pl.LightningModule):
         self._epoch_train_loss = []
         self._epoch_recon_loss = []
         self._epoch_jac_loss = []
+        self._epoch_jac_loss_raw = []
         self._epoch_ratio = []
         self._epoch_lipschitz_norm = []
         self._epoch_lambda = []
@@ -52,15 +54,28 @@ class LitAutoEncoder(pl.LightningModule):
         self.train_ratio = 0.0
         self.train_lipschitz_norm = 0.0
         self.train_lambda = 0.0
-        self.lipschitz_ctrl = LipschitzEMAController(
-            init_lambda=cfg["defense"]["lambda_latent"],
-            target_norm=cfg["defense"]["lipschitz_target"],
-            ema_decay=cfg["defense"].get("ema_decay", 0.0),
-            lr=cfg["defense"]["lipschitz_lr"],
-            min_lambda=cfg["defense"]["lambda_latent_min"],
-            max_lambda=cfg["defense"]["lambda_latent_max"],
-        )
-        self.current_lambda = cfg["defense"]["lambda_latent"]
+        ctrl_cfg = self.cfg["defense"]
+        if ctrl_cfg["controller"] == "ratio":
+            self.lipschitz_ctrl = RatioEMAController(
+                lambda_init=ctrl_cfg["lambda_init"],
+                target_ratio=ctrl_cfg["target_ratio"],
+                ema_decay=ctrl_cfg["ema_decay"],
+                lr=ctrl_cfg["lr_lambda"],
+                lambda_min=ctrl_cfg["lambda_min"],
+                lambda_max=ctrl_cfg["lambda_max"],
+            )
+        elif ctrl_cfg["controller"] == "norm":
+            self.lipschitz_ctrl = LipschitzEMAController(
+                lambda_init=ctrl_cfg["lambda_init"],
+                target_norm=ctrl_cfg["target_norm"],
+                ema_decay=ctrl_cfg["ema_decay"],
+                lr=ctrl_cfg["lr_lambda"],
+                lambda_min=ctrl_cfg["lambda_min"],
+                lambda_max=ctrl_cfg["lambda_max"],
+            )
+        else:
+            raise ValueError(f"Unknown controller type: {ctrl_cfg['controller']}")
+        self.current_lambda = cfg["defense"]["lambda_init"]
         self.current_lipschitz = 0.0
 
         # validation epoch buffers
@@ -103,12 +118,8 @@ class LitAutoEncoder(pl.LightningModule):
             self.model.encoder,
             x,
         )
-        warmup_epochs = self.cfg["defense"]["warmup_epochs"]
 
-        if (
-            self.cfg["defense"]["regularization"]
-            and self.current_epoch >= warmup_epochs
-        ):
+        if self.cfg["defense"]["regularization"]:
             jac_loss = lipschitz_norm**2
 
         jac_contrib = self.current_lambda * jac_loss
@@ -118,6 +129,7 @@ class LitAutoEncoder(pl.LightningModule):
         self._epoch_train_loss.append(loss.detach())
         self._epoch_recon_loss.append(recon_loss.detach())
         self._epoch_jac_loss.append(jac_contrib.detach())
+        self._epoch_jac_loss_raw.append(jac_loss.detach()) 
         self._epoch_ratio.append(ratio.detach())
         self._epoch_lipschitz_norm.append(lipschitz_norm.detach())
         self._epoch_lambda.append(torch.tensor(self.current_lambda, device=self.device))
@@ -134,11 +146,18 @@ class LitAutoEncoder(pl.LightningModule):
         avg_norm = torch.stack(self._epoch_lipschitz_norm).mean()
 
         if self.cfg["defense"]["regularization"]:
-            self.current_lambda, self.current_lipschitz = self.lipschitz_ctrl.update(
-                avg_norm
-            )
-        else:
-            self.current_lipschitz = avg_norm
+            if self.cfg["defense"]["controller"] == "ratio":
+                avg_jac_raw = torch.stack(self._epoch_jac_loss_raw).mean()  # ||J||^2
+                avg_recon   = torch.stack(self._epoch_recon_loss).mean()
+                assert isinstance(self.lipschitz_ctrl, RatioEMAController)
+                self.current_lambda, self.current_lipschitz = self.lipschitz_ctrl.update(
+                    avg_jac_raw, avg_recon
+                )
+            else:
+                assert isinstance(self.lipschitz_ctrl, LipschitzEMAController)
+                self.current_lambda, self.current_lipschitz = self.lipschitz_ctrl.update(
+                    avg_norm
+                )
 
         # epoch logging
         if not self._epoch_train_loss:
@@ -175,6 +194,7 @@ class LitAutoEncoder(pl.LightningModule):
         self._epoch_train_loss.clear()
         self._epoch_recon_loss.clear()
         self._epoch_jac_loss.clear()
+        self._epoch_jac_loss_raw.clear()
         self._epoch_ratio.clear()
         self._epoch_lipschitz_norm.clear()
         self._epoch_lambda.clear()
@@ -222,19 +242,6 @@ class LitAutoEncoder(pl.LightningModule):
 
         all_scores = torch.cat(self._val_scores, dim=0).cpu().numpy()
         all_labels = torch.cat(self._val_labels, dim=0).cpu().numpy()
-
-        # print(
-        #     f"VAL Clean scores - mean: {all_scores[all_labels==0].mean():.4f}, std: {all_scores[all_labels==0].std():.4f}"
-        # )
-        # print(
-        #     f"VAL Anomaly scores - mean: {all_scores[all_labels==1].mean():.4f}, std: {all_scores[all_labels==1].std():.4f}"
-        # )
-        # print(
-        #     f"VAL Clean percentiles: 25%={np.percentile(all_scores[all_labels==0],25):.4f}, 50%={np.percentile(all_scores[all_labels==0],50):.4f}, 75%={np.percentile(all_scores[all_labels==0],75):.4f}"
-        # )
-        # print(
-        #     f"VAL Anomaly percentiles: 25%={np.percentile(all_scores[all_labels==1],25):.4f}, 50%={np.percentile(all_scores[all_labels==1],50):.4f}, 75%={np.percentile(all_scores[all_labels==1],75):.4f}"
-        # )
 
         epoch_val_loss = torch.tensor(all_scores.mean(), device=self.device)
         # log per epoca

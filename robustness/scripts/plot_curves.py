@@ -58,7 +58,7 @@ def run_and_plot(config_path: str | Path):
         defense_folder = out_root / base_run_name / suffix
         defense_folder.mkdir(parents=True, exist_ok=True)
 
-        # ── Clean test ────────────────────────────────────────────────────────
+        # clean test
         print("Running CLEAN test")
         model.set_test_configuration(
             test_mode=f"{suffix}/clean",
@@ -69,12 +69,12 @@ def run_and_plot(config_path: str | Path):
         trainer.test(model, datamodule=datamodule)
         clean_metrics = _load_all_metrics(defense_folder / "clean" / "metrics.csv")
 
-        # ── Perturbed test ────────────────────────────────────────────────────────
+        # perturbed test
         print("Running PERTURBED test")
         attack_cfg = base_cfg["attack"]
         real_p = base_cfg["attack"]["real_noise"]
 
-        # Ricava il parametro specifico dell'attacco dal config
+        # ricava il parametro specifico dell'attacco dal config
         l2_budget = float(attack_cfg["budget"]) if attack_cfg["type"] == "l2" else None
         l0_k      = int(attack_cfg["k"])        if attack_cfg["type"] == "l0" else None
 
@@ -93,10 +93,10 @@ def run_and_plot(config_path: str | Path):
         trainer.test(model, datamodule=datamodule)
         anom_metrics = _load_all_metrics(defense_folder / "perturbed" / "metrics.csv")
 
-        # ── Univariate perturbation sweep for robustness curves ───────────────
+        # univariate perturbation sweep for robustness curves
         curves_cfg = base_cfg["curves"]
 
-        # Map: (perturb_type_key, set_test_configuration kwarg, param_list)
+        # map: (perturb_type_key, set_test_configuration kwarg, param_list)
         perturbation_sweep = [
             # adversarial attacks
             ("l2_budget", dict(attack_type="l2"), curves_cfg["attacks"]["l2_budget"]),
@@ -116,7 +116,7 @@ def run_and_plot(config_path: str | Path):
 
             for p in param_list:
                 print(f"Running {perturb_key}={p}")
-                # Build the per-sweep kwarg (l2_budget, l0_k, or noise param)
+                # build the per-sweep kwarg (l2_budget, l0_k, or noise param)
                 sweep_kwarg = {perturb_key: p}
                 model.set_test_configuration(
                     test_mode=f"{suffix}/perturbations/{perturb_key}/{p}",
@@ -128,7 +128,7 @@ def run_and_plot(config_path: str | Path):
                 )
                 trainer.test(model, datamodule=datamodule)
 
-        # ── Collect results from CSVs ─────────────────────────────────────────
+        # collect results from csv
         results = {}
         for perturb_key, _, _ in perturbation_sweep:
             results[perturb_key] = {}
@@ -138,7 +138,6 @@ def run_and_plot(config_path: str | Path):
 
         print("RESULTS STRUCTURE:", results)
 
-        # ── Plot ──────────────────────────────────────────────────────────────
         print("\nPlotting robustness curves")
         plot_robustness_curves(
             clean_metrics=clean_metrics,

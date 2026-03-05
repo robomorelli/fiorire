@@ -50,11 +50,11 @@ defense:
   num_iter: 1
   regularization: false
   warmup_epochs: 10
-  lambda_latent: 0.01
-  lambda_latent_min: 1.0e-06
-  lambda_latent_max: 0.1
+  lambda_init: 0.01
+  lambda_min: 1.0e-06
+  lambda_max: 0.1
   lipschitz_target: 5.0
-  lipschitz_lr: 0.01
+  lr_lambda: 0.01
   ema_decay: 0.95
 trainer:
   accelerator: gpu

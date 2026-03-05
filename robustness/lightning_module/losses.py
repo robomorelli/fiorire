@@ -29,35 +29,35 @@ def feature_errors(x: Tensor, x_hat: Tensor):
 
 class LipschitzEMAController:
     """
-    Controller per aggiornare dinamicamente il coefficiente lambda_latent
+    Controller per aggiornare dinamicamente il coefficiente lambda_init
     basato sulla norma Lipschitz stimata con EMA.
 
     Attributes:
-        lambda_latent (float): Valore corrente di lambda per la regolarizzazione latente.
+        lambda_init (float): Valore corrente di lambda per la regolarizzazione latente.
         target_norm (float): Norma target desiderata.
         ema_decay (float): Fattore di decadimento dell'EMA.
         lr (float): Learning rate per l'aggiornamento esponenziale di lambda.
-        min_lambda (float): Valore minimo di lambda_latent.
-        max_lambda (float): Valore massimo di lambda_latent.
+        lambda_min (float): Valore minimo di lambda_init.
+        lambda_max (float): Valore massimo di lambda_init.
         ema_norm (Optional[Tensor]): EMA corrente della norma calcolata.
     """
 
     def __init__(
         self,
-        init_lambda: float = 1e-4,
+        lambda_init: float = 1e-4,
         target_norm: float = 1.0,
         ema_decay: float = 0.95,
         lr: float = 0.01,
-        min_lambda: float = 1e-6,
-        max_lambda: float = 1e-2,
+        lambda_min: float = 1e-6,
+        lambda_max: float = 1e-2,
         ema_norm: float | None = None
     ) -> None:
-        self.lambda_latent = init_lambda
+        self.lambda_init = lambda_init
         self.target_norm = target_norm
         self.ema_decay = ema_decay
         self.lr = lr
-        self.min_lambda = min_lambda
-        self.max_lambda = max_lambda
+        self.lambda_min = lambda_min
+        self.lambda_max = lambda_max
         self.ema_norm = ema_norm
 
     def update(self, norm: Tensor) -> tuple[float, float]:
@@ -68,10 +68,58 @@ class LipschitzEMAController:
             self.ema_norm = self.ema_decay * self.ema_norm + (1 - self.ema_decay) * norm.item()
 
         error = self.ema_norm - self.target_norm
-        self.lambda_latent *= math.exp(self.lr * error)
-        self.lambda_latent = max(self.min_lambda, min(self.lambda_latent, self.max_lambda))
+        self.lambda_init *= math.exp(self.lr * error)
+        self.lambda_init = max(self.lambda_min, min(self.lambda_init, self.lambda_max))
 
-        return self.lambda_latent, self.ema_norm 
+        return self.lambda_init, self.ema_norm 
+    
+class RatioEMAController:
+    """
+    Controlla lambda dinamicamente per portare il ratio
+    (lambda * jac_loss / recon_loss) verso target_ratio.
+    
+    Invece di fissare una target norm dello jacobiano, fissa direttamente
+    il contributo relativo della regolarizzazione rispetto alla recon loss.
+    """
+
+    def __init__(
+        self,
+        lambda_init: float = 1e-4,
+        target_ratio: float = 0.1,   # es. jac_contrib = 10% di recon_loss
+        ema_decay: float = 0.95,
+        lr: float = 0.01,
+        lambda_min: float = 1e-6,
+        lambda_max: float = 1.0,     # range più ampio: il ratio scala recon_loss
+    ) -> None:
+        self.lambda_init = lambda_init
+        self.target_ratio = target_ratio
+        self.ema_decay = ema_decay
+        self.lr = lr
+        self.lambda_min = lambda_min
+        self.lambda_max = lambda_max
+        self.ema_ratio: float | None = None
+
+    def update(self, jac_loss: Tensor, recon_loss: Tensor) -> tuple[float, float]:
+        """
+        Args:
+            jac_loss:   ||J||^2 (scalar tensor)
+            recon_loss: reconstruction loss (scalar tensor)
+        Returns:
+            (lambda_init, ema_ratio)
+        """
+        current_ratio = (self.lambda_init * jac_loss / (recon_loss + 1e-8)).item()
+
+        if self.ema_ratio is None:
+            self.ema_ratio = current_ratio
+        else:
+            self.ema_ratio = self.ema_decay * self.ema_ratio + (1 - self.ema_decay) * current_ratio
+
+        # errore sul ratio (in log space per stabilità)
+        error = math.log(self.ema_ratio + 1e-8) - math.log(self.target_ratio + 1e-8)
+        self.lambda_init *= math.exp(-self.lr * error)
+        self.lambda_init = max(self.lambda_min, min(self.lambda_init, self.lambda_max))
+
+        return self.lambda_init, self.ema_ratio
 
 
 def compute_jacobian_norm(encoder: nn.Module, x: Tensor) -> Tensor:

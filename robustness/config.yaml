@@ -57,13 +57,12 @@ defense:
   num_iter: 1                         # number of projection steps
   # adversarial training
   regularization: false               # flag to use jacobian regularization
-  warmup_epochs: 10
   save_lipschitz: 5                   # number of epochs after we save the norm on validation set (before overfitting ideally)
-  lambda_latent: 1e-2                 # max lambda allowed (lambda for latent loss)
-  lambda_latent_min: 1e-6             # lambda minimo consentito
-  lambda_latent_max: 1e-1             # max lambda consentito
+  lambda_init: 1e-2                 # max lambda allowed (lambda for latent loss)
+  lambda_min: 1e-6             # lambda minimo consentito
+  lambda_max: 1e-1             # max lambda consentito
   lipschitz_target: 1.0               # target norma Jacobiano
-  lipschitz_lr: 0.01                  # velocità adattamento lambda
+  lr_lambda: 0.01                  # velocità adattamento lambda
   ema_decay: 0.95                     # smoothing EMA norma
 
 trainer:
