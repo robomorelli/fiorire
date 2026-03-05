@@ -41,6 +41,7 @@ def run_and_plot(config_path: str | Path):
         weights_only=False,
     )
     model.cfg = cast(DictConfig, OmegaConf.merge(model.cfg, base_cfg))
+    model.model = torch.compile(model.model)  # type: ignore
     trainer = Trainer(
         accelerator=base_cfg["trainer"]["accelerator"],
         devices=base_cfg["trainer"]["devices"],
@@ -50,90 +51,94 @@ def run_and_plot(config_path: str | Path):
     )
     print("Model loaded.\n")
 
-    # loop su defense off/on
     for defense_flag in [False, True]:
         suffix = "def_on" if defense_flag else "def_off"
         print(f"\nRunning tests with defense = {defense_flag} ({suffix})")
 
         defense_folder = out_root / base_run_name / suffix
         defense_folder.mkdir(parents=True, exist_ok=True)
-        model.cfg["defense"]["apply_defense"] = defense_flag
-        model.cfg["metrics"]["defense_suffix"] = suffix
 
-        # clean & perturbed folders
-        clean_dir = defense_folder / "clean"
-        clean_dir.mkdir(parents=True, exist_ok=True)
-        anom_dir = defense_folder / "perturbed"
-        anom_dir.mkdir(parents=True, exist_ok=True)
-
+        # ── Clean test ────────────────────────────────────────────────────────
         print("Running CLEAN test")
         model.set_test_configuration(
-            test_mode="clean",
-            perturb=False, 
-            apply_defense=defense_flag
+            test_mode=f"{suffix}/clean",
+            perturb=False,
+            apply_defense=defense_flag,
+            defense_suffix=suffix,
         )
-        model.cfg["metrics"]["test_mode"] = f"{suffix}/clean"
         trainer.test(model, datamodule=datamodule)
-        clean_metrics = _load_all_metrics(clean_dir / "metrics.csv")
+        clean_metrics = _load_all_metrics(defense_folder / "clean" / "metrics.csv")
 
+        # ── Perturbed test ────────────────────────────────────────────────────────
         print("Running PERTURBED test")
+        attack_cfg = base_cfg["attack"]
+        real_p = base_cfg["attack"]["real_noise"]
+
+        # Ricava il parametro specifico dell'attacco dal config
+        l2_budget = float(attack_cfg["budget"]) if attack_cfg["type"] == "l2" else None
+        l0_k      = int(attack_cfg["k"])        if attack_cfg["type"] == "l0" else None
+
         model.set_test_configuration(
-            test_mode="perturbed",
+            test_mode=f"{suffix}/perturbed",
             perturb=True,
             apply_defense=defense_flag,
-            pgd_epsilon=base_cfg["metrics"]["pgd_epsilon"],
-            gaussian_std=base_cfg["metrics"]["real_noise_params"]["gaussian_std"],
-            dropout_prob=base_cfg["metrics"]["real_noise_params"]["dropout_prob"],
-            impulse_std=base_cfg["metrics"]["real_noise_params"]["impulse_std"]
+            defense_suffix=suffix,
+            attack_type=attack_cfg["type"],
+            l2_budget=l2_budget,
+            l0_k=l0_k,
+            gaussian_std=real_p["gaussian_std"],
+            dropout_prob=real_p["dropout_prob"],
+            impulse_std=real_p["impulse_std"],
         )
-        model.cfg["metrics"]["test_mode"] = f"{suffix}/perturbed"
         trainer.test(model, datamodule=datamodule)
-        anom_metrics = _load_all_metrics(anom_dir / "metrics.csv")
+        anom_metrics = _load_all_metrics(defense_folder / "perturbed" / "metrics.csv")
 
-        # perturbations for plotting univariate curves
-        perturbation_map = {
-            "pgd_epsilon": base_cfg["curves"]["pgd_epsilons"],
-            "gaussian_std": base_cfg["curves"]["gaussian_stds"],
-            "dropout_prob": base_cfg["curves"]["dropout_probs"],
-            "impulse_std": base_cfg["curves"]["impulse_stds"],
-        }
+        # ── Univariate perturbation sweep for robustness curves ───────────────
+        curves_cfg = base_cfg["curves"]
+
+        # Map: (perturb_type_key, set_test_configuration kwarg, param_list)
+        perturbation_sweep = [
+            # adversarial attacks
+            ("l2_budget", dict(attack_type="l2"), curves_cfg["attacks"]["l2_budget"]),
+            ("l0_k",      dict(attack_type="l0"), curves_cfg["attacks"]["l0_k"]),
+            # real noise
+            ("gaussian_std", {}, curves_cfg["noise"]["gaussian_std"]),
+            ("dropout_prob", {}, curves_cfg["noise"]["dropout_prob"]),
+            ("impulse_std",  {}, curves_cfg["noise"]["impulse_std"]),
+        ]
 
         perturb_base = defense_folder / "perturbations"
         perturb_base.mkdir(exist_ok=True)
 
-        for perturb_type, param_list in perturbation_map.items():
-            perturb_type_dir = perturb_base / perturb_type
+        for perturb_key, extra_kwargs, param_list in perturbation_sweep:
+            perturb_type_dir = perturb_base / perturb_key
             perturb_type_dir.mkdir(exist_ok=True)
 
             for p in param_list:
-                print(f"Running {perturb_type}={p}")
-                test_mode_name = f"{perturb_type}_{p}"
-
-                # setta i parametri corretti
-                kwargs = {perturb_type: float(p)}
+                print(f"Running {perturb_key}={p}")
+                # Build the per-sweep kwarg (l2_budget, l0_k, or noise param)
+                sweep_kwarg = {perturb_key: p}
                 model.set_test_configuration(
-                    test_mode=test_mode_name,
+                    test_mode=f"{suffix}/perturbations/{perturb_key}/{p}",
                     perturb=True,
                     apply_defense=defense_flag,
-                    **kwargs
+                    defense_suffix=suffix,
+                    **extra_kwargs,
+                    **sweep_kwarg,
                 )
-
-                # test
-                model.cfg["metrics"]["test_mode"] = f"{suffix}/perturbations/{perturb_type}/{p}"
                 trainer.test(model, datamodule=datamodule)
 
-        # read all the csv of perturbations
+        # ── Collect results from CSVs ─────────────────────────────────────────
         results = {}
-        for perturb_type, param_list in perturbation_map.items():
-            results[perturb_type] = {}
-            perturb_type_dir = perturb_base / perturb_type
-            for csv_file in perturb_type_dir.glob("*_metrics.csv"):
-                # estrae il parametro dal nome del file
+        for perturb_key, _, _ in perturbation_sweep:
+            results[perturb_key] = {}
+            for csv_file in (perturb_base / perturb_key).glob("*_metrics.csv"):
                 param = float(csv_file.stem.split("_")[0])
-                results[perturb_type][param] = _load_all_metrics(csv_file)
+                results[perturb_key][param] = _load_all_metrics(csv_file)
 
         print("RESULTS STRUCTURE:", results)
 
+        # ── Plot ──────────────────────────────────────────────────────────────
         print("\nPlotting robustness curves")
         plot_robustness_curves(
             clean_metrics=clean_metrics,

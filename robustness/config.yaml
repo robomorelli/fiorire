@@ -20,7 +20,7 @@ model:
   dilation: 1
 
 dataset:
-  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_CMG.csv"
+  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_AOC.csv"
   n_seq_chunk: 200                    # how many sequences for each chunk
   test_chunk_ratio: 0.2               # % test set
   val_ratio: 0.2                      # % validation set
@@ -32,8 +32,7 @@ dataset:
   num_workers: 16                     # workers for the dataloader
   val_anomaly_ratio: 1.0              # % di finestre da corrompere da aggiungere nel validation set
   test_anomaly_ratio: 1.0             # % di finestre da corrompere da aggiungere nel test set
-  label_granularity: "timestamp"       # una label sequenza ("sequence") o una per timestamp ("timestamp")
-  anomaly_threshold: 1e-5             # threshold per decidere se un timestamp è anomalo
+  label_granularity: "sequence"       # una label sequenza ("sequence") o una per timestamp ("timestamp")
   shuffle_train: false                # se usare random sampler sul train
   shuffle_val: true                   # se usare random sampler sul validation
   shuffle_test: true                  # se usare random sampler sul test
@@ -63,7 +62,7 @@ defense:
   lambda_latent: 1e-2                 # max lambda allowed (lambda for latent loss)
   lambda_latent_min: 1e-6             # lambda minimo consentito
   lambda_latent_max: 1e-1             # max lambda consentito
-  lipschitz_target: 5.0               # target norma Jacobiano
+  lipschitz_target: 1.0               # target norma Jacobiano
   lipschitz_lr: 0.01                  # velocità adattamento lambda
   ema_decay: 0.95                     # smoothing EMA norma
 
@@ -75,8 +74,8 @@ trainer:
   precision: "bf16-mixed"
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
-  name_exp: CMG
-  run_name: vanilla_aaaaaa
+  name_exp: AOC
+  run_name: vanilla
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test

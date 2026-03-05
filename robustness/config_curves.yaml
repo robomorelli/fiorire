@@ -30,18 +30,18 @@ dataset:
   seq_stride_val: 16                  # stride per validation
   seq_stride_test: 16                 # stride per test
   num_workers: 16                     # workers for the dataloader
-  anomaly_threshold: 1e-5             # threshold per decidere se un timestamp è anomalo
+  label_granularity: "sequence"       # una label sequenza ("sequence") o una per timestamp ("timestamp")
   val_anomaly_ratio: 1.0              # % di finestre da corrompere da aggiungere nel validation set
   test_anomaly_ratio: 1.0             # % di finestre da corrompere da aggiungere nel test set
   shuffle_train: false                # se usare random sampler sul train
-  shuffle_val: false                  # se usare random sampler sul validation
-  shuffle_test: false                 # se usare random sampler sul test
-  delta_min: 0.05                      # delta range of anomalies - extract from uniform distribution
-  delta_max: 0.05
+  shuffle_val: true                   # se usare random sampler sul validation
+  shuffle_test: true                  # se usare random sampler sul test
+  delta_min: 0.2                      # delta range of anomalies - extract from uniform distribution
+  delta_max: 0.2
 
 opt:
   lr: 1e-3
-  batch_size: 300
+  batch_size: 500
   lr_patience: 10                     # patience for the scheduler
   es_patience: 30                     # patience for early stopping
   lr_factor: 0.5                      # factor for the scheduler
@@ -49,12 +49,25 @@ opt:
   monitor_metric: "val_roc_auc"       # metrica da monitorare
   monitor_mode: "max"                 # "min" o "max"
 
+attack:
+  type: "l2"        # attack type: l2 | l0
+  # shared params
+  num_iter: 10      # number of attack iterations
+  # l0-specific
+  k: 5              # number of features to perturb (top-k by gradient magnitude)
+  # l2-specific
+  budget: 50        # max L2 perturbation budget (as % of input L2 norm)
+  # real noise applied to clean samples
+  real_noise:
+    gaussian_std: 0.0   # std of additive Gaussian noise (0 = disabled)
+    dropout_prob: 0.0   # probability of zeroing a feature (0 = disabled)
+    impulse_std: 0.0    # std of impulse (salt & pepper) noise (0 = disabled)                    
+
 defense:
   # path to load the checkpoint from
   checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/vanilla/checkpoints/best-epoch=167-val_roc_auc=0.9438.ckpt"
   apply_defense: false                # if applying defense in test or not
   use_feature_weighting: false        # if apply feature weightning in defense
-  alpha: 1e-2                         # intensity for each step size of pgd
   num_iter: 1                         # number of projection steps
   # adversarial training
   regularization: false               # flag to use jacobian regularization
@@ -82,15 +95,13 @@ metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
   return_curves: true                      # to plot pr/roc curves
   perturb_test: true                       # flag to decide to perturb (bot adv e real) the test set or not
-  pgd_epsilon: 0.05                        # epsilon to perturb data in test
-  real_noise_params:                       # params to build real perturbations
-    gaussian_std: 0.1
-    dropout_prob: 0.01
-    impulse_std: 0.1
 
 curves:
   enabled: true
-  pgd_epsilons:  [0.001, 0.005, 0.010, 0.015, 0.020, 0.025, 0.030, 0.035, 0.040, 0.045, 0.050, 0.055, 0.060, 0.065] # 0.1 bad
-  gaussian_stds: [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]
-  dropout_probs: [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 0.9]
-  impulse_stds:  [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]
+  attacks:
+    l2_budget: [5,10,20,30,40,50]
+    l0_k: [1,2,5,10,15]
+  noise:
+    gaussian_std: [0.005,0.01,0.05,0.1]
+    dropout_prob: [0.01,0.05,0.1]
+    impulse_std: [0.01,0.05,0.1]

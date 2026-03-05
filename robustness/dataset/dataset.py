@@ -15,7 +15,6 @@ class TimeSeriesDataset(Dataset):
         seq_len: int,
         stride: int,
         label_granularity: str,
-        anomaly_threshold: float,
         scaler: Optional[StandardScaler] = None,
         delta_range: Optional[tuple[float, float]] = None,
         Xok_ref: Optional[NDArray] = None,  # [N, W]
@@ -23,7 +22,6 @@ class TimeSeriesDataset(Dataset):
         self.data = data
         self.seq_len = seq_len
         self.stride = stride
-        self.anomaly_threshold = anomaly_threshold
         self.label_granularity = label_granularity
         self.scaler = scaler
         self.delta_range = delta_range

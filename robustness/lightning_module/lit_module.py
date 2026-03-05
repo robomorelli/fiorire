@@ -17,7 +17,7 @@ from robustness.lightning_module.scheduler import build_scheduler
 from robustness.evaluation.metrics import compute_metrics
 from robustness.evaluation.write_csv import write_metrics_csv
 from robustness.input_perturbation.defenses import reconstruct_and_weight
-from robustness.input_perturbation.pgd import adaptive_pgd_steps, pgd_attack
+from robustness.input_perturbation.pgd import l0_attack_topk, l2_attack_budget
 from robustness.input_perturbation.real import random_real_perturbation
 
 import warnings
@@ -35,7 +35,7 @@ class LitAutoEncoder(pl.LightningModule):
         self.model = CONV_AE2D(cfg)
         self.lr = cfg["opt"]["lr"]
         self.lambda_latent = cfg["defense"]["lambda_latent"]
-        self.label_granularity = self.cfg["dataset"]["label_granularity"]
+        self.label_granularity = self.cfg.get("dataset", {}).get("label_granularity", "sequence")
 
         # training buffers
         self.train_feat_errors = []
@@ -304,32 +304,29 @@ class LitAutoEncoder(pl.LightningModule):
             if perturb:
                 x = x.clone()
 
-                clean_mask = y == 0
-                clean_idx = clean_mask.nonzero(as_tuple=True)[0]
-                # rumore reale su TUTTI i campioni
-                if any(v > 0 for v in [
-                    self.cfg["metrics"]["real_noise_params"]["gaussian_std"],
-                    self.cfg["metrics"]["real_noise_params"]["dropout_prob"],
-                    self.cfg["metrics"]["real_noise_params"]["impulse_std"],
-                ]):
-                    x_real = random_real_perturbation(x[clean_idx], self.cfg["metrics"]["real_noise_params"])
-                    x[clean_idx] = x_real
+                # Real noise on clean samples
+                clean_idx = (y == 0).nonzero(as_tuple=True)[0]
+                real_p = self.cfg["attack"]["real_noise"]
+                if any(v > 0 for v in [real_p["gaussian_std"], real_p["dropout_prob"], real_p["impulse_std"]]):
+                    x[clean_idx] = random_real_perturbation(x[clean_idx], real_p)
 
-                # PGD solo sulle anomalie
-                anomaly_mask = y == 1
-                anomaly_idx = anomaly_mask.nonzero(as_tuple=True)[0]
-                if len(anomaly_idx) > 0 and self.cfg["metrics"]["pgd_epsilon"] > 0:
-                    x_adv = pgd_attack(
-                        self,
-                        x[anomaly_idx].detach().clone(),
-                        epsilon=self.cfg["metrics"]["pgd_epsilon"],
-                        alpha=self.cfg["defense"]["alpha"],
-                        steps=adaptive_pgd_steps(
-                            self.cfg["metrics"]["pgd_epsilon"],
-                            self.cfg["defense"]["alpha"]
-                        ),
+                # Adversarial attack on anomalies
+                anomaly_idx = (y == 1).nonzero(as_tuple=True)[0]
+                attack_cfg = self.cfg["attack"]
+                attack_type = attack_cfg["type"]
+                if attack_type == "l0":
+                    x_adv = l0_attack_topk(
+                        self.model, x[anomaly_idx].detach().clone(),
+                        k=attack_cfg["k"], num_iter=attack_cfg["num_iter"],
                     )
-                    x[anomaly_idx] = x_adv
+                elif attack_type == "l2":
+                    x_adv = l2_attack_budget(
+                        self.model, x[anomaly_idx].detach().clone(),
+                        budget=attack_cfg["budget"], num_iter=attack_cfg["num_iter"],
+                    )
+                else:
+                    raise ValueError(f"Unknown attack type: {attack_type}")
+                x[anomaly_idx] = x_adv
 
             if apply_defense:
                 x_rec, rec_err = reconstruct_and_weight(
@@ -339,33 +336,22 @@ class LitAutoEncoder(pl.LightningModule):
                     self.cfg["defense"]["alpha"],
                     self.cfg["defense"]["num_iter"],
                     self.train_feat_median,
-                    self.label_granularity,            # <-- aggiunto
-                    self.cfg["defense"]["use_feature_weighting"]
+                    self.label_granularity,
+                    self.cfg["defense"]["use_feature_weighting"],
                 )
             else:
-                # normal test
                 x_rec = self(x)
                 rec_err = reconstruction_loss(x, x_rec, dimensions=self._rec_dimensions())
 
-        # log reconstruction error per batch
         self.log(
             f"{self.cfg['metrics']['test_mode']}_rec_error",
             rec_err.mean(),
             on_epoch=True,
             sync_dist=True,
         )
-
-        # accumulo buffer per detection metrics
         self._test_scores.append(rec_err.detach().cpu().numpy().reshape(-1))
         self._test_labels.append(y.detach().cpu().numpy().reshape(-1))
-
-        # batch-wise (solo anomaly score)
-        self._test_metrics_epoch.append(
-            {
-                "batch_idx": batch_idx,
-                "anomaly_score": rec_err.mean().item(),
-            }
-        )
+        self._test_metrics_epoch.append({"batch_idx": batch_idx, "anomaly_score": rec_err.mean().item()})
 
     def on_test_start(self):
         self._test_scores.clear()
@@ -375,15 +361,18 @@ class LitAutoEncoder(pl.LightningModule):
         self._test_dataloader = self.trainer.test_dataloaders
 
     def on_test_epoch_end(self):
+        out_dir = self._test_out_dir()
+
+        scores = torch.tensor(np.concatenate(self._test_scores), device=self.device)
+        labels = torch.tensor(np.concatenate(self._test_labels), device=self.device)
+        scores = cast(torch.Tensor, self.all_gather(scores))
+        labels = cast(torch.Tensor, self.all_gather(labels))
+        scores = scores.flatten().cpu().numpy()
+        labels = labels.flatten().cpu().numpy()
+        
         if not self.trainer.is_global_zero:
             return
 
-        out_dir = self._test_out_dir()
-
-        # compute global detection metrics
-        scores = np.concatenate(self._test_scores, axis=0)
-        labels = np.concatenate(self._test_labels, axis=0)
-        # in on_test_epoch_end, dopo aver concatenato scores e labels
         anom_scores = scores[labels == 1]
         print(
             f"Anomaly scores percentiles: 25%={np.percentile(anom_scores,25):.4f}, 50%={np.percentile(anom_scores,50):.4f}, 75%={np.percentile(anom_scores,75):.4f}"
@@ -476,18 +465,28 @@ class LitAutoEncoder(pl.LightningModule):
         test_mode: str,
         perturb: bool,
         apply_defense: bool = False,
-        pgd_epsilon: float = 0.0,
+        defense_suffix: str = "",       # ← aggiunto
+        attack_type: str | None = None,
+        l2_budget: float | None = None,
+        l0_k: int | None = None,
         gaussian_std: float = 0.0,
         dropout_prob: float = 0.0,
         impulse_std: float = 0.0,
     ):
         self.cfg["metrics"]["test_mode"] = test_mode
         self.cfg["metrics"]["perturb_test"] = perturb
+        self.cfg["metrics"]["defense_suffix"] = defense_suffix  # ← aggiunto
         self.cfg["defense"]["apply_defense"] = apply_defense
 
-        self.cfg["metrics"]["pgd_epsilon"] = float(pgd_epsilon)
-        self.cfg["metrics"]["real_noise_params"]["gaussian_std"] = float(gaussian_std)
-        self.cfg["metrics"]["real_noise_params"]["dropout_prob"] = float(dropout_prob)
-        self.cfg["metrics"]["real_noise_params"]["impulse_std"] = float(impulse_std)
+        if attack_type is not None:
+            self.cfg["attack"]["type"] = attack_type
+        if l2_budget is not None:
+            self.cfg["attack"]["budget"] = float(l2_budget)
+        if l0_k is not None:
+            self.cfg["attack"]["k"] = int(l0_k)
 
-        print(f"\n Test mode set to: {test_mode}")
+        self.cfg["attack"]["real_noise"]["gaussian_std"] = float(gaussian_std)
+        self.cfg["attack"]["real_noise"]["dropout_prob"] = float(dropout_prob)
+        self.cfg["attack"]["real_noise"]["impulse_std"] = float(impulse_std)
+
+        print(f"\nTest mode set to: {test_mode}")

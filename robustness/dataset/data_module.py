@@ -68,12 +68,11 @@ class DataModule(pl.LightningDataModule):
 
         # print("Train scaled mean/std:", train_data_scaled.mean(), train_data_scaled.std())
         # print("Test scaled mean/std:", test_data_scaled.mean(), test_data_scaled.std())
+        # print(f"Min: {train_data_scaled.min():.3f}, Max: {train_data_scaled.max():.3f}")
+        # print(f"1%: {np.percentile(train_data_scaled, 1):.3f}, 99%: {np.percentile(train_data_scaled, 99):.3f}")
 
         # Xok_ref costruito SOLO su train_data, scaled
         W = self.cfg["dataset"]["seq_in_length"]
-        train_data_scaled = self.scaler.transform(train_data)
-        # print(f"Min: {train_data_scaled.min():.3f}, Max: {train_data_scaled.max():.3f}")
-        # print(f"1%: {np.percentile(train_data_scaled, 1):.3f}, 99%: {np.percentile(train_data_scaled, 99):.3f}")
         self.Xok_ref_train = np.stack(
             [train_data_scaled[i : i + W] for i in range(len(train_data_scaled) - W + 1)]
         )  # [N_train, W, F]
@@ -83,7 +82,6 @@ class DataModule(pl.LightningDataModule):
                 data=train_data,
                 seq_len=W,
                 label_granularity=self.cfg["dataset"]["label_granularity"],
-                anomaly_threshold=self.cfg["dataset"]["anomaly_threshold"],
                 stride=self.cfg["dataset"]["seq_stride_train"],
                 scaler=self.scaler,
             )
@@ -136,6 +134,20 @@ class DataModule(pl.LightningDataModule):
                     generator=torch.Generator().manual_seed(42),
                 )
 
+        # print("=== Data scale summary ===")
+        # print("Train scaled | min: {:.2f}, max: {:.2f}, mean: {:.4f}, std: {:.4f}".format(
+        #     train_data_scaled.min(), train_data_scaled.max(),
+        #     train_data_scaled.mean(), train_data_scaled.std()
+        # ))
+        # print("Test scaled  | min: {:.2f}, max: {:.2f}, mean: {:.4f}, std: {:.4f}".format(
+        #     test_data_scaled.min(), test_data_scaled.max(),
+        #     test_data_scaled.mean(), test_data_scaled.std()
+        # ))
+        # print("Train 1% / 99% quantiles: {:.2f} / {:.2f}".format(
+        #     np.percentile(train_data_scaled, 1),
+        #     np.percentile(train_data_scaled, 99)
+        # ))
+
     def train_dataloader(self) -> DataLoader:
         if self.mode != "train":
             raise RuntimeError("train_dataloader chiamato in mode != train")
@@ -180,8 +192,7 @@ class DataModule(pl.LightningDataModule):
             base_data, 
             self.cfg["dataset"]["seq_in_length"], 
             stride, 
-            label_granularity=self.cfg["dataset"]["label_granularity"],
-            anomaly_threshold=self.cfg["dataset"]["anomaly_threshold"], 
+            label_granularity=self.cfg["dataset"]["label_granularity"], 
             scaler=self.scaler
         )
 
@@ -191,7 +202,6 @@ class DataModule(pl.LightningDataModule):
                 self.cfg["dataset"]["seq_in_length"],
                 stride,
                 label_granularity=self.cfg["dataset"]["label_granularity"],
-                anomaly_threshold=self.cfg["dataset"]["anomaly_threshold"],
                 scaler=self.scaler,
                 delta_range=delta_range,
                 Xok_ref=self.Xok_ref_train,  # sempre dal train

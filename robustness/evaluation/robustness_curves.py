@@ -1,47 +1,5 @@
 from pathlib import Path
 import matplotlib.pyplot as plt
-from omegaconf import DictConfig
-from torch import nn
-
-from robustness.input_perturbation.pgd import pgd_attack, adaptive_pgd_steps
-from robustness.input_perturbation.real import (
-    gaussian_noise,
-    dropout_noise,
-    impulse_noise,
-)
-
-
-def perturbation_dict(model: nn.Module, cfg: DictConfig) -> dict[str, tuple]:
-    """
-    Returns a dict:
-        name -> (params, perturb_builder)
-    where:
-        perturb_builder(p) -> Callable[[Tensor], Tensor]
-    """
-    return {
-        "adversarial": (
-            cfg["curves"]["pgd_epsilons"],
-            lambda eps: lambda x: pgd_attack(
-                model,
-                x,
-                eps,
-                alpha=cfg["defense"]["alpha"],
-                steps=adaptive_pgd_steps(eps, cfg["defense"]["alpha"]),
-            ),
-        ),
-        "gaussian": (
-            cfg["curves"]["gaussian_stds"],
-            lambda std: lambda x: gaussian_noise(x, std),
-        ),
-        "dropout": (
-            cfg["curves"]["dropout_probs"],
-            lambda p: lambda x: dropout_noise(x, p),
-        ),
-        "impulse": (
-            cfg["curves"]["impulse_stds"],
-            lambda std: lambda x: impulse_noise(x, std),
-        ),
-    }
 
 
 def plot_robustness_curves(

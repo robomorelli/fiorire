@@ -31,12 +31,11 @@ dataset:
   seq_stride_test: 16                 # stride per test
   num_workers: 16                     # workers for the dataloader
   label_granularity: "sequence"       # una label sequenza ("sequence") o una per timestamp ("timestamp")
-  anomaly_threshold: 1e-5             # threshold per decidere se un timestamp è anomalo
   val_anomaly_ratio: 1.0              # % di finestre da corrompere da aggiungere nel validation set
   test_anomaly_ratio: 1.0             # % di finestre da corrompere da aggiungere nel test set
   shuffle_train: false                # se usare random sampler sul train
-  shuffle_val: false                  # se usare random sampler sul validation
-  shuffle_test: false                 # se usare random sampler sul test
+  shuffle_val: true                   # se usare random sampler sul validation
+  shuffle_test: true                  # se usare random sampler sul test
   delta_min: 0.5                      # delta range of anomalies - extract from uniform distribution
   delta_max: 0.5
 
@@ -44,7 +43,7 @@ opt:
   lr: 1e-3
   batch_size: 300
   lr_patience: 10                     # patience for the scheduler
-  es_patience: 30                     # patience for early stopping
+  es_patience: 50                     # patience for early stopping
   lr_factor: 0.8                      # factor for the scheduler
   lr_min: 1e-6                        # min learning to stop when reached
   monitor_metric: "val_roc_auc"       # metrica da monitorare
@@ -75,7 +74,7 @@ trainer:
   precision: "bf16-mixed"
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
-  name_exp: CMG
+  name_exp: AOC
   run_name: reg_train
 
 metrics:
