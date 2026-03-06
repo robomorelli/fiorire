@@ -35,8 +35,10 @@ class LitAutoEncoder(pl.LightningModule):
         self.cfg = cfg
         self.model = CONV_AE2D(cfg)
         self.lr = cfg["opt"]["lr"]
-        self.lambda_init = cfg["defense"]["lambda_init"]
-        self.label_granularity = self.cfg.get("dataset", {}).get("label_granularity", "sequence")
+        ctrl_cfg: dict = self.cfg.get("defense", {})
+        # fallback due to config modification w.r.t. old checkpoints
+        self.lambda_init = ctrl_cfg.get("lambda_init", 0.1)
+        self.label_granularity = ctrl_cfg.get("label_granularity", "sequence")
 
         # training buffers
         self.train_feat_errors = []
@@ -54,19 +56,21 @@ class LitAutoEncoder(pl.LightningModule):
         self.train_ratio = 0.0
         self.train_lipschitz_norm = 0.0
         self.train_lambda = 0.0
-        ctrl_cfg = self.cfg["defense"]
-        if ctrl_cfg["controller"] == "ratio":
+        self.current_lipschitz = 0.0
+        self.current_lambda = self.lambda_init
+        
+        if ctrl_cfg.get("controller", "ratio") == "ratio":
             self.lipschitz_ctrl = RatioEMAController(
-                lambda_init=ctrl_cfg["lambda_init"],
+                lambda_init=self.lambda_init,
                 target_ratio=ctrl_cfg["target_ratio"],
                 ema_decay=ctrl_cfg["ema_decay"],
                 lr=ctrl_cfg["lr_lambda"],
                 lambda_min=ctrl_cfg["lambda_min"],
                 lambda_max=ctrl_cfg["lambda_max"],
             )
-        elif ctrl_cfg["controller"] == "norm":
+        elif ctrl_cfg.get("controller", "ratio") == "norm":
             self.lipschitz_ctrl = LipschitzEMAController(
-                lambda_init=ctrl_cfg["lambda_init"],
+                lambda_init=self.lambda_init,
                 target_norm=ctrl_cfg["target_norm"],
                 ema_decay=ctrl_cfg["ema_decay"],
                 lr=ctrl_cfg["lr_lambda"],
@@ -75,9 +79,7 @@ class LitAutoEncoder(pl.LightningModule):
             )
         else:
             raise ValueError(f"Unknown controller type: {ctrl_cfg['controller']}")
-        self.current_lambda = cfg["defense"]["lambda_init"]
-        self.current_lipschitz = 0.0
-
+        
         # validation epoch buffers
         self._val_scores = []
         self._val_labels = []

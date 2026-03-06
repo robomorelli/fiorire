@@ -1,10 +1,11 @@
 from pathlib import Path
 import matplotlib.pyplot as plt
+from typing import Mapping
 
 
 def plot_robustness_curves(
-    clean_metrics: dict[str, float],
-    anom_metrics: dict[str, float],
+    clean_metrics: Mapping[str, float],
+    anom_metrics: Mapping[str, float],
     results: dict[str, dict[float, dict[str, float]]],
     out_dir: str,
 ):

@@ -56,12 +56,12 @@ attack:
   # l0-specific
   k: 5              # number of features to perturb (top-k by gradient magnitude)
   # l2-specific
-  budget: 50        # max L2 perturbation budget (as % of input L2 norm)
+  budget: 10        # max L2 perturbation budget (as % of input L2 norm)
   # real noise applied to clean samples
   real_noise:
-    gaussian_std: 0.0   # std of additive Gaussian noise (0 = disabled)
-    dropout_prob: 0.0   # probability of zeroing a feature (0 = disabled)
-    impulse_std: 0.0    # std of impulse (salt & pepper) noise (0 = disabled)                    
+    gaussian_std: 0.01   # std of additive Gaussian noise (0 = disabled)
+    dropout_prob: 0.01   # probability of zeroing a feature (0 = disabled)
+    impulse_std: 0.01    # std of impulse (salt & pepper) noise (0 = disabled)                    
 
 defense:
   # path to load the checkpoint from
@@ -71,12 +71,14 @@ defense:
   num_iter: 1                         # number of projection steps
   # adversarial training
   regularization: false               # flag to use jacobian regularization
+  controller: "ratio"                 # decide which EMA is used: "ratio" | "norm"
   save_lipschitz: 5                   # number of epochs after we save the norm on validation set
-  lambda_init: 1e-2                 # max lambda allowed (lambda for latent loss)
-  lambda_min: 1e-6             # lambda minimo consentito
-  lambda_max: 1e-1             # max lambda consentito
-  lipschitz_target: 1.0               # target norma Jacobiano
-  lr_lambda: 0.01                  # velocità adattamento lambda
+  lambda_init: 1e-2                   # max lambda allowed (lambda for latent loss)
+  lambda_min: 1e-6                    # lambda minimo consentito
+  lambda_max: 1e-1                    # max lambda consentito
+  target_norm: 1.0                    # parametro specifico per "norm"
+  target_ratio: 0.2                   # parametro specifico per "ratio"
+  lr_lambda: 0.01                     # velocità adattamento lambda
   ema_decay: 0.95                     # smoothing EMA norma
 
 trainer:
@@ -98,9 +100,9 @@ metrics:
 curves:
   enabled: true
   attacks:
-    l2_budget: [5,10,20,30,40,50]
-    l0_k: [1,2,5,10,15]
+    l2_budget:    [5,10,20,30,40,50]
+    l0_k:         [1,2,5,10,15]
   noise:
     gaussian_std: [0.005,0.01,0.05,0.1]
     dropout_prob: [0.01,0.05,0.1]
-    impulse_std: [0.01,0.05,0.1]
+    impulse_std:  [0.01,0.05,0.1]

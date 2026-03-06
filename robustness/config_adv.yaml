@@ -20,7 +20,7 @@ model:
   dilation: 1
 
 dataset:
-  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_CMG.csv"
+  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_AOC.csv"
   n_seq_chunk: 200                    # how many sequences for each chunk
   test_chunk_ratio: 0.2               # % test set
   val_ratio: 0.2                      # % validation set
@@ -43,7 +43,7 @@ opt:
   lr: 1e-3
   batch_size: 300
   lr_patience: 10                     # patience for the scheduler
-  es_patience: 50                     # patience for early stopping
+  es_patience: 100                     # patience for early stopping
   lr_factor: 0.8                      # factor for the scheduler
   lr_min: 1e-6                        # min learning to stop when reached
   monitor_metric: "val_roc_auc"       # metrica da monitorare
@@ -75,7 +75,7 @@ trainer:
   precision: "bf16-mixed"
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
-  name_exp: CMG
+  name_exp: AOC
   run_name: reg_train_1
 
 metrics:
