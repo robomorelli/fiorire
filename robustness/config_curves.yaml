@@ -65,7 +65,9 @@ attack:
 
 defense:
   # path to load the checkpoint from
-  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/vanilla/checkpoints/best-epoch=167-val_roc_auc=0.9438.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/vanilla/checkpoints/best-epoch=167-val_roc_auc=0.9438.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/reg_train_1/checkpoints/best-epoch=446-val_roc_auc=0.9405.ckpt"
+  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/vanilla_1/checkpoints/best-epoch=074-val_roc_auc=0.9642.ckpt"
   apply_defense: false                # if applying defense in test or not
   use_feature_weighting: false        # if apply feature weightning in defense
   num_iter: 1                         # number of projection steps
@@ -89,8 +91,8 @@ trainer:
   precision: "bf16-mixed"
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
-  name_exp: CMG
-  run_name: test_vanilla_1
+  name_exp: AOC
+  run_name: test_vanilla
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
@@ -104,5 +106,5 @@ curves:
     l0_k:         [1,2,5,10,15]
   noise:
     gaussian_std: [0.005,0.01,0.05,0.1]
-    dropout_prob: [0.01,0.05,0.1]
-    impulse_std:  [0.01,0.05,0.1]
+    dropout_prob: [0.005,0.01,0.05,0.1]
+    impulse_std:  [0.005,0.01,0.05,0.1]

@@ -326,12 +326,12 @@ class LitAutoEncoder(pl.LightningModule):
                 if attack_type == "l0":
                     x_adv = l0_attack_topk(
                         self.model, x[anomaly_idx].detach().clone(),
-                        k=attack_cfg["k"], num_iter=attack_cfg["num_iter"],
+                        k=attack_cfg["k"], num_iter=attack_cfg["num_iter"]
                     )
                 elif attack_type == "l2":
                     x_adv = l2_attack_budget(
                         self.model, x[anomaly_idx].detach().clone(),
-                        budget=attack_cfg["budget"], num_iter=attack_cfg["num_iter"],
+                        budget=attack_cfg["budget"], num_iter=attack_cfg["num_iter"]
                     )
                 else:
                     raise ValueError(f"Unknown attack type: {attack_type}")
@@ -351,13 +351,7 @@ class LitAutoEncoder(pl.LightningModule):
             else:
                 x_rec = self(x)
                 rec_err = reconstruction_loss(x, x_rec, dimensions=self._rec_dimensions())
-
-        self.log(
-            f"{self.cfg['metrics']['test_mode']}_rec_error",
-            rec_err.mean(),
-            on_epoch=True,
-            sync_dist=True,
-        )
+                
         self._test_scores.append(rec_err.detach().cpu().numpy().reshape(-1))
         self._test_labels.append(y.detach().cpu().numpy().reshape(-1))
         self._test_metrics_epoch.append({"batch_idx": batch_idx, "anomaly_score": rec_err.mean().item()})

@@ -49,6 +49,20 @@ opt:
   monitor_metric: "val_roc_auc"       # metrica da monitorare
   monitor_mode: "max"                 # "min" o "max"
 
+attack:
+  type: "l2"        # attack type: l2 | l0
+  # shared params
+  num_iter: 10      # number of attack iterations
+  # l0-specific
+  k: 5              # number of features to perturb (top-k by gradient magnitude)
+  # l2-specific
+  budget: 10        # max L2 perturbation budget (as % of input L2 norm)
+  # real noise applied to clean samples
+  real_noise:
+    gaussian_std: 0.01   # std of additive Gaussian noise (0 = disabled)
+    dropout_prob: 0.01   # probability of zeroing a feature (0 = disabled)
+    impulse_std: 0.01    # std of impulse (salt & pepper) noise (0 = disabled) 
+
 defense:
   # path to load the checkpoint from
   checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/cmg_prova/reg_train_1/checkpoints/best-epoch=376-val_roc_auc=0.9004.ckpt"
@@ -58,11 +72,13 @@ defense:
   # adversarial training
   regularization: false               # flag to use jacobian regularization
   save_lipschitz: 5                   # number of epochs after we save the norm on validation set (before overfitting ideally)
-  lambda_init: 1e-2                 # max lambda allowed (lambda for latent loss)
-  lambda_min: 1e-6             # lambda minimo consentito
-  lambda_max: 1e-1             # max lambda consentito
-  lipschitz_target: 1.0               # target norma Jacobiano
-  lr_lambda: 0.01                  # velocità adattamento lambda
+  controller: "ratio"                 # decide which EMA is used: "ratio" | "norm"
+  target_norm: 1.0                    # parametro specifico per "norm"
+  target_ratio: 0.2                   # parametro specifico per "ratio"
+  lambda_init: 1e-2                   # max lambda allowed (lambda for latent loss)
+  lambda_min: 1e-6                    # lambda minimo consentito
+  lambda_max: 1e-1                    # max lambda consentito
+  lr_lambda: 0.01                     # velocità adattamento lambda
   ema_decay: 0.95                     # smoothing EMA norma
 
 trainer:
@@ -74,22 +90,19 @@ trainer:
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
   name_exp: AOC
-  run_name: vanilla
+  run_name: vanilla_1
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
   return_curves: true                      # to plot pr/roc curves
-  perturb_test: false                      # flag to decide to perturb (bot adv e real) the test set or not
-  perturb_fraction: 0.5                    # % adversarial w.r.t. total (the rest are real perturbed)
-  pgd_epsilon: 1                           # epsilon to perturb data in test
-  real_noise_params:                       # params to build real perturbations
-    gaussian_std: 0.01
-    dropout_prob: 0.1
-    impulse_std: 0.1
+  perturb_test: true                       # flag to decide to perturb (bot adv e real) the test set or not
 
 curves:
   enabled: true
-  adversarial_epsilons: [1e-3, 5e-3, 1e-2, 5e-2, 1e-1]
-  gaussian_stds:        [0.005, 0.01, 0.015, 0.02, 0.025]
-  dropout_probs:        [0.05, 0.1, 0.15, 0.2, 0.25]
-  impulse_stds:         [0.05, 0.1, 0.15, 0.2, 0.25]
+  attacks:
+    l2_budget:    [5,10,20,30,40,50]
+    l0_k:         [1,2,5,10,15]
+  noise:
+    gaussian_std: [0.005,0.01,0.05,0.1]
+    dropout_prob: [0.01,0.05,0.1]
+    impulse_std:  [0.01,0.05,0.1]
