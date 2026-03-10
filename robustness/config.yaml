@@ -20,7 +20,7 @@ model:
   dilation: 1
 
 dataset:
-  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_AOC.csv"
+  csv_path: "./data/fiorire_2/AllScenarios_AOC.csv"
   n_seq_chunk: 200                    # how many sequences for each chunk
   test_chunk_ratio: 0.2               # % test set
   val_ratio: 0.2                      # % validation set
@@ -33,7 +33,7 @@ dataset:
   val_anomaly_ratio: 1.0              # % di finestre da corrompere da aggiungere nel validation set
   test_anomaly_ratio: 1.0             # % di finestre da corrompere da aggiungere nel test set
   shuffle_train: true                 # se shuffle le finestre di training
-  shuffle_test: true                  # se usare random sampler sul test (come sul val)
+  shuffle_test: false                  # se usare random sampler sul test (come sul val)
   delta_min: 0.5                      # delta range of anomalies - extract from uniform distribution
   delta_max: 0.5
 
@@ -67,12 +67,12 @@ defense:
 
 trainer:
   accelerator: "gpu"
-  devices: 4
+  devices: 1
   strategy: "ddp"
   epochs: 1000
-  precision: "bf16-mixed"
+  precision: "bf16"
   accumulate_grad_batches: 4
-  out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
+  out_dir: "/home/rob/Documents/repo/fiorire/log_fiorire"
   name_exp: AOC
   run_name: vanilla_2
 

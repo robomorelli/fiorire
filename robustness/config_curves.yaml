@@ -69,7 +69,7 @@ trainer:
   devices: 1
   strategy: "auto"
   epochs: 1000
-  precision: "bf16-mixed"
+  precision: "bf16"
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
   name_exp: AOC

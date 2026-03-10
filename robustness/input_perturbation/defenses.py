@@ -63,14 +63,14 @@ def apply_feature_weighting(
     Apply feature weighting to reconstruction errors.
 
     Args:
-        rec_err_feat: [B, F] per-feature reconstruction error
+        rec_err_feat: [B, F, W] per-feature per-timestep reconstruction error
         train_feat_median: [F] median train feature errors or None
         epsilon: numerical stability term
         warn: whether to emit warning if weighting disabled
         batch_idx: for emitting warning only once
 
     Returns:
-        rec_err: [B] weighted reconstruction error
+        rec_err: [B, W] weighted reconstruction error
     """
     if train_feat_median is None:
         if warn and (batch_idx is None or batch_idx == 0):
@@ -78,11 +78,11 @@ def apply_feature_weighting(
                 "Train feature errors not found: "
                 "feature weighting DISABLED during test."
             )
-        return rec_err_feat.sum(dim=1)
-    weights = 1.0 / (epsilon + train_feat_median.to(rec_err_feat.device))
+        return rec_err_feat.sum(dim=1)  # [B, W]
+    weights = 1.0 / (epsilon + train_feat_median.to(rec_err_feat.device))  # [F]
     # normalize so sum(weights) = num_features
     weights = weights / weights.sum() * rec_err_feat.shape[1]
-    return (rec_err_feat * weights).sum(dim=1)
+    return (rec_err_feat * weights.unsqueeze(-1)).sum(dim=1)  # [B, W]
 
 
 def reconstruct_and_weight(
@@ -108,9 +108,9 @@ def reconstruct_and_weight(
 
     Returns:
         x_rec: reconstructed batch [B, C, F, W]
-        rec_err: weighted reconstruction error [B]
+        rec_err: weighted reconstruction error [B, W]
     """
     x_rec, _ = approximate_projection(encoder, decoder, x, alpha, num_iter)
-    rec_err_feat = (x_rec - x).pow(2).mean(dim=(1, 3))
-    rec_err = apply_feature_weighting(rec_err_feat, train_feat_median, epsilon)
+    rec_err_feat = (x_rec - x).pow(2).mean(dim=1)  # mean over C → [B, F, W]
+    rec_err = apply_feature_weighting(rec_err_feat, train_feat_median, epsilon)  # [B, W]
     return x_rec, rec_err

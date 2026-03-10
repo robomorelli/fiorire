@@ -163,7 +163,7 @@ class LitAutoEncoder(pl.LightningModule):
         x_rec = self(x)
 
         loss = reconstruction_loss(x, x_rec, reduction="none")
-        rec_err = loss.view(x.size(0), -1).mean(dim=1) # shape: (B,)
+        rec_err = loss.mean(dim=(1, 2))  # mean over C and F → [B, W]
 
         self._val_scores.append(rec_err.detach())
         self._val_labels.append(y.detach())
@@ -176,11 +176,11 @@ class LitAutoEncoder(pl.LightningModule):
             and self.current_epoch == target_epoch
         ):
             with torch.enable_grad():
-                x = x.requires_grad_(True)
+                x_jac = x.detach().requires_grad_(True)
 
                 lipschitz_norm = compute_jacobian_norm(
                     self.model.encoder,
-                    x,
+                    x_jac,
                 )
 
             self._val_lipschitz_norm.append(lipschitz_norm.detach())
@@ -191,10 +191,13 @@ class LitAutoEncoder(pl.LightningModule):
         if self.trainer.sanity_checking or not self._val_scores:
             return
 
-        all_scores = torch.cat(self._val_scores, dim=0).cpu().numpy()
-        all_labels = torch.cat(self._val_labels, dim=0).cpu().numpy()
+        all_scores = torch.cat(self._val_scores, dim=0).cpu().numpy()   # [N, W]
+        all_labels = torch.cat(self._val_labels, dim=0).cpu().numpy()   # [N, W]
 
         epoch_val_loss = torch.tensor(all_scores.mean(), device=self.device)
+        # flatten to per-timestep for detection metrics
+        all_scores = all_scores.flatten()   # [N*W]
+        all_labels = all_labels.flatten()   # [N*W]
         # log per epoca
         self.log("val_loss", epoch_val_loss, on_epoch=True, prog_bar=True, sync_dist=True)
         
@@ -259,7 +262,7 @@ class LitAutoEncoder(pl.LightningModule):
 
         with torch.enable_grad() if need_grad else torch.no_grad():
             if perturb:
-                anomaly_mask = (y == 1)
+                anomaly_mask = (y == 1).any(dim=1)  # [B] - True if any timestep is anomalous
                 anomaly_idx = anomaly_mask.nonzero(as_tuple=True)[0]
 
                 if len(anomaly_idx) > 0:
@@ -309,7 +312,7 @@ class LitAutoEncoder(pl.LightningModule):
             else:
                 # normal test
                 x_rec = self.model.decoder(self.model.encoder(x))
-                rec_err = ((x_rec - x) ** 2).mean(dim=(1, 2, 3))  # MSE puro per sample
+                rec_err = ((x_rec - x) ** 2).mean(dim=(1, 2))  # mean over C and F → [B, W]
 
         # log reconstruction error per batch
         self.log(
@@ -344,9 +347,9 @@ class LitAutoEncoder(pl.LightningModule):
 
         out_dir = self._test_out_dir()
         
-        # compute global detection metrics
-        scores = np.concatenate(self._test_scores, axis=0)
-        labels = np.concatenate(self._test_labels, axis=0)
+        # compute global detection metrics (flatten per-timestep)
+        scores = np.concatenate(self._test_scores, axis=0).flatten()  # [N*W]
+        labels = np.concatenate(self._test_labels, axis=0).flatten()  # [N*W]
         all_metrics = compute_metrics(
             x=None,
             x_rec=None,

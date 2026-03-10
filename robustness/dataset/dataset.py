@@ -33,7 +33,6 @@ class TimeSeriesDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
         i = self.indices[idx]
         window = self.data[i : i + self.seq_len]  # [W, F]
-        label = 0  # default: clean
 
         if self.scaler is not None:
             window = self.scaler.transform(window)
@@ -41,24 +40,28 @@ class TimeSeriesDataset(Dataset):
         window = np.nan_to_num(window, nan=0.0, posinf=0.0, neginf=0.0)
 
         if self.delta_range is not None:
-            window = self._inject_anomaly(window)
-            label = 1
+            window, mask = self._inject_anomaly(window)
+            label = mask  # [W]
+        else:
+            label = np.zeros(self.seq_len, dtype=np.int64)  # [W]
 
         # [W, F] → [1, F, W]
         window = torch.from_numpy(window.T).unsqueeze(0).float()
-        label = torch.tensor(label, dtype=torch.long)
+        label = torch.from_numpy(label)  # [W]
         return window, label
 
-    def _inject_anomaly(self, window: NDArray) -> NDArray:
+    def _inject_anomaly(self, window: NDArray) -> tuple[NDArray, NDArray]:
         """
-        Applica una anomalia WOMBATS canale-wise
+        Applica una anomalia WOMBATS canale-wise.
+        Restituisce (window, mask) dove mask[t]=1 se il timestep t è stato modificato.
         """
         # guard obbligatori (per pylance)
         if self.delta_range is None or self.Xok_ref is None:
-            return window
+            return window, np.zeros(window.shape[0], dtype=np.int64)
 
         W, F = window.shape
         feature = np.random.randint(F)
+        original_col = window[:, feature].copy()
 
         window[:, feature] = apply_random_wombats_anomaly(
             signal=window[:, feature],
@@ -66,4 +69,5 @@ class TimeSeriesDataset(Dataset):
             delta_range=self.delta_range,
         )
 
-        return window
+        mask = (~np.isclose(window[:, feature], original_col)).astype(np.int64)  # [W]
+        return window, mask
