@@ -1,53 +1,30 @@
 import torch
 
-
-def gaussian_noise(x: torch.Tensor, std: float) -> torch.Tensor:
-    """
-    Additive Gaussian noise.
-    """
-    return x + std * torch.randn_like(x)
-
-
-def dropout_noise(x: torch.Tensor, p: float) -> torch.Tensor:
-    """
-    Feature-wise dropout (set to zero with probability p).
-    """
-    mask = torch.rand_like(x) > p
-    return x * mask
-
-
-def impulse_noise(x: torch.Tensor, std: float) -> torch.Tensor:
-    """
-    Impulsive noise (Gaussian, but conceptually spike-like).
-    """
-    return x + std * torch.randn_like(x)
-
-
-def random_real_perturbation(
+def random_adversarial_attack(
+    model: torch.nn.Module,
     x: torch.Tensor,
-    params: dict,
+    num_vectors: int = 50,
+    noise_std: float = 0.01,
 ) -> torch.Tensor:
-    """
-    Apply a random real perturbation to each sample in the batch.
-    Each sample independently chooses between:
-    - gaussian
-    - dropout
-    - impulse
-    """
-    x_pert = x.clone()
+    loss_fn = torch.nn.SmoothL1Loss(reduction="none")
+    x_adv = x.detach().clone()
+    B = x_adv.shape[0]
+    extra_dims = tuple(range(1, x_adv.dim()))
 
-    B = x.size(0)
-    device = x.device
+    with torch.no_grad():
+        x_rec = model(x_adv)
+        current_losses = loss_fn(x_rec, x_adv).mean(dim=extra_dims)  # (B,)
 
-    # 0 = gaussian, 1 = dropout, 2 = impulse
-    choices = torch.randint(0, 3, (B,), device=device)
+        for _ in range(num_vectors):
+            noise = torch.randn_like(x_adv) * noise_std
+            x_pert = x_adv + noise
+            x_rec_pert = model(x_pert)
+            pert_losses = loss_fn(x_rec_pert, x_pert).mean(dim=extra_dims)
 
-    for i in range(B):
-        if choices[i] == 0:
-            x_pert[i] = gaussian_noise(x_pert[i], params["gaussian_std"])
-        elif choices[i] == 1:
-            x_pert[i] = dropout_noise(x_pert[i], params["dropout_prob"])
-        else:
-            x_pert[i] = impulse_noise(x_pert[i], params["impulse_std"])
+            improved = pert_losses < current_losses
+            improved_exp = improved.view(B, *([1] * (x_adv.dim() - 1)))
+            current_losses = torch.where(improved, pert_losses, current_losses)
+            x_adv = torch.where(improved_exp, x_pert, x_adv)
 
-    return x_pert
+    return x_adv
+

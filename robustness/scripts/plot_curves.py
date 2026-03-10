@@ -55,7 +55,9 @@ def run_and_plot(config_path: str | Path):
 
     for defense_flag in [False, True]:
         suffix = "def_on" if defense_flag else "def_off"
-        print(f"\nRunning tests with defense = {defense_flag} ({suffix})")
+        attack_cfg = base_cfg["attack"]
+        feat_weight = base_cfg["defense"]["use_feature_weighting"]
+        print(f"\nRunning tests with defense = {defense_flag} ({suffix}) | feature_weighting = {feat_weight}")
 
         defense_folder = out_root / base_run_name / suffix
         defense_folder.mkdir(parents=True, exist_ok=True)
@@ -66,6 +68,7 @@ def run_and_plot(config_path: str | Path):
             test_mode=f"{suffix}/clean",
             perturb=False,
             apply_defense=defense_flag,
+            use_feature_weighting=feat_weight,
             defense_suffix=suffix,
         )
         results_clean = trainer.test(model, datamodule=datamodule)
@@ -73,58 +76,48 @@ def run_and_plot(config_path: str | Path):
 
         # perturbed test
         print("Running PERTURBED test")
-        attack_cfg = base_cfg["attack"]
-        real_p = base_cfg["attack"]["real_noise"]
-
-        # ricava il parametro specifico dell'attacco dal config
         l2_budget = float(attack_cfg["budget"]) if attack_cfg["type"] == "l2" else None
         l0_k      = int(attack_cfg["k"])        if attack_cfg["type"] == "l0" else None
 
+        # perturbed test baseline — usa il ratio del config (mixed attack)
         model.set_test_configuration(
             test_mode=f"{suffix}/perturbed",
             perturb=True,
             apply_defense=defense_flag,
+            use_feature_weighting=feat_weight,
             defense_suffix=suffix,
             attack_type=attack_cfg["type"],
             l2_budget=l2_budget,
             l0_k=l0_k,
-            gaussian_std=real_p["gaussian_std"],
-            dropout_prob=real_p["dropout_prob"],
-            impulse_std=real_p["impulse_std"],
+            # attack_data_ratio non specificato → usa quello del config
         )
         results_pert = trainer.test(model, datamodule=datamodule)
         anom_metrics = results_pert[0]
 
-        # univariate perturbation sweep for robustness curves
+        # sweep univariato — attack_data_ratio=1.0 per isolare ogni attacco
         curves_cfg = base_cfg["curves"]
-
-        # map: (perturb_type_key, set_test_configuration kwarg, param_list)
         perturbation_sweep = [
-            # adversarial attacks
-            ("l2_budget", dict(attack_type="l2"), curves_cfg["attacks"]["l2_budget"]),
-            ("l0_k",      dict(attack_type="l0"), curves_cfg["attacks"]["l0_k"]),
-            # real noise
-            ("gaussian_std", {}, curves_cfg["noise"]["gaussian_std"]),
-            ("dropout_prob", {}, curves_cfg["noise"]["dropout_prob"]),
-            ("impulse_std",  {}, curves_cfg["noise"]["impulse_std"]),
+            ("l2_budget",        dict(attack_type="l2"),     curves_cfg["attacks"]["l2_budget"]),
+            ("l0_k",             dict(attack_type="l0"),     curves_cfg["attacks"]["l0_k"]),
+            ("random_noise_std", dict(attack_type="random"), curves_cfg["attacks"]["random_noise_std"]),
         ]
 
         perturb_base = defense_folder / "perturbations"
         perturb_base.mkdir(exist_ok=True)
-
         results = {}
         for perturb_key, extra_kwargs, param_list in perturbation_sweep:
             results[perturb_key] = {}
             for p in param_list:
                 print(f"Running {perturb_key}={p}")
-                sweep_kwarg = {perturb_key: p}
                 model.set_test_configuration(
                     test_mode=f"{suffix}/perturbations/{perturb_key}/{p}",
                     perturb=True,
                     apply_defense=defense_flag,
+                    use_feature_weighting=feat_weight,
                     defense_suffix=suffix,
+                    attack_data_ratio=1.0,    # isola l'attacco corrente
                     **extra_kwargs,
-                    **sweep_kwarg,
+                    **{perturb_key: p},
                 )
                 results[perturb_key][p] = trainer.test(model, datamodule=datamodule)[0]
 

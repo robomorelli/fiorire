@@ -19,7 +19,7 @@ from robustness.evaluation.metrics import compute_metrics
 from robustness.evaluation.write_csv import write_metrics_csv
 from robustness.input_perturbation.defenses import reconstruct_and_weight
 from robustness.input_perturbation.pgd import l0_attack_topk, l2_attack_budget
-from robustness.input_perturbation.real import random_real_perturbation
+from robustness.input_perturbation.real import random_adversarial_attack
 
 import warnings
 warnings.filterwarnings(
@@ -313,29 +313,43 @@ class LitAutoEncoder(pl.LightningModule):
             if perturb:
                 x = x.clone()
 
-                # Real noise on clean samples
-                clean_idx = (y == 0).nonzero(as_tuple=True)[0]
-                real_p = self.cfg["attack"]["real_noise"]
-                if any(v > 0 for v in [real_p["gaussian_std"], real_p["dropout_prob"], real_p["impulse_std"]]):
-                    x[clean_idx] = random_real_perturbation(x[clean_idx], real_p)
-
-                # Adversarial attack on anomalies
                 anomaly_idx = (y == 1).nonzero(as_tuple=True)[0]
-                attack_cfg = self.cfg["attack"]
+                attack_cfg: dict = self.cfg["attack"]
                 attack_type = attack_cfg["type"]
-                if attack_type == "l0":
-                    x_adv = l0_attack_topk(
-                        self.model, x[anomaly_idx].detach().clone(),
-                        k=attack_cfg["k"], num_iter=attack_cfg["num_iter"]
+                ratio = attack_cfg.get("attack_data_ratio", 1.0)
+
+                n_anom = len(anomaly_idx)
+                perm = torch.randperm(n_anom, device=anomaly_idx.device)
+                anomaly_idx = anomaly_idx[perm]
+
+                # se attack_type=="random" tutti vanno al randomized attack
+                effective_ratio = ratio if attack_type != "random" else 0.0
+                n_adv = int(n_anom * effective_ratio)
+                adv_idx  = anomaly_idx[:n_adv]
+                rand_idx = anomaly_idx[n_adv:]
+
+                # structured adversarial attack (L0 / L2)
+                if len(adv_idx) > 0:
+                    if attack_type == "l0":
+                        x_adv = l0_attack_topk(
+                            self.model, x[adv_idx].detach().clone(),
+                            k=attack_cfg["k"], num_iter=attack_cfg["num_iter"]
+                        )
+                    elif attack_type == "l2":
+                        x_adv = l2_attack_budget(
+                            self.model, x[adv_idx].detach().clone(),
+                            budget=attack_cfg["budget"], num_iter=attack_cfg["num_iter"]
+                        )
+                    x[adv_idx] = x_adv
+
+                # randomized adversarial attack
+                if len(rand_idx) > 0:
+                    x[rand_idx] = random_adversarial_attack(
+                        self.model,
+                        x[rand_idx].detach().clone(),
+                        num_vectors=attack_cfg.get("random_num_vectors", 1000),
+                        noise_std=attack_cfg.get("random_noise_std", 0.01),
                     )
-                elif attack_type == "l2":
-                    x_adv = l2_attack_budget(
-                        self.model, x[anomaly_idx].detach().clone(),
-                        budget=attack_cfg["budget"], num_iter=attack_cfg["num_iter"]
-                    )
-                else:
-                    raise ValueError(f"Unknown attack type: {attack_type}")
-                x[anomaly_idx] = x_adv
 
             if apply_defense:
                 x_rec, rec_err = reconstruct_and_weight(
@@ -351,7 +365,7 @@ class LitAutoEncoder(pl.LightningModule):
             else:
                 x_rec = self(x)
                 rec_err = reconstruction_loss(x, x_rec, dimensions=self._rec_dimensions())
-                
+
         self._test_scores.append(rec_err.detach().cpu().numpy().reshape(-1))
         self._test_labels.append(y.detach().cpu().numpy().reshape(-1))
         self._test_metrics_epoch.append({"batch_idx": batch_idx, "anomaly_score": rec_err.mean().item()})
@@ -468,18 +482,19 @@ class LitAutoEncoder(pl.LightningModule):
         test_mode: str,
         perturb: bool,
         apply_defense: bool = False,
-        defense_suffix: str = "",       # ← aggiunto
+        use_feature_weighting: bool = False,
+        defense_suffix: str = "",
         attack_type: str | None = None,
         l2_budget: float | None = None,
         l0_k: int | None = None,
-        gaussian_std: float = 0.0,
-        dropout_prob: float = 0.0,
-        impulse_std: float = 0.0,
+        random_noise_std: float | None = None,
+        attack_data_ratio: float | None = None,
     ):
         self.cfg["metrics"]["test_mode"] = test_mode
         self.cfg["metrics"]["perturb_test"] = perturb
-        self.cfg["metrics"]["defense_suffix"] = defense_suffix  # ← aggiunto
+        self.cfg["metrics"]["defense_suffix"] = defense_suffix
         self.cfg["defense"]["apply_defense"] = apply_defense
+        self.cfg["defense"]["use_feature_weighting"] = use_feature_weighting
 
         if attack_type is not None:
             self.cfg["attack"]["type"] = attack_type
@@ -487,9 +502,9 @@ class LitAutoEncoder(pl.LightningModule):
             self.cfg["attack"]["budget"] = float(l2_budget)
         if l0_k is not None:
             self.cfg["attack"]["k"] = int(l0_k)
+        if random_noise_std is not None:
+            self.cfg["attack"]["random_noise_std"] = float(random_noise_std)
+        if attack_data_ratio is not None:
+            self.cfg["attack"]["attack_data_ratio"] = float(attack_data_ratio)
 
-        self.cfg["attack"]["real_noise"]["gaussian_std"] = float(gaussian_std)
-        self.cfg["attack"]["real_noise"]["dropout_prob"] = float(dropout_prob)
-        self.cfg["attack"]["real_noise"]["impulse_std"] = float(impulse_std)
-
-        print(f"\nTest mode set to: {test_mode}")
+        print(f"\nTest mode set to: {test_mode} | defense={'ON' if apply_defense else 'OFF'} | feature_weighting={'ON' if self.cfg['defense']['use_feature_weighting'] and apply_defense else 'OFF'}")

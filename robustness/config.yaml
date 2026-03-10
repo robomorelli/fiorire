@@ -20,7 +20,7 @@ model:
   dilation: 1
 
 dataset:
-  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_AOC.csv"
+  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_MGM.csv"
   n_seq_chunk: 200                    # how many sequences for each chunk
   test_chunk_ratio: 0.2               # % test set
   val_ratio: 0.2                      # % validation set
@@ -51,23 +51,22 @@ opt:
 
 attack:
   type: "l2"        # attack type: l2 | l0
+  attack_data_ratio: 0.5 # percentage of adversarial (1-ratio randomized)
   # shared params
   num_iter: 10      # number of attack iterations
   # l0-specific
   k: 5              # number of features to perturb (top-k by gradient magnitude)
   # l2-specific
-  budget: 10        # max L2 perturbation budget (as % of input L2 norm)
+  budget: 30        # max L2 perturbation budget (as % of input L2 norm)
   # real noise applied to clean samples
-  real_noise:
-    gaussian_std: 0.01   # std of additive Gaussian noise (0 = disabled)
-    dropout_prob: 0.01   # probability of zeroing a feature (0 = disabled)
-    impulse_std: 0.01    # std of impulse (salt & pepper) noise (0 = disabled) 
+  random_num_vectors: 200
+  random_noise_std: 1.0   
 
 defense:
   # path to load the checkpoint from
   checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/cmg_prova/reg_train_1/checkpoints/best-epoch=376-val_roc_auc=0.9004.ckpt"
   apply_defense: false                # if applying defense in test or not
-  alpha: 1e-1                         # intensity for each step size of pgd
+  use_feature_weighting: true        # if apply feature weightning in defense
   num_iter: 1                         # number of projection steps
   # adversarial training
   regularization: false               # flag to use jacobian regularization
@@ -89,8 +88,8 @@ trainer:
   precision: "bf16-mixed"
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
-  name_exp: AOC
-  run_name: vanilla_1
+  name_exp: MGM
+  run_name: vanilla
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
@@ -100,9 +99,6 @@ metrics:
 curves:
   enabled: true
   attacks:
-    l2_budget:    [5,10,20,30,40,50]
+    l2_budget:    [5,10,20,30,40]
     l0_k:         [1,2,5,10,15]
-  noise:
-    gaussian_std: [0.005,0.01,0.05,0.1]
-    dropout_prob: [0.01,0.05,0.1]
-    impulse_std:  [0.01,0.05,0.1]
+    random_noise_std:   [0.01, 0.05, 0.1, 0.5, 1.0]
