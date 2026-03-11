@@ -31,10 +31,13 @@ def run_and_plot(config_path: str | Path):
     )
     cfg_ckpt = ckpt["hyper_parameters"]
     merged_cfg = OmegaConf.merge(base_cfg, cfg_ckpt)
+    merged_cfg = cast(DictConfig, merged_cfg)
     # sovrascrivo paramentri di output
     merged_cfg.trainer.out_dir = base_cfg.trainer.out_dir
     merged_cfg.trainer.run_name = base_cfg.trainer.run_name
     merged_cfg.trainer.name_exp = base_cfg.trainer.name_exp
+
+    datamodule = DataModule(merged_cfg, mode="test")
     
     model = LitAutoEncoder.load_from_checkpoint(
         base_cfg["defense"]["checkpoint_path"],
@@ -76,7 +79,7 @@ def run_and_plot(config_path: str | Path):
 
         # perturbed test
         print("Running PERTURBED test")
-        l2_budget = float(attack_cfg["budget"]) if attack_cfg["type"] == "l2" else None
+        l1_budget = float(attack_cfg["budget"]) if attack_cfg["type"] == "l1" else None
         l0_k      = int(attack_cfg["k"])        if attack_cfg["type"] == "l0" else None
 
         # perturbed test baseline — usa il ratio del config (mixed attack)
@@ -87,7 +90,7 @@ def run_and_plot(config_path: str | Path):
             use_feature_weighting=feat_weight,
             defense_suffix=suffix,
             attack_type=attack_cfg["type"],
-            l2_budget=l2_budget,
+            l1_budget=l1_budget,
             l0_k=l0_k,
             # attack_data_ratio non specificato → usa quello del config
         )
@@ -97,7 +100,7 @@ def run_and_plot(config_path: str | Path):
         # sweep univariato — attack_data_ratio=1.0 per isolare ogni attacco
         curves_cfg = base_cfg["curves"]
         perturbation_sweep = [
-            ("l2_budget",        dict(attack_type="l2"),     curves_cfg["attacks"]["l2_budget"]),
+            ("l1_budget",        dict(attack_type="l1"),     curves_cfg["attacks"]["l1_budget"]),
             ("l0_k",             dict(attack_type="l0"),     curves_cfg["attacks"]["l0_k"]),
             ("random_noise_std", dict(attack_type="random"), curves_cfg["attacks"]["random_noise_std"]),
         ]

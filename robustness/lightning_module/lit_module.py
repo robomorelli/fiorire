@@ -18,7 +18,7 @@ from robustness.lightning_module.scheduler import build_scheduler
 from robustness.evaluation.metrics import compute_metrics
 from robustness.evaluation.write_csv import write_metrics_csv
 from robustness.input_perturbation.defenses import reconstruct_and_weight
-from robustness.input_perturbation.pgd import l0_attack_topk, l2_attack_budget
+from robustness.input_perturbation.pgd import l0_attack_topk, l1_attack_budget
 from robustness.input_perturbation.real import random_adversarial_attack
 
 import warnings
@@ -328,15 +328,15 @@ class LitAutoEncoder(pl.LightningModule):
                 adv_idx  = anomaly_idx[:n_adv]
                 rand_idx = anomaly_idx[n_adv:]
 
-                # structured adversarial attack (L0 / L2)
+                # structured adversarial attack (l0 / l1)
                 if len(adv_idx) > 0:
                     if attack_type == "l0":
                         x_adv = l0_attack_topk(
                             self.model, x[adv_idx].detach().clone(),
                             k=attack_cfg["k"], num_iter=attack_cfg["num_iter"]
                         )
-                    elif attack_type == "l2":
-                        x_adv = l2_attack_budget(
+                    elif attack_type == "l1":
+                        x_adv = l1_attack_budget(
                             self.model, x[adv_idx].detach().clone(),
                             budget=attack_cfg["budget"], num_iter=attack_cfg["num_iter"]
                         )
@@ -473,7 +473,8 @@ class LitAutoEncoder(pl.LightningModule):
         if "perturbations/" in test_mode:
             parts = test_mode.split("/")
             perturb_type = parts[2]  # suffix/perturbations/<tipo>/<param>
-            return base / "perturbations" / perturb_type
+            param = parts[3]
+            return base / "perturbations" / perturb_type / param
         else:
             return base / test_mode.split("/")[-1]
 
@@ -485,7 +486,7 @@ class LitAutoEncoder(pl.LightningModule):
         use_feature_weighting: bool = False,
         defense_suffix: str = "",
         attack_type: str | None = None,
-        l2_budget: float | None = None,
+        l1_budget: float | None = None,
         l0_k: int | None = None,
         random_noise_std: float | None = None,
         attack_data_ratio: float | None = None,
@@ -498,8 +499,8 @@ class LitAutoEncoder(pl.LightningModule):
 
         if attack_type is not None:
             self.cfg["attack"]["type"] = attack_type
-        if l2_budget is not None:
-            self.cfg["attack"]["budget"] = float(l2_budget)
+        if l1_budget is not None:
+            self.cfg["attack"]["budget"] = float(l1_budget)
         if l0_k is not None:
             self.cfg["attack"]["k"] = int(l0_k)
         if random_noise_std is not None:

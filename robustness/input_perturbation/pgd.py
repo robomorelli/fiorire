@@ -2,7 +2,7 @@ import torch
 from torch import Tensor, nn
 
 
-def l2_attack_budget(
+def l1_attack_budget(
     model: nn.Module,
     x: Tensor,
     budget: float = 50.0,
