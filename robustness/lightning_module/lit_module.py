@@ -39,6 +39,7 @@ class LitAutoEncoder(pl.LightningModule):
         # fallback due to config modification w.r.t. old checkpoints
         self.lambda_init = ctrl_cfg.get("lambda_init", 0.1)
         self.label_granularity = ctrl_cfg.get("label_granularity", "sequence")
+        self.clean_threshold: float | None = None
 
         # training buffers
         self.train_feat_errors = []
@@ -308,7 +309,7 @@ class LitAutoEncoder(pl.LightningModule):
         apply_defense = self.cfg["defense"]["apply_defense"]
         perturb = self.cfg["metrics"]["perturb_test"]
         need_grad = perturb or apply_defense
-
+        attacked_mask = torch.zeros(len(y), dtype=torch.bool, device=y.device)
         with torch.enable_grad() if need_grad else torch.no_grad():
             if perturb:
                 x = x.clone()
@@ -340,6 +341,7 @@ class LitAutoEncoder(pl.LightningModule):
                             self.model, x[adv_idx].detach().clone(),
                             budget=attack_cfg["budget"], num_iter=attack_cfg["num_iter"]
                         )
+                    attacked_mask[adv_idx] = True
                     x[adv_idx] = x_adv
 
                 # randomized adversarial attack
@@ -350,6 +352,7 @@ class LitAutoEncoder(pl.LightningModule):
                         num_vectors=attack_cfg.get("random_num_vectors", 1000),
                         noise_std=attack_cfg.get("random_noise_std", 0.01),
                     )
+                    attacked_mask[rand_idx] = True
 
             if apply_defense:
                 x_rec, rec_err = reconstruct_and_weight(
@@ -369,11 +372,13 @@ class LitAutoEncoder(pl.LightningModule):
         self._test_scores.append(rec_err.detach().cpu().numpy().reshape(-1))
         self._test_labels.append(y.detach().cpu().numpy().reshape(-1))
         self._test_metrics_epoch.append({"batch_idx": batch_idx, "anomaly_score": rec_err.mean().item()})
+        self._test_attacked_mask.append(attacked_mask.cpu().numpy().reshape(-1))
 
     def on_test_start(self):
         self._test_scores.clear()
         self._test_labels.clear()
         self._test_metrics_epoch.clear()
+        self._test_attacked_mask: list[np.ndarray] = []
         assert self.trainer.test_dataloaders is not None
         self._test_dataloader = self.trainer.test_dataloaders
 
@@ -400,6 +405,8 @@ class LitAutoEncoder(pl.LightningModule):
         )
         # print("Clean scores - mean:", scores[labels==0].mean(), "std:", scores[labels==0].std())
         # print("Anomaly scores - mean:", scores[labels==1].mean(), "std:", scores[labels==1].std())
+        attacked_mask = np.concatenate(self._test_attacked_mask) if self._test_attacked_mask else None
+        clean_threshold = getattr(self, "clean_threshold", None)
         all_metrics = compute_metrics(
             x=None,
             x_rec=None,
@@ -407,6 +414,8 @@ class LitAutoEncoder(pl.LightningModule):
             scores=scores,
             metric_types=self.cfg["metrics"].types,
             return_curves=self.cfg["metrics"]["return_curves"],
+            attacked_mask=attacked_mask,
+            clean_threshold=clean_threshold,
         )
         all_metrics["anomaly_score"] = float(scores.mean())
 
