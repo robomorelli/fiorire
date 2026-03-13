@@ -66,7 +66,8 @@ defense:
   # path to load the checkpoint from
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/vanilla/checkpoints/best-epoch=167-val_roc_auc=0.9438.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/reg_train_1/checkpoints/best-epoch=446-val_roc_auc=0.9405.ckpt"
-  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/vanilla/checkpoints/best-epoch=074-val_roc_auc=0.9640.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/vanilla/checkpoints/best-epoch=074-val_roc_auc=0.9640.ckpt"
+  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/reg_train_1/checkpoints/best-epoch=369-val_roc_auc=0.9702.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/reg_train_1/checkpoints/best-epoch=369-val_roc_auc=0.9702.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/FSS/vanilla/checkpoints/best-epoch=007-val_roc_auc=0.9999.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/MGM/vanilla/checkpoints/best-epoch=050-val_roc_auc=0.9847.ckpt"
@@ -95,7 +96,7 @@ trainer:
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
   name_exp: AOC
-  run_name: test_vanilla_2
+  run_name: test_reg1
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test

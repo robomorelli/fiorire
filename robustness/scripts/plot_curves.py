@@ -5,7 +5,7 @@ from fire import Fire
 import torch
 from pytorch_lightning import Trainer
 
-from robustness.evaluation.write_csv import write_metrics_csv
+from robustness.scripts.perturb_budget import compute_perturbation_budget
 from robustness.lightning_module.lit_module import LitAutoEncoder
 from robustness.evaluation.metrics import find_metric, robustness_delta, save_robustness_summary
 from robustness.dataset.data_module import DataModule
@@ -87,6 +87,12 @@ def run_and_plot(config_path: str | Path) -> None:
         p95 = find_metric(clean_metrics, "score_p95_clean")
         if p95 is not None:
             model.clean_threshold = p95
+            compute_perturbation_budget(
+                model=model.model,        # raw nn.Module, not LitAutoEncoder
+                datamodule=datamodule,
+                threshold=p95,
+                defense_folder=defense_folder,
+            )
  
         # --- perturbed baseline test ---
         print("Running PERTURBED test")

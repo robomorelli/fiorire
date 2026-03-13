@@ -7,115 +7,50 @@ from models.conv_ae2D import Encoder, Decoder
 from robustness.lightning_module.losses import reconstruction_loss
 
 
-# def approximate_projection(
-#     encoder: Encoder,
-#     decoder: Decoder,
-#     x: Tensor,
-#     alpha: float,
-#     num_iter: int,
-#     loss_fn: Optional[torch.nn.Module] = None,
-# ):
-#     """
-#     Approximate projection in latent space.
-
-#     Args:
-#         encoder: maps x -> z
-#         decoder: maps z -> x_hat
-#         x: input batch [B, ...]
-#         alpha: step size
-#         num_iter: number of latent optimization steps
-#         loss_fn: reconstruction loss (default: SmoothL1 sum)
-
-#     Returns:
-#         x_rec: reconstructed batch after projection
-#         z: optimized latent codes
-#     """
-#     if loss_fn is None:
-#         loss_fn = torch.nn.SmoothL1Loss(reduction="sum")
-
-#     # ottieni latent
-#     z = encoder(x).detach()  # partiamo da detached
-#     z.requires_grad_(True)
-
-#     if num_iter > 0:
-#         for _ in range(num_iter):
-#             x_rec = decoder(z)
-#             loss = loss_fn(x_rec, x)
-            
-#             # backward su z
-#             loss.backward()
-
-#             with torch.no_grad():
-#                 z -= alpha * z.grad  # gradient step
-#                 z.grad.zero_()       # reset grad per step successivo
-#     else:
-#         with torch.no_grad():
-#             x_rec = decoder(z)
-
-#     return x_rec.detach(), z.detach()
-
-
 def approximate_projection(
     encoder: Encoder,
     decoder: Decoder,
     x: Tensor,
     alpha: float,
     num_iter: int,
-    lambda_reg: float = 1.0,
     loss_fn: Optional[torch.nn.Module] = None,
-) -> tuple[Tensor, Tensor]:
+):
     """
-    Approximate projection in latent space via gradient ascent on reconstruction
-    loss, regularized to stay close to the initial encoding.
-
-    Maximizes reconstruction loss (pushes z away from the manifold of x)
-    while penalizing large deviations from z_init. For clean samples, the
-    reconstruction gradient is small and lambda_reg keeps z stable. For
-    attacked anomalies pushed near the manifold, the reconstruction gradient
-    is more informative and moves z toward regions where decoder(z) diverges
-    from x_attacked.
+    Approximate projection in latent space.
 
     Args:
-        encoder:    maps x -> z
-        decoder:    maps z -> x_hat
-        x:          input batch [B, ...]
-        alpha:      step size for latent optimization
-        num_iter:   number of gradient ascent steps
-        lambda_reg: weight of the regularization term ||z - z_init||^2.
-                    Higher values keep z closer to z_init (safer for clean
-                    samples, less aggressive on attacked ones).
-                    Suggested tuning range: [0.1, 10.0].
-                    Start with 1.0, increase if clean scores degrade,
-                    decrease if attacked anomaly scores do not increase.
-        loss_fn:    reconstruction loss (default: SmoothL1 sum)
+        encoder: maps x -> z
+        decoder: maps z -> x_hat
+        x: input batch [B, ...]
+        alpha: step size
+        num_iter: number of latent optimization steps
+        loss_fn: reconstruction loss (default: SmoothL1 sum)
 
     Returns:
-        x_rec: reconstructed batch [B, ...] from optimized z
-        z:     optimized latent codes
+        x_rec: reconstructed batch after projection
+        z: optimized latent codes
     """
     if loss_fn is None:
         loss_fn = torch.nn.SmoothL1Loss(reduction="sum")
 
-    z_init = encoder(x).detach()
-    z = z_init.clone().requires_grad_(True)
+    # ottieni latent
+    z = encoder(x).detach()  # partiamo da detached
+    z.requires_grad_(True)
 
     if num_iter > 0:
         for _ in range(num_iter):
             x_rec = decoder(z)
-            recon_loss = loss_fn(x_rec, x)
-            reg_loss = ((z - z_init) ** 2).sum()
-            # minimize: -recon_loss + lambda_reg * reg_loss
-            # i.e. maximize recon_loss subject to staying near z_init
-            loss = -recon_loss + lambda_reg * reg_loss
+            loss = loss_fn(x_rec, x)
+            
+            # backward su z
             loss.backward()
 
             with torch.no_grad():
-                z -= alpha * z.grad
-                if z.grad is not None:
-                    z.grad.zero_()
-
-    with torch.no_grad():
-        x_rec = decoder(z)
+                z -= alpha * z.grad  # gradient step
+                z.grad.zero_()       # reset grad per step successivo
+    else:
+        with torch.no_grad():
+            x_rec = decoder(z)
 
     return x_rec.detach(), z.detach()
 
