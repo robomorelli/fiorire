@@ -93,7 +93,7 @@ def run_and_plot(config_path: str | Path) -> None:
                 datamodule=datamodule,
                 threshold=p95,
                 defense_folder=defense_folder,
-                *merged_cfg["metrics"]["perturbation_budget"]
+                **merged_cfg["metrics"]["perturbation_budget"]
             )
  
         # --- perturbed baseline test ---
