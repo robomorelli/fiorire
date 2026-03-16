@@ -4,10 +4,14 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+import pytorch_lightning as pl
 
 from robustness.evaluation.metrics import write_metrics_csv
 
-# batched L1 attack
+
+
 def _l1_attack_budget_batched(
     model: nn.Module,
     X: Tensor,
@@ -28,7 +32,6 @@ def _l1_attack_budget_batched(
     """
     X_orig = X.detach()
 
-    # per-sample l1 norm and step size, shaped for broadcasting [B, 1, 1, ...]
     l1_norms = X_orig.abs().flatten(1).sum(1).clamp(min=1e-8)   # [B]
     view = (-1,) + (1,) * (X.ndim - 1)                          # (B, 1, 1, ...)
     alphas = (budgets / 100.0) * l1_norms / (3 * X_orig[0].numel())
@@ -40,38 +43,143 @@ def _l1_attack_budget_batched(
 
     for _ in range(num_iter):
         X_adv = X_adv.detach().requires_grad_(True)
-        # per-element loss, summed over non-batch dims -> [B]
         loss = loss_fn(model(X_adv), X_adv).flatten(1).sum(1)
         loss.sum().backward()
 
         with torch.no_grad():
             grad = X_adv.grad
-            assert grad is not None, "gradient is None — ensure requires_grad=True and loss.backward() was called"
+            assert grad is not None, "gradient is None"
             X_adv = X_adv - alphas * grad
             delta = X_adv - X_orig
             changes = (delta.abs().flatten(1).sum(1) * 100.0 / l1_norms).view(view)
             over = changes > budgets_v
-            scale = (budgets_v / changes.clamp(min=1e-8))
+            scale = budgets_v / changes.clamp(min=1e-8)
             X_adv = torch.where(over, X_orig + delta * scale, X_adv)
 
     return X_adv.detach()
 
 
-# batch scoring
 def _batch_score(model: nn.Module, X: Tensor) -> Tensor:
-    """
-    Returns per-sample anomaly score (mean MSE) as a 1-D tensor [B].
-    """
+    """Returns per-sample anomaly score (mean MSE) as a 1-D tensor [B]."""
     with torch.no_grad():
         X_rec = model(X)
         dims = list(range(1, X.ndim))
         return (X - X_rec).pow(2).mean(dim=dims)
 
 
+def _plot_boundary_anomalies(
+    model: nn.Module,
+    samples: Tensor,
+    indices: list[int],
+    budgets: list[float],
+    out_dir: Path,
+    n_plot: int = 5,
+) -> None:
+    """
+    For each of the first n_plot boundary anomalies, produces two plots:
+      1. Line plot — one subplot per feature, original vs reconstruction overlaid.
+      2. Heatmap — [features x time] side by side: original | reconstruction | residual.
+ 
+    Args:
+        model:    Raw autoencoder nn.Module (eval mode, on device).
+        samples:  Tensor of shape [K, C, F, T] — boundary anomaly samples on CPU.
+        indices:  List of sample indices (for titles).
+        budgets:  List of min_budget_pct values (for titles).
+        out_dir:  Directory where plots are saved.
+        n_plot:   Number of samples to plot (default: 5).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    device = next(model.parameters()).device
+    n_plot = min(n_plot, len(samples))
+ 
+    for k in range(n_plot):
+        x = samples[k]                          # [C, F, T] or [F, T] depending on model
+        x_dev = x.unsqueeze(0).to(device)       # [1, ...]
+ 
+        with torch.no_grad():
+            x_rec = model(x_dev).squeeze(0).cpu()   # same shape as x
+ 
+        # collapse channel dim if present: [C, F, T] -> [F, T]
+        if x.ndim == 3:
+            x_2d = x.mean(0)           # [F, T]
+            x_rec_2d = x_rec.mean(0)   # [F, T]
+        else:
+            x_2d = x                   # already [F, T]
+            x_rec_2d = x_rec
+ 
+        x_np = x_2d.numpy()           # [F, T]
+        x_rec_np = x_rec_2d.numpy()   # [F, T]
+        residual = np.abs(x_np - x_rec_np)
+ 
+        n_features = x_np.shape[0]
+        sample_title = f"sample_idx={indices[k]} | min_budget={budgets[k]:.3f}%"
+ 
+        # Plot 1: line plot, one subplot per feature
+        fig, axes_arr = plt.subplots(n_features, 1, figsize=(12, 2 * n_features), sharex=True, squeeze=False)
+        axes = axes_arr[:, 0].tolist()  # always a plain list[Axes]
+        fig.suptitle(f"Line plot — {sample_title}", fontsize=11)
+ 
+        for f_idx, ax in enumerate(axes):
+            ax.plot(x_np[f_idx], label="original", linewidth=1.2)
+            ax.plot(x_rec_np[f_idx], label="reconstruction", linewidth=1.2, linestyle="--")
+            ax.set_ylabel(f"feat {f_idx}", fontsize=8)
+            ax.tick_params(labelsize=7)
+            if f_idx == 0:
+                ax.legend(fontsize=8, loc="upper right")
+ 
+        axes[-1].set_xlabel("time step")
+        plt.tight_layout()
+        fig.savefig(out_dir / f"boundary_{k:02d}_lineplot.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+ 
+        # Plot 2: heatmap [features x time]
+        vmin = min(x_np.min(), x_rec_np.min())
+        vmax = max(x_np.max(), x_rec_np.max())
+ 
+        fig = plt.figure(figsize=(15, max(3, n_features * 0.4 + 2)))
+        fig.suptitle(f"Heatmap — {sample_title}", fontsize=11)
+        gs = gridspec.GridSpec(1, 3, figure=fig, wspace=0.35)
+ 
+        ax_orig = fig.add_subplot(gs[0])
+        ax_rec  = fig.add_subplot(gs[1])
+        ax_res  = fig.add_subplot(gs[2])
+ 
+        feature_ticks = list(range(n_features))
+        feature_labels = [str(i + 1) for i in range(n_features)]
+ 
+        im0 = ax_orig.imshow(x_np, aspect="auto", origin="lower", vmin=vmin, vmax=vmax, cmap="viridis")
+        ax_orig.set_title("Original", fontsize=10)
+        ax_orig.set_xlabel("time step")
+        ax_orig.set_ylabel("feature")
+        ax_orig.set_yticks(feature_ticks)
+        ax_orig.set_yticklabels(feature_labels, fontsize=7)
+        plt.colorbar(im0, ax=ax_orig, fraction=0.046, pad=0.04)
+ 
+        im1 = ax_rec.imshow(x_rec_np, aspect="auto", origin="lower", vmin=vmin, vmax=vmax, cmap="viridis")
+        ax_rec.set_title("Reconstruction", fontsize=10)
+        ax_rec.set_xlabel("time step")
+        ax_rec.set_yticks(feature_ticks)
+        ax_rec.set_yticklabels(feature_labels, fontsize=7)
+        plt.colorbar(im1, ax=ax_rec, fraction=0.046, pad=0.04)
+ 
+        im2 = ax_res.imshow(residual, aspect="auto", origin="lower", cmap="Reds")
+        ax_res.set_title("|Original − Reconstruction|", fontsize=10)
+        ax_res.set_xlabel("time step")
+        ax_res.set_yticks(feature_ticks)
+        ax_res.set_yticklabels(feature_labels, fontsize=7)
+        plt.colorbar(im2, ax=ax_res, fraction=0.046, pad=0.04)
+ 
+        plt.tight_layout()
+        fig.savefig(out_dir / f"boundary_{k:02d}_heatmap.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+ 
+    print(f"[perturbation_budget] Saved {n_plot * 2} plots to {out_dir}")
+
+
 # main function
 def compute_perturbation_budget(
     model: nn.Module,
-    datamodule,
+    datamodule: pl.LightningDataModule,
     threshold: float,
     defense_folder: Path,
     n_samples: int = 100,
@@ -79,6 +187,8 @@ def compute_perturbation_budget(
     n_iter_search: int = 10,
     n_iter_attack: int = 5,
     tol: float = 0.5,
+    boundary_tol: float = 1.0,
+    n_plot: int = 5,
     seed: int = 42,
 ) -> dict:
     """
@@ -90,6 +200,9 @@ def compute_perturbation_budget(
     Each sample has its own budget tensor, so per-sample alpha scaling is
     preserved exactly as in the original l1_attack_budget.
 
+    Near-boundary anomalies (min_budget <= boundary_tol) are saved as a .pt
+    checkpoint and plotted (line plot + heatmap, original vs reconstruction).
+
     Args:
         model:          Raw autoencoder nn.Module (lit_model.model).
         datamodule:     Already set-up DataModule.
@@ -100,6 +213,8 @@ def compute_perturbation_budget(
         n_iter_search:  Binary search steps (default: 10, sufficient for tol=0.5).
         n_iter_attack:  PGD steps per evaluation (default: 5).
         tol:            Convergence tolerance on budget in % (default: 0.5).
+        boundary_tol:   Max budget to classify a sample as near-boundary (default: 1.0%).
+        n_plot:         Number of boundary anomalies to plot (default: 5).
         seed:           Random seed for sample selection.
 
     Returns:
@@ -119,8 +234,7 @@ def compute_perturbation_budget(
     anomaly_samples = anomaly_samples[:n_samples]
     n_total = len(anomaly_samples)
 
-    # stack into a single batch [B, ...]
-    X = torch.cat(anomaly_samples, dim=0)  # [B, C, F, W]
+    X = torch.cat(anomaly_samples, dim=0)   # [N, ...]
 
     print(
         f"\n[perturbation_budget] {n_total} samples | "
@@ -128,43 +242,40 @@ def compute_perturbation_budget(
         f"n_iter_search={n_iter_search} | n_iter_attack={n_iter_attack}"
     )
 
-    # check feasibility at budget_high for all samples at once
+    # feasibility check at budget_high
     model.eval()
     budgets_high = torch.full((n_total,), budget_high, device=device)
     X_adv_max = _l1_attack_budget_batched(model, X.clone(), budgets_high, num_iter=n_iter_attack)
-    scores_max = _batch_score(model, X_adv_max)                  # [N]
-    foolable = scores_max < threshold                            # [N] bool
+    scores_max = _batch_score(model, X_adv_max)
+    foolable = scores_max < threshold
 
     n_foolable = int(foolable.sum().item())
     print(f"[perturbation_budget] {n_foolable}/{n_total} samples foolable within budget_high={budget_high}%")
 
-    # binary search bounds — hi[i] is always a sufficient budget for sample i
+    # binary search bounds
     lo = torch.zeros(n_total, device=device)
     hi = torch.full((n_total,), budget_high, device=device)
 
     # batched binary search
     pbar = tqdm(range(n_iter_search), desc="[perturbation_budget] searching", unit="step")
     for _ in pbar:
-        # active = foolable and not yet converged
         active = foolable & ((hi - lo) >= tol)
         if not active.any():
             break
 
-        active_idx = active.nonzero(as_tuple=True)[0]            # [n_active]
-        mid = (lo + hi) / 2.0                                    # [N]
+        active_idx = active.nonzero(as_tuple=True)[0]
+        mid = (lo + hi) / 2.0
 
-        # single batched GPU call over all active samples
-        X_active = X[active_idx]                                 # [n_active, ...]
-        mid_active = mid[active_idx]                             # [n_active]
+        X_active = X[active_idx]
+        mid_active = mid[active_idx]
         X_adv_active = _l1_attack_budget_batched(
             model, X_active.clone(), mid_active, num_iter=n_iter_attack
         )
-        scores_active = _batch_score(model, X_adv_active)        # [n_active]
+        scores_active = _batch_score(model, X_adv_active)
 
-        # scatter scores back and update bounds
         scores_full = torch.zeros(n_total, device=device)
         scores_full[active_idx] = scores_active
-        succeeded = scores_full < threshold                      # [N]
+        succeeded = scores_full < threshold
 
         hi = torch.where(active & succeeded, mid, hi)
         lo = torch.where(active & ~succeeded, mid, lo)
@@ -185,11 +296,56 @@ def compute_perturbation_budget(
             budgets.append(b)
             rows.append({"sample_idx": i, "min_budget_pct": b, "fooled": 1})
 
+    # near-boundary anomalies
+    boundary_indices: list[int] = []
+    boundary_samples: list[Tensor] = []
+    boundary_budgets: list[float] = []
+
+    for i in range(n_total):
+        if foolable[i].item() and hi[i].item() <= boundary_tol:
+            boundary_indices.append(i)
+            boundary_samples.append(X[i].cpu())
+            boundary_budgets.append(hi[i].item())
+
+    out_dir = defense_folder / "perturbation_budget"
+
+    if boundary_indices:
+        print(
+            f"\n[perturbation_budget] {len(boundary_indices)} near-boundary anomalies "
+            f"(min_budget <= {boundary_tol}%): sample indices {boundary_indices}"
+        )
+        # save .pt checkpoint
+        boundary_out = out_dir / "boundary_anomalies"
+        boundary_out.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "indices": boundary_indices,
+                "budgets": boundary_budgets,
+                "samples": torch.stack(boundary_samples),   # [K, ...]
+            },
+            boundary_out / "boundary_anomalies.pt",
+        )
+        print(f"[perturbation_budget] Checkpoint saved to {boundary_out / 'boundary_anomalies.pt'}")
+
+        # plots
+        _plot_boundary_anomalies(
+            model=model,
+            samples=torch.stack(boundary_samples),
+            indices=boundary_indices,
+            budgets=boundary_budgets,
+            out_dir=boundary_out / "plots",
+            n_plot=n_plot,
+        )
+    else:
+        print(f"\n[perturbation_budget] No near-boundary anomalies found (boundary_tol={boundary_tol}%)")
+
     # summary statistics
     arr = np.array(budgets) if budgets else np.array([float("nan")])
     n_fooled = len(budgets)
     summary: dict = {
         "sample_idx": "SUMMARY",
+        "min_budget_pct": float("nan"),
+        "fooled": "",
         "n_samples": n_total,
         "n_fooled": n_fooled,
         "n_not_fooled": n_total - n_fooled,
@@ -200,16 +356,18 @@ def compute_perturbation_budget(
         "budget_p75_pct": float(np.nanpercentile(arr, 75)),
         "budget_high_pct": budget_high,
         "threshold_tau95": threshold,
+        "n_boundary": len(boundary_indices),
+        "boundary_tol_pct": boundary_tol,
     }
 
     print(
         f"[perturbation_budget] fooled_ratio={summary['fooled_ratio']:.3f} | "
         f"median={summary['budget_median_pct']:.2f}% | "
-        f"mean={summary['budget_mean_pct']:.2f}%"
+        f"mean={summary['budget_mean_pct']:.2f}% | "
+        f"n_boundary={summary['n_boundary']}"
     )
 
     rows.append(summary)
-    out_dir = defense_folder / "perturbation_budget"
     write_metrics_csv(rows, out_dir, filename="perturbation_budget.csv")
     print(f"[perturbation_budget] Saved to {out_dir / 'perturbation_budget.csv'}")
 

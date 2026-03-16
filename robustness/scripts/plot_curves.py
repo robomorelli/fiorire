@@ -34,9 +34,7 @@ def run_and_plot(config_path: str | Path) -> None:
     cfg_ckpt = ckpt["hyper_parameters"]
     merged_cfg = OmegaConf.merge(base_cfg, cfg_ckpt)
     merged_cfg = cast(DictConfig, merged_cfg)
-    merged_cfg.trainer.out_dir = base_cfg.trainer.out_dir
-    merged_cfg.trainer.run_name = base_cfg.trainer.run_name
-    merged_cfg.trainer.name_exp = base_cfg.trainer.name_exp
+    merged_cfg.trainer = base_cfg.trainer
  
     datamodule = DataModule(merged_cfg, mode="test")
  
@@ -46,20 +44,21 @@ def run_and_plot(config_path: str | Path) -> None:
         strict=True,
         weights_only=False,
     )
+    raw_model = model.model                   # salva prima
     model.model = torch.compile(model.model)  # type: ignore
  
     trainer = Trainer(
-        accelerator=base_cfg["trainer"]["accelerator"],
-        devices=base_cfg["trainer"]["devices"],
-        strategy=base_cfg["trainer"]["strategy"],
+        accelerator=merged_cfg["trainer"]["accelerator"],
+        devices=merged_cfg["trainer"]["devices"],
+        strategy=merged_cfg["trainer"]["strategy"],
         logger=False,
         inference_mode=False,
     )
     print("Model loaded.\n")
  
-    attack_cfg = base_cfg["attack"]
-    curves_cfg = base_cfg["curves"]
-    feat_weight = base_cfg["defense"]["use_feature_weighting"]
+    attack_cfg = merged_cfg["attack"]
+    curves_cfg = merged_cfg["curves"]
+    feat_weight = merged_cfg["defense"]["use_feature_weighting"]
  
     perturbation_sweep = [
         ("l1_budget",        {"attack_type": "l1"},     curves_cfg["attacks"]["l1_budget"]),
@@ -87,11 +86,14 @@ def run_and_plot(config_path: str | Path) -> None:
         p95 = find_metric(clean_metrics, "score_p95_clean")
         if p95 is not None:
             model.clean_threshold = p95
+            device = torch.device(f"cuda:{trainer.device_ids[0]}" if trainer.device_ids else "cpu")
+            raw_model = raw_model.to(device)
             compute_perturbation_budget(
-                model=model.model,        # raw nn.Module, not LitAutoEncoder
+                model=raw_model,        # raw nn.Module, not LitAutoEncoder
                 datamodule=datamodule,
                 threshold=p95,
                 defense_folder=defense_folder,
+                *merged_cfg["metrics"]["perturbation_budget"]
             )
  
         # --- perturbed baseline test ---
