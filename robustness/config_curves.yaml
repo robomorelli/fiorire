@@ -64,9 +64,10 @@ attack:
 
 defense:
   # path to load the checkpoint from
-  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/vanilla/checkpoints/best-epoch=109-val_roc_auc=0.9436.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/vanilla/checkpoints/best-epoch=109-val_roc_auc=0.9436.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/reg_train/checkpoints/best-epoch=446-val_roc_auc=0.9405.ckpt"
-  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/vanilla/checkpoints/best-epoch=074-val_roc_auc=0.9640.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/model_2_vanilla/checkpoints/best-epoch=067-val_roc_auc=0.9451.ckpt"
+  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/vanilla/checkpoints/best-epoch=074-val_roc_auc=0.9640.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/reg_train/checkpoints/best-epoch=369-val_roc_auc=0.9702.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/FSS/vanilla/checkpoints/best-epoch=007-val_roc_auc=0.9999.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/MGM/vanilla/checkpoints/best-epoch=050-val_roc_auc=0.9847.ckpt"
@@ -94,18 +95,19 @@ trainer:
   precision: "bf16-mixed"
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
-  name_exp: CMG
+  name_exp: AOC
   run_name: test_vanilla
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
   return_curves: true                      # to plot pr/roc curves
   perturb_test: true                       # flag to decide to perturb (bot adv e real) the test set or not
+  p95: 0.004                               # 95-th percentile of clean scores used as threshold
   perturbation_budget:
     n_samples: 250
     budget_high: 200.0
     n_iter_search: 10
-    n_iter_attack: 5
+    n_iter_attack: 10
     tol: 0.5
     boundary_tol: 1.0
     n_plot: 5

@@ -86,6 +86,7 @@ class LitAutoEncoder(pl.LightningModule):
         self._val_labels = []
         self._val_lipschitz_norm: list[Tensor] = []
         self.val_lipschitz_norm = None
+        self.val_tau95: float = self.cfg["metrics"]["p95"]
 
         # test buffers
         self._test_scores = []
@@ -246,6 +247,11 @@ class LitAutoEncoder(pl.LightningModule):
         all_scores = torch.cat(self._val_scores, dim=0).cpu().numpy()
         all_labels = torch.cat(self._val_labels, dim=0).cpu().numpy()
 
+        # compute and store tau95 from clean validation scores
+        clean_val_scores = all_scores[all_labels == 0]
+        if len(clean_val_scores) > 0:
+            self.val_tau95 = float(np.percentile(clean_val_scores, 95))
+
         epoch_val_loss = torch.tensor(all_scores.mean(), device=self.device)
         # log per epoca
         self.log(
@@ -310,6 +316,8 @@ class LitAutoEncoder(pl.LightningModule):
         perturb = self.cfg["metrics"]["perturb_test"]
         need_grad = perturb or apply_defense
         attacked_mask = torch.zeros(len(y), dtype=torch.bool, device=y.device)
+
+        x_adv=0.0
         with torch.enable_grad() if need_grad else torch.no_grad():
             if perturb:
                 x = x.clone()
@@ -462,9 +470,12 @@ class LitAutoEncoder(pl.LightningModule):
             checkpoint["train_feat_median"] = self.train_feat_median
         if self.val_lipschitz_norm is not None:
             checkpoint["val_lipschitz_norm"] = float(self.val_lipschitz_norm)
+        # save tau95 computed on clean validation scores
+        checkpoint["val_tau95"] = float(getattr(self, "val_tau95", self.val_tau95))
 
     def on_load_checkpoint(self, checkpoint):
         self.train_feat_median = checkpoint.get("train_feat_median", None)
+        self.val_tau95 = float(checkpoint.get("val_tau95", self.val_tau95))
 
     def _test_out_dir(self) -> Path:
         base = (

@@ -7,15 +7,14 @@ from pytorch_lightning import Trainer
 
 from robustness.scripts.perturb_budget import compute_perturbation_budget
 from robustness.lightning_module.lit_module import LitAutoEncoder
-from robustness.evaluation.metrics import find_metric, robustness_delta, save_robustness_summary
+from robustness.evaluation.metrics import robustness_delta, save_robustness_summary
 from robustness.dataset.data_module import DataModule
 from robustness.evaluation.robustness_curves import plot_robustness_curves
 
 torch.set_float32_matmul_precision('medium')
 
 
- 
- 
+
 def run_and_plot(config_path: str | Path) -> None:
     base_cfg = OmegaConf.load(config_path)
     base_cfg = cast(DictConfig, base_cfg)
@@ -83,7 +82,10 @@ def run_and_plot(config_path: str | Path) -> None:
             defense_suffix=suffix,
         )
         clean_metrics: Mapping[str, Any] = trainer.test(model, datamodule=datamodule)[0]
-        p95 = find_metric(clean_metrics, "score_p95_clean")
+        # use tau95 from checkpoint (computed on clean validation scores at training time)
+        # fall back to 0.004 if not found
+        p95 = getattr(model, "val_tau95", merged_cfg["metrics"]["p95"])
+        print(f"[{suffix}] Using tau95={p95:.6f} from checkpoint (val clean p95)")
         if p95 is not None:
             model.clean_threshold = p95
             device = torch.device(f"cuda:{trainer.device_ids[0]}" if trainer.device_ids else "cpu")
