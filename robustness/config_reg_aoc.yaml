@@ -20,7 +20,7 @@ model:
   dilation: 1
 
 dataset:
-  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_CMG.csv"
+  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_AOC.csv"
   n_seq_chunk: 200                    # how many sequences for each chunk
   test_chunk_ratio: 0.2               # % test set
   val_ratio: 0.2                      # % validation set
@@ -30,9 +30,9 @@ dataset:
   seq_stride_val: 16                  # stride per validation
   seq_stride_test: 16                 # stride per test
   num_workers: 16                     # workers for the dataloader
+  label_granularity: "sequence"       # una label sequenza ("sequence") o una per timestamp ("timestamp")
   val_anomaly_ratio: 1.0              # % di finestre da corrompere da aggiungere nel validation set
   test_anomaly_ratio: 1.0             # % di finestre da corrompere da aggiungere nel test set
-  label_granularity: "sequence"       # una label sequenza ("sequence") o una per timestamp ("timestamp")
   shuffle_train: false                # se usare random sampler sul train
   shuffle_val: true                   # se usare random sampler sul validation
   shuffle_test: true                  # se usare random sampler sul test
@@ -43,8 +43,8 @@ opt:
   lr: 1e-3
   batch_size: 300
   lr_patience: 10                     # patience for the scheduler
-  es_patience: 30                     # patience for early stopping
-  lr_factor: 0.5                      # factor for the scheduler
+  es_patience: 100                     # patience for early stopping
+  lr_factor: 0.8                      # factor for the scheduler
   lr_min: 1e-6                        # min learning to stop when reached
   monitor_metric: "val_roc_auc"       # metrica da monitorare
   monitor_mode: "max"                 # "min" o "max"
@@ -60,23 +60,23 @@ attack:
   budget: 30        # max l1 perturbation budget (as % of input l1 norm)
   # real noise applied to clean samples
   random_num_vectors: 200
-  random_noise_std: 1.0   
+  random_noise_std: 1.0  
 
 defense:
   # path to load the checkpoint from
   checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/cmg_prova/reg_train_1/checkpoints/best-epoch=376-val_roc_auc=0.9004.ckpt"
   apply_defense: false                # if applying defense in test or not
-  use_feature_weighting: true        # if apply feature weightning in defense
+  alpha: 1e-1                         # intensity for each step size of pgd
   num_iter: 1                         # number of projection steps
   # adversarial training
-  regularization: false               # flag to use jacobian regularization
+  regularization: true                # flag to use jacobian regularization
   controller: "ratio"                 # decide which EMA is used: "ratio" | "norm"
   target_norm: 1.0                    # parametro specifico per "norm"
   target_ratio: 0.2                   # parametro specifico per "ratio"
   save_lipschitz: 5                   # number of epochs after we save the norm on validation set (before overfitting ideally)
-  lambda_init: 1e-2                   # max lambda allowed (lambda for latent loss)
-  lambda_min: 1e-6                    # lambda minimo consentito
-  lambda_max: 1e-1                    # max lambda consentito
+  lambda_init: 1e-1                   # max lambda allowed (lambda for latent loss)
+  lambda_min: 1e-4                    # lambda minimo consentito
+  lambda_max: 1                       # max lambda consentito
   lr_lambda: 0.01                     # velocità adattamento lambda
   ema_decay: 0.95                     # smoothing EMA norma
 
@@ -88,13 +88,22 @@ trainer:
   precision: "bf16-mixed"
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
-  name_exp: CMG
-  run_name: vanilla_last
+  name_exp: AOC
+  run_name: reg_aug_train
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
   return_curves: true                      # to plot pr/roc curves
   perturb_test: true                       # flag to decide to perturb (bot adv e real) the test set or not
+  p95: 0.004                               # 95-th percentile of clean scores used as threshold
+  perturbation_budget:
+    n_samples: 250
+    budget_high: 200.0
+    n_iter_search: 10
+    n_iter_attack: 10
+    tol: 0.5
+    boundary_tol: 1.0
+    n_plot: 5
 
 curves:
   enabled: true
