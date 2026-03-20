@@ -53,21 +53,21 @@ attack:
   type: "l1"        # attack type: l1 | l0
   attack_data_ratio: 0.5 # percentage of adversarial (1-ratio randomized)
   # shared params
-  num_iter: 10      # number of attack iterations
+  num_iter: 30      # number of attack iterations
   # l0-specific
   k: 5              # number of features to perturb (top-k by gradient magnitude)
   # l1-specific
   budget: 30        # max l1 perturbation budget (as % of input l1 norm)
   # real noise applied to clean samples
   random_num_vectors: 100
-  random_noise_std: 0.1                  
+  random_noise_std: 0.1                   
 
 defense:
   # path to load the checkpoint from
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/vanilla/checkpoints/best-epoch=109-val_roc_auc=0.9436.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/reg_train/checkpoints/best-epoch=446-val_roc_auc=0.9405.ckpt"
-  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/vanilla/checkpoints/best-epoch=074-val_roc_auc=0.9640.ckpt"
-  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/reg_train/checkpoints/best-epoch=369-val_roc_auc=0.9702.ckpt"
+  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/vanilla/checkpoints/best-epoch=074-val_roc_auc=0.9640.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/reg_train/checkpoints/best-epoch=369-val_roc_auc=0.9702.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/FSS/vanilla/checkpoints/best-epoch=007-val_roc_auc=0.9999.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/MGM/vanilla/checkpoints/best-epoch=050-val_roc_auc=0.9847.ckpt"
   apply_defense: false                # if applying defense in test or not (overridden during execution)
@@ -95,7 +95,7 @@ trainer:
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
   name_exp: AOC
-  run_name: test_reg
+  run_name: test_vanilla_120
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
@@ -104,9 +104,9 @@ metrics:
   p95: 0.004                               # 95-th percentile of clean scores used as threshold
   perturbation_budget:
     n_samples: 250
-    budget_high: 200.0
-    n_iter_search: 10
-    n_iter_attack: 10
+    budget_high: 120.0
+    n_iter_search: 20
+    n_iter_attack: 50
     tol: 0.5
     boundary_tol: 1.0
     n_plot: 5
@@ -116,4 +116,4 @@ curves:
   attacks:
     l1_budget:    [5,10,20,30,40]
     l0_k:         [1,2,5,10,15]
-    random_noise_std:   [0.01, 0.05, 0.1, 0.5, 1.0]
+    random_noise_std:   [0.01, 0.1, 1.0]
