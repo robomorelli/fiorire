@@ -53,7 +53,7 @@ attack:
   type: "l1"        # attack type: l1 | l0
   attack_data_ratio: 0.5 # percentage of adversarial (1-ratio randomized)
   # shared params
-  num_iter: 30      # number of attack iterations
+  num_iter: 20      # number of attack iterations
   # l0-specific
   k: 5              # number of features to perturb (top-k by gradient magnitude)
   # l1-specific
@@ -64,8 +64,8 @@ attack:
 
 defense:
   # path to load the checkpoint from
-  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/vanilla/checkpoints/best-epoch=109-val_roc_auc=0.9436.ckpt"
-  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/reg_train/checkpoints/best-epoch=446-val_roc_auc=0.9405.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/vanilla/checkpoints/best-epoch=109-val_roc_auc=0.9436.ckpt"
+  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/reg_train/checkpoints/best-epoch=446-val_roc_auc=0.9405.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/model_2_vanilla/checkpoints/best-epoch=067-val_roc_auc=0.9451.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/vanilla/checkpoints/best-epoch=074-val_roc_auc=0.9640.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/reg_train/checkpoints/best-epoch=369-val_roc_auc=0.9702.ckpt"
@@ -96,19 +96,21 @@ trainer:
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
   name_exp: CMG
-  run_name: test_vanilla_120
+  run_name: test_reg_fix
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
   return_curves: true                      # to plot pr/roc curves
   perturb_test: true                       # flag to decide to perturb (bot adv e real) the test set or not
-  p95: 0.004                               # 95-th percentile of clean scores used as threshold
+  p95:  # 95-th percentile of clean scores used as threshold
+    def_off: 0.004
+    def_on: 0.05
   perturbation_budget:
     n_samples: 250
     budget_high: 120.0
     n_iter_search: 20
     n_iter_attack: 50
-    tol: 0.5
+    tol: 0.05
     boundary_tol: 1.0
     n_plot: 5
 

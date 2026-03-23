@@ -38,37 +38,62 @@ def save_robustness_summary(
     results: dict[str, dict[Any, Any]],
     sweep_deltas: dict[str, dict[Any, Any]],
 ) -> None:
+    
+    # fixed columns always present in every row
+    METRIC_COLS = [
+        "roc_auc", "pr_auc", "recall_at_fpr5",
+        "score_separation_d", "score_delta_mean",
+        "score_p95_clean", "anomaly_score",
+        "robust_roc_auc", "robust_pr_auc",
+        "asr",
+        "delta_roc_auc", "delta_pr_auc",
+        "delta_recall_at_fpr5", "delta_score_separation_d",
+    ]
+
+    def make_row(suffix, split, perturb_type, param, metrics_dict, deltas=None):
+        row = {
+            "suffix": suffix,
+            "split": split,           # "clean" | "perturbed" | "sweep"
+            "perturb_type": perturb_type,
+            "param": param,
+        }
+        for col in METRIC_COLS:
+            row[col] = float("nan")
+
+        # fill from metrics dict by suffix match
+        for k, v in metrics_dict.items():
+            if isinstance(v, float):
+                for col in METRIC_COLS:
+                    if k.endswith(col):
+                        row[col] = v
+                        break
+
+        # fill deltas
+        if deltas:
+            for k, v in deltas.items():
+                col = k.replace("delta_", "delta_")  # already correct name
+                if col in METRIC_COLS and isinstance(v, float):
+                    row[col] = v
+
+        return row
+
     rows: list[dict[str, Any]] = []
- 
-    # riga baseline (clean vs mixed perturbed)
-    row_baseline: dict[str, Any] = {
-        "suffix": suffix,
-        "perturb_type": "baseline",
-        "param": "mixed",
-    }
-    for k, v in clean_metrics.items():
-        if isinstance(v, float):
-            row_baseline[f"clean_{k}"] = v
-    for k, v in anom_metrics.items():
-        if isinstance(v, float):
-            row_baseline[f"attacked_{k}"] = v
-    row_baseline.update(delta_baseline)
-    rows.append(row_baseline)
- 
-    # una riga per ogni punto dello sweep
+
+    # row 1: clean baseline
+    rows.append(make_row(suffix, "clean", "baseline", "—", clean_metrics))
+
+    # row 2: perturbed baseline (mixed attack)
+    rows.append(make_row(suffix, "perturbed", "baseline", "mixed", anom_metrics, delta_baseline))
+
+    # one row per sweep point
     for perturb_key, param_dict in sweep_deltas.items():
         for p, deltas in param_dict.items():
-            row: dict[str, Any] = {
-                "suffix": suffix,
-                "perturb_type": perturb_key,
-                "param": p,
-            }
-            for k, v in results[perturb_key][p].items():
-                if isinstance(v, float):
-                    row[f"attacked_{k}"] = v
-            row.update(deltas)
-            rows.append(row)
- 
+            rows.append(make_row(
+                suffix, "sweep", perturb_key, p,
+                results[perturb_key][p],
+                deltas,
+            ))
+
     write_metrics_csv(rows, defense_folder, filename="robustness_summary.csv")
 
 

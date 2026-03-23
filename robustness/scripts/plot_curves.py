@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any, Mapping, cast
+import numpy as np
 from omegaconf import OmegaConf, DictConfig
 from fire import Fire
 import torch
@@ -13,6 +14,49 @@ from robustness.evaluation.robustness_curves import plot_robustness_curves
 
 torch.set_float32_matmul_precision('medium')
 
+
+def resolve_tau95(suffix, model, trainer, datamodule, merged_cfg):
+    tau_dict = getattr(model, "val_tau95", None)
+
+    # 1. checkpoint — handle both plain dict and DictConfig
+    if tau_dict is not None:
+        # OmegaConf DictConfig or plain dict
+        try:
+            from omegaconf import OmegaConf
+            if hasattr(tau_dict, "__getitem__") and suffix in tau_dict:
+                val = tau_dict[suffix]
+                # resolve nested DictConfig: e.g. {"def_off": 0.006, "def_on": 0.05}
+                if not hasattr(val, "__getitem__"):  # it's a scalar
+                    p95 = float(val)
+                    print(f"[{suffix}] tau95={p95:.6f} (from checkpoint val_tau95)")
+                    return p95
+        except Exception:
+            pass
+
+    # 2. compute from clean test scores
+    print(f"[{suffix}] tau95 not in checkpoint — computing from clean test scores")
+    model.set_test_configuration(
+        test_mode=f"{suffix}/clean_tau95_probe",
+        perturb=False,
+        apply_defense=(suffix == "def_on"),
+        use_feature_weighting=merged_cfg["defense"]["use_feature_weighting"],
+        defense_suffix=suffix,
+    )
+    trainer.test(model, datamodule=datamodule)
+
+    if model._test_scores and model._test_labels:
+        probe_scores = np.concatenate(model._test_scores)
+        probe_labels = np.concatenate(model._test_labels)
+        clean_only = probe_scores[probe_labels == 0]
+        if len(clean_only) > 0:
+            p95 = float(np.percentile(clean_only, 95))
+            print(f"[{suffix}] tau95={p95:.6f} (computed from clean test scores)")
+            return p95
+
+    # 3. config fallback
+    p95 = float(merged_cfg["metrics"]["p95"][suffix])
+    print(f"[{suffix}] WARNING: tau95={p95:.6f} (config fallback)")
+    return p95
 
 
 def run_and_plot(config_path: str | Path) -> None:
@@ -83,20 +127,18 @@ def run_and_plot(config_path: str | Path) -> None:
         )
         clean_metrics: Mapping[str, Any] = trainer.test(model, datamodule=datamodule)[0]
         # use tau95 from checkpoint (computed on clean validation scores at training time)
-        # fall back to 0.004 if not found
-        p95 = getattr(model, "val_tau95", merged_cfg["metrics"]["p95"])
-        print(f"[{suffix}] Using tau95={p95:.6f} from checkpoint (val clean p95)")
-        if p95 is not None:
-            model.clean_threshold = p95
-            device = torch.device(f"cuda:{trainer.device_ids[0]}" if trainer.device_ids else "cpu")
-            raw_model = raw_model.to(device)
-            compute_perturbation_budget(
-                model=raw_model,        # raw nn.Module, not LitAutoEncoder
-                datamodule=datamodule,
-                threshold=p95,
-                defense_folder=defense_folder,
-                **merged_cfg["metrics"]["perturbation_budget"]
-            )
+        # different from def off and def on
+        p95 = resolve_tau95(suffix, model, trainer, datamodule, merged_cfg)
+        model.clean_threshold = p95
+        device = torch.device(f"cuda:{trainer.device_ids[0]}" if trainer.device_ids else "cpu")
+        raw_model = raw_model.to(device)
+        compute_perturbation_budget(
+            model=raw_model,        # raw nn.Module, not LitAutoEncoder
+            datamodule=datamodule,
+            threshold=p95,
+            defense_folder=defense_folder,
+            **merged_cfg["metrics"]["perturbation_budget"]
+        )
  
         # --- perturbed baseline test ---
         print("Running PERTURBED test")

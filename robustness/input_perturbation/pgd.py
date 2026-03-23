@@ -14,37 +14,46 @@ def l1_attack_budget(
     model.eval()
     x_orig = x.detach()
     x_adv = x_orig.clone()
-    l1_norm = x_orig.abs().sum().clamp(min=1e-8)
 
-    # fixed step size, decoupled from budget and num_iter
-    alpha = 0.01 * l1_norm
+    # per-sample L1 norm: shape [B, 1, 1, 1]
+    l1_norm = x_orig.flatten(1).abs().sum(dim=1, keepdim=True).clamp(min=1e-8)
+    l1_norm = l1_norm.reshape(-1, *([1] * (x.dim() - 1)))
 
+    alpha = 0.01 * l1_norm  # per-sample step size
+
+    # per-sample best tracking
     with torch.no_grad():
-        best_score = (model(x_orig) - x_orig).pow(2).mean().item()
+        init_out = model(x_orig)
+    best_score = (init_out - x_orig).pow(2).flatten(1).mean(dim=1)  # [B]
     best_x_adv = x_orig.clone()
 
     for _ in range(num_iter):
         x_adv = x_adv.detach().requires_grad_(True)
-        # detached target: gradient flows only through model(x_adv)
-        loss = ((model(x_adv) - x_adv.detach()) ** 2).sum()
+        out = model(x_adv)
+        loss = ((out - x_adv.detach()) ** 2).sum()
         grad = torch.autograd.grad(loss, x_adv)[0]
 
         with torch.no_grad():
-            # normalize gradient to unit L1 norm
-            grad_normalized = grad / grad.abs().sum().clamp(min=1e-8)
+            # per-sample gradient normalization
+            grad_l1 = grad.flatten(1).abs().sum(dim=1, keepdim=True)
+            grad_l1 = grad_l1.reshape(-1, *([1] * (x.dim() - 1))).clamp(min=1e-8)
+            grad_normalized = grad / grad_l1
             x_adv = x_adv - alpha * grad_normalized
 
-            # project onto L1 ball
+            # per-sample projection onto L1 ball
             delta = x_adv - x_orig
-            change = delta.abs().sum() * 100.0 / l1_norm
-            if change > budget:
-                x_adv = x_orig + delta * (budget / change.item())
+            change = delta.flatten(1).abs().sum(dim=1, keepdim=True)
+            change = change.reshape(-1, *([1] * (x.dim() - 1)))
+            change_pct = change * 100.0 / l1_norm
+            scale = (budget / change_pct).clamp(max=1.0)
+            x_adv = x_orig + delta * scale
 
-            # best-iterate tracking on anomaly score
-            current_score = (model(x_adv) - x_adv).pow(2).mean().item()
-            if current_score < best_score:
-                best_score = current_score
-                best_x_adv = x_adv.clone()
+            # per-sample best-iterate tracking
+            current_score = ((model(x_adv) - x_adv) ** 2).flatten(1).mean(dim=1)  # [B]
+            improved = current_score < best_score  # [B]
+            best_score = torch.where(improved, current_score, best_score)
+            mask = improved.reshape(-1, *([1] * (x.dim() - 1)))
+            best_x_adv = torch.where(mask, x_adv, best_x_adv)
 
     return best_x_adv.detach()
 

@@ -82,11 +82,16 @@ class LitAutoEncoder(pl.LightningModule):
             raise ValueError(f"Unknown controller type: {ctrl_cfg['controller']}")
         
         # validation epoch buffers
-        self._val_scores = []
+        self._val_scores_off = []
+        self._val_scores_on = []
+        
         self._val_labels = []
         self._val_lipschitz_norm: list[Tensor] = []
         self.val_lipschitz_norm = None
-        self.val_tau95: float = self.cfg["metrics"]["p95"]
+        self.val_tau95:dict[str, float] = {
+            "def_off": self.cfg["metrics"]["p95"]["def_off"],
+            "def_on": self.cfg["metrics"]["p95"]["def_off"]
+        }
 
         # test buffers
         self._test_scores = []
@@ -215,49 +220,65 @@ class LitAutoEncoder(pl.LightningModule):
     def validation_step(self, batch: tuple[Tensor, Tensor], batch_idx):
         x, y = batch
         x = x.requires_grad_(True)
-        x_rec = self(x)
-        
-        rec_err = reconstruction_loss(x, x_rec, dimensions=self._rec_dimensions())  # [B,W] or [B]
-        self._val_scores.append(rec_err.detach().reshape(-1))
+    
+        # always compute def_off scores (used for val_roc_auc and tau95_def_off)
+        x_rec_off = self(x)
+        rec_err_off = reconstruction_loss(x, x_rec_off, dimensions=self._rec_dimensions())
+        self._val_scores_off.append(rec_err_off.detach().reshape(-1))
+    
+        # compute def_on scores only on epoch 0 (cheap one-time calibration)
+        if self.current_epoch == 0:
+            with torch.enable_grad():
+                _, rec_err_on = reconstruct_and_weight(
+                    self.model.encoder,
+                    self.model.decoder,
+                    x,
+                    self.cfg["defense"]["alpha"],
+                    self.cfg["defense"]["num_iter"],
+                    self.train_feat_median,
+                    self.label_granularity,
+                    self.cfg["defense"]["use_feature_weighting"],
+                )
+            self._val_scores_on.append(rec_err_on.detach().reshape(-1))
+    
         self._val_labels.append(y.detach().reshape(-1))
-        
-        # compute Lipschitz only at target epoch
+    
+        # Lipschitz norm (vanilla model only, at target epoch)
         target_epoch = self.cfg["defense"]["save_lipschitz"]
-
         if (
             not self.cfg["defense"]["regularization"]
             and self.current_epoch == target_epoch
         ):
             with torch.enable_grad():
-                x = x.requires_grad_(True)
-
-                lipschitz_norm = compute_jacobian_norm(
-                    self.model.encoder,
-                    x,
-                )
-
+                x_g = x.detach().requires_grad_(True)
+                lipschitz_norm = compute_jacobian_norm(self.model.encoder, x_g)
             self._val_lipschitz_norm.append(lipschitz_norm.detach())
-
-        return rec_err
+    
+        return rec_err_off
 
     def on_validation_epoch_end(self):
-        if self.trainer.sanity_checking or not self._val_scores:
+        if self.trainer.sanity_checking or not self._val_scores_off:
             return
-
-        all_scores = torch.cat(self._val_scores, dim=0).cpu().numpy()
+    
         all_labels = torch.cat(self._val_labels, dim=0).cpu().numpy()
-
-        # compute and store tau95 from clean validation scores
-        clean_val_scores = all_scores[all_labels == 0]
-        if len(clean_val_scores) > 0:
-            self.val_tau95 = float(np.percentile(clean_val_scores, 95))
-
-        epoch_val_loss = torch.tensor(all_scores.mean(), device=self.device)
-        # log per epoca
-        self.log(
-            "val_loss", epoch_val_loss, on_epoch=True, prog_bar=True, sync_dist=True
-        )
-
+        all_scores_off = torch.cat(self._val_scores_off, dim=0).cpu().numpy()
+    
+        # tau95 def_off — updated every epoch from clean validation scores
+        clean_off = all_scores_off[all_labels == 0]
+        if len(clean_off) > 0:
+            self.val_tau95["def_off"] = float(np.percentile(clean_off, 95))
+    
+        # tau95 def_on — computed only on epoch 0
+        if self._val_scores_on:
+            all_scores_on = torch.cat(self._val_scores_on, dim=0).cpu().numpy()
+            clean_on = all_scores_on[all_labels == 0]
+            if len(clean_on) > 0:
+                self.val_tau95["def_on"] = float(np.percentile(clean_on, 95))
+    
+        # val metrics use def_off scores (the primary signal for checkpointing)
+        epoch_val_loss = torch.tensor(all_scores_off.mean(), device=self.device)
+        self.log("val_loss", epoch_val_loss, on_epoch=True, prog_bar=True, sync_dist=True)
+    
         target_epoch = self.cfg["defense"]["save_lipschitz"]
         if (
             not self.cfg["defense"]["regularization"]
@@ -265,29 +286,24 @@ class LitAutoEncoder(pl.LightningModule):
             and self._val_lipschitz_norm
         ):
             local_mean = torch.stack(self._val_lipschitz_norm).mean()
-
-            # media tra GPU
             gathered = cast(Tensor, self.all_gather(local_mean))
-            global_mean = gathered.mean()
-            self.val_lipschitz_norm = global_mean
+            self.val_lipschitz_norm = gathered.mean()
             print(f"Saved Lipschitz norm. Value: {self.val_lipschitz_norm}.")
             self._val_lipschitz_norm.clear()
-
+    
         metrics = compute_metrics(
             x=None,
             x_rec=None,
             labels=all_labels,
-            scores=all_scores,
+            scores=all_scores_off,
             metric_types=self.cfg["metrics"].types,
-            return_curves=self.cfg["metrics"]["return_curves"],
+            return_curves=False,
         )
         metrics.pop("_roc_curve", None)
         metrics.pop("_pr_curve", None)
-        # log tutte le altre metriche
         for k, v in metrics.items():
             self.log(f"val_{k}", v, on_epoch=True, sync_dist=True)
-
-        # scriviamo CSV SOLO su rank 0
+    
         if self.trainer.is_global_zero:
             csv_dir = (
                 Path(self.cfg["trainer"]["out_dir"])
@@ -302,12 +318,15 @@ class LitAutoEncoder(pl.LightningModule):
                 "train_ratio": self.train_ratio,
                 "train_lambda": float(self.current_lambda),
                 "val_loss": float(epoch_val_loss),
+                "val_tau95_def_off": self.val_tau95["def_off"],
+                "val_tau95_def_on": self.val_tau95["def_on"],
                 **metrics,
             }
             write_metrics_csv([row], csv_dir, filename="metrics.csv")
-
+    
         # cleanup
-        self._val_scores.clear()
+        self._val_scores_off.clear()
+        self._val_scores_on.clear()
         self._val_labels.clear()
 
     def test_step(self, batch: tuple[Tensor, Tensor], batch_idx):
@@ -402,18 +421,18 @@ class LitAutoEncoder(pl.LightningModule):
         
         if not self.trainer.is_global_zero:
             return
-
+        attacked_mask = np.concatenate(self._test_attacked_mask) if self._test_attacked_mask else None
         anom_scores = scores[labels == 1]
         print(
-            f"Anomaly scores percentiles: 25%={np.percentile(anom_scores,25):.4f}, 50%={np.percentile(anom_scores,50):.4f}, 75%={np.percentile(anom_scores,75):.4f}"
+            f"Anomaly scores percentiles: 25%={np.percentile(anom_scores,25):.4f}, 50%={np.percentile(anom_scores,50):.4f}, 75%={np.percentile(anom_scores,75):.4f}, 99%={np.percentile(anom_scores,99):.4f}"
         )
         clean_scores = scores[labels == 0]
         print(
-            f"Clean scores percentiles: 25%={np.percentile(clean_scores,25):.4f}, 50%={np.percentile(clean_scores,50):.4f}, 75%={np.percentile(clean_scores,75):.4f}"
+            f"Clean scores percentiles: 25%={np.percentile(clean_scores,25):.4f}, 50%={np.percentile(clean_scores,50):.4f}, 75%={np.percentile(clean_scores,75):.4f}, 99%={np.percentile(clean_scores,99):.4f}"
         )
-        # print("Clean scores - mean:", scores[labels==0].mean(), "std:", scores[labels==0].std())
-        # print("Anomaly scores - mean:", scores[labels==1].mean(), "std:", scores[labels==1].std())
-        attacked_mask = np.concatenate(self._test_attacked_mask) if self._test_attacked_mask else None
+        print("Clean scores - mean:", clean_scores.mean(), "std:", clean_scores.std(), "max:", np.max(clean_scores))
+        print("Anomaly scores - mean:", anom_scores.mean(), "std:", anom_scores.std(), "max:", np.max(anom_scores))
+        
         clean_threshold = getattr(self, "clean_threshold", None)
         all_metrics = compute_metrics(
             x=None,
@@ -471,11 +490,14 @@ class LitAutoEncoder(pl.LightningModule):
         if self.val_lipschitz_norm is not None:
             checkpoint["val_lipschitz_norm"] = float(self.val_lipschitz_norm)
         # save tau95 computed on clean validation scores
-        checkpoint["val_tau95"] = float(getattr(self, "val_tau95", self.val_tau95))
+        checkpoint["val_tau95"] = self.val_tau95
 
     def on_load_checkpoint(self, checkpoint):
         self.train_feat_median = checkpoint.get("train_feat_median", None)
-        self.val_tau95 = float(checkpoint.get("val_tau95", self.val_tau95))
+        self.val_tau95 = checkpoint.get(
+            "val_tau95",
+            {"def_off": self.cfg["metrics"]["p95"], "def_on": self.cfg["metrics"]["p95"]}
+        )
 
     def _test_out_dir(self) -> Path:
         base = (

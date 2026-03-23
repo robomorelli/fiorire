@@ -95,7 +95,7 @@ trainer:
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
   name_exp: AOC
-  run_name: test_vanilla_120
+  run_name: test_vanilla_fix
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
@@ -107,7 +107,7 @@ metrics:
     budget_high: 120.0
     n_iter_search: 20
     n_iter_attack: 50
-    tol: 0.5
+    tol: 0.05
     boundary_tol: 1.0
     n_plot: 5
 
