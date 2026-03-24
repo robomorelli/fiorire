@@ -6,7 +6,7 @@ from torch import nn
 import torch.nn.functional as F
 
 
-def reconstruction_loss(x: Tensor, x_hat: Tensor, dimensions: list[int], reduction: str = "mean"):
+def reconstruction_loss(x: Tensor, x_hat: Tensor, dimensions: list[int]):
     err = (x_hat - x).pow(2)          # [B,1,F,W]
     err = err.squeeze(1)              # [B,F,W]
     if (np.array(dimensions)>2).any():

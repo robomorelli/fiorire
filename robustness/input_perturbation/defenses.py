@@ -15,43 +15,24 @@ def approximate_projection(
     num_iter: int,
     loss_fn: Optional[torch.nn.Module] = None,
 ):
-    """
-    Approximate projection in latent space.
-
-    Args:
-        encoder: maps x -> z
-        decoder: maps z -> x_hat
-        x: input batch [B, ...]
-        alpha: step size
-        num_iter: number of latent optimization steps
-        loss_fn: reconstruction loss (default: SmoothL1 sum)
-
-    Returns:
-        x_rec: reconstructed batch after projection
-        z: optimized latent codes
-    """
     if loss_fn is None:
-        loss_fn = torch.nn.SmoothL1Loss(reduction="sum")
-
-    # ottieni latent
-    z = encoder(x).detach()  # partiamo da detached
+        loss_fn = torch.nn.MSELoss(reduction="sum")
+ 
+    z = encoder(x).detach()
     z.requires_grad_(True)
-
-    if num_iter > 0:
-        for _ in range(num_iter):
-            x_rec = decoder(z)
-            loss = loss_fn(x_rec, x)
-            
-            # backward su z
-            loss.backward()
-
-            with torch.no_grad():
-                z -= alpha * z.grad  # gradient step
-                z.grad.zero_()       # reset grad per step successivo
-    else:
-        with torch.no_grad():
-            x_rec = decoder(z)
-
+ 
+    # Adam converges in far fewer iterations than vanilla gradient accumulation
+    # making it the right choice when num_iter is small (e.g. 10 vs original 1000)
+    optimizer = torch.optim.Adam([z], lr=alpha)
+ 
+    x_rec = decoder(z)
+    for _ in range(num_iter):
+        optimizer.zero_grad()
+        x_rec = decoder(z)
+        loss = loss_fn(x_rec, x)
+        loss.backward()
+        optimizer.step()
+ 
     return x_rec.detach(), z.detach()
 
 

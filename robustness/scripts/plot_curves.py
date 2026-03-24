@@ -15,35 +15,22 @@ from robustness.evaluation.robustness_curves import plot_robustness_curves
 torch.set_float32_matmul_precision('medium')
 
 
-def resolve_tau95(suffix, model, trainer, datamodule, merged_cfg):
+def resolve_tau95(suffix, model, trainer, datamodule, merged_cfg, clean_metrics=None):
     tau_dict = getattr(model, "val_tau95", None)
 
-    # 1. checkpoint — handle both plain dict and DictConfig
+    # 1. checkpoint
     if tau_dict is not None:
-        # OmegaConf DictConfig or plain dict
         try:
-            from omegaconf import OmegaConf
             if hasattr(tau_dict, "__getitem__") and suffix in tau_dict:
                 val = tau_dict[suffix]
-                # resolve nested DictConfig: e.g. {"def_off": 0.006, "def_on": 0.05}
-                if not hasattr(val, "__getitem__"):  # it's a scalar
+                if not hasattr(val, "__getitem__"):
                     p95 = float(val)
                     print(f"[{suffix}] tau95={p95:.6f} (from checkpoint val_tau95)")
                     return p95
         except Exception:
             pass
 
-    # 2. compute from clean test scores
-    print(f"[{suffix}] tau95 not in checkpoint — computing from clean test scores")
-    model.set_test_configuration(
-        test_mode=f"{suffix}/clean_tau95_probe",
-        perturb=False,
-        apply_defense=(suffix == "def_on"),
-        use_feature_weighting=merged_cfg["defense"]["use_feature_weighting"],
-        defense_suffix=suffix,
-    )
-    trainer.test(model, datamodule=datamodule)
-
+    # 2. reuse scores already accumulated from the clean test just run
     if model._test_scores and model._test_labels:
         probe_scores = np.concatenate(model._test_scores)
         probe_labels = np.concatenate(model._test_labels)
@@ -78,6 +65,10 @@ def run_and_plot(config_path: str | Path) -> None:
     merged_cfg = OmegaConf.merge(base_cfg, cfg_ckpt)
     merged_cfg = cast(DictConfig, merged_cfg)
     merged_cfg.trainer = base_cfg.trainer
+    merged_cfg.attack  = base_cfg.attack
+    merged_cfg.metrics = base_cfg.metrics
+    merged_cfg.curves  = base_cfg.curves
+    merged_cfg.defense = base_cfg.defense  # alpha, num_iter, use_feature_weighting, etc.
  
     datamodule = DataModule(merged_cfg, mode="test")
  

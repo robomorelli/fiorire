@@ -16,80 +16,64 @@ def _l1_attack_budget_batched(
     X: Tensor,
     budgets: Tensor,
     num_iter: int = 5,
+    lr: float = 1e-2,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    eps_adam: float = 1e-8,
 ) -> Tensor:
     """
-    Batched PGD L1 attack with best-iterate tracking.
-    Each sample in the batch has its own budget.
-
-    The attack minimizes the reconstruction MSE of X_adv (i.e. makes the
-    perturbed sample look normal to the autoencoder) by descending the loss
-    ||model(X_adv) - X_adv||^2 w.r.t. X_adv, with the target detached so
-    that gradients flow only through model(X_adv).
-
-    Best-iterate tracking returns the X_adv that achieved the lowest anomaly
-    score across all iterations, making the attack robust to overshooting.
-
-    Args:
-        model:    Raw autoencoder nn.Module.
-        X:        Input batch [B, ...].
-        budgets:  Per-sample L1 budgets as % of input L1 norm, shape [B].
-        num_iter: Number of PGD steps.
-
-    Returns:
-        Adversarial batch [B, ...] — best iterate per sample.
+    Batched Adam L1 attack with best-iterate tracking.
+    Each sample in the batch has its own budget (% of input L1 norm).
     """
     X_orig = X.detach()
+    B = X_orig.shape[0]
+    view = (-1,) + (1,) * (X.ndim - 1)                          # (B, 1, 1, ...)
 
-    l1_norms = X_orig.abs().flatten(1).sum(1).clamp(min=1e-8)  # [B]
-    view = (-1,) + (1,) * (X.ndim - 1)                         # (B, 1, 1, ...)
-    budgets_v = budgets.view(view)                              # [B, 1, 1, ...]
+    l1_norms = X_orig.abs().flatten(1).sum(1).clamp(min=1e-8)   # [B]
+    # convert % budget to absolute L1 radius
+    max_delta_l1 = (budgets / 100.0) * l1_norms                 # [B]
+    max_delta_l1_v = max_delta_l1.view(view)
 
-    # fixed step size: fraction of L1 norm, independent of budget and num_iter
-    # this decouples step size from the projection constraint (budget)
-    step = (0.01 * l1_norms).view(view)                        # [B, 1, 1, ...]
+    # scale lr by per-sample l1_norm, same convention as l1_attack_budget
+    lr_v = (lr * l1_norms).view(view)                           # [B, 1, ...]
 
-    X_adv = X_orig.clone()
+    delta = torch.zeros_like(X_orig)
+    m     = torch.zeros_like(X_orig)
+    v     = torch.zeros_like(X_orig)
 
-    # best-iterate tracking: keep the X_adv with the lowest anomaly score seen
-    with torch.no_grad():
-        best_scores = _batch_score(model, X_orig)              # [B]
-    X_best = X_orig.clone()
+    best_scores = _batch_score(model, X_orig)                   # [B]
+    best_delta  = torch.zeros_like(X_orig)
 
-    for _ in range(num_iter):
-        X_adv = X_adv.detach().requires_grad_(True)
+    for t in range(1, num_iter + 1):
+        delta_t = delta.detach().requires_grad_(True)
+        X_adv = X_orig + delta_t
 
-        # loss: how well does the model reconstruct X_adv?
-        # target is detached so gradient flows only through model(X_adv)
-        rec = model(X_adv)
-        loss = ((rec - X_adv.detach()) ** 2).flatten(1).sum(1)
-        loss.sum().backward()
+        rec  = model(X_adv)
+        loss = ((rec - X_adv) ** 2).flatten(1).sum(1).sum()
+        grad = torch.autograd.grad(loss, delta_t)[0].detach()
 
         with torch.no_grad():
-            grad = X_adv.grad
-            assert grad is not None, "gradient is None"
+            # Adam moment update
+            m = beta1 * m + (1.0 - beta1) * grad
+            v = beta2 * v + (1.0 - beta2) * grad.pow(2)
+            m_hat = m / (1.0 - beta1 ** t)
+            v_hat = v / (1.0 - beta2 ** t)
 
-            # normalize gradient to unit L1 norm per sample for stable steps
-            grad_norms = grad.abs().flatten(1).sum(1).clamp(min=1e-8).view(view)
-            grad_normalized = grad / grad_norms
+            delta = delta - lr_v * m_hat / (v_hat.sqrt() + eps_adam)
 
-            # gradient descent: move X_adv toward lower reconstruction error
-            X_adv = X_adv - step * grad_normalized
+            # project delta onto per-sample L1 ball
+            delta_l1 = delta.abs().flatten(1).sum(1).clamp(min=1e-8).view(view)
+            scale = (max_delta_l1_v / delta_l1).clamp(max=1.0)
+            delta = delta * scale
 
-            # project onto L1 ball of radius budgets_v around X_orig
-            delta = X_adv - X_orig
-            changes = (delta.abs().flatten(1).sum(1) * 100.0 / l1_norms).view(view)
-            over = changes > budgets_v
-            scale = budgets_v / changes.clamp(min=1e-8)
-            X_adv = torch.where(over, X_orig + delta * scale, X_adv)
-
-            # update best iterate per sample
-            current_scores = _batch_score(model, X_adv)        # [B]
-            improved = current_scores < best_scores             # [B] bool
+            # best-iterate tracking
+            current_scores = _batch_score(model, X_orig + delta)  # [B]
+            improved   = current_scores < best_scores              # [B] bool
             improved_v = improved.view(view)
-            X_best = torch.where(improved_v, X_adv, X_best)
-            best_scores = torch.where(improved, current_scores, best_scores)
+            best_delta  = torch.where(improved_v, delta,       best_delta)
+            best_scores = torch.where(improved,   current_scores, best_scores)
 
-    return X_best.detach()
+    return (X_orig + best_delta).detach()
 
 
 def _batch_score(model: nn.Module, X: Tensor) -> Tensor:
