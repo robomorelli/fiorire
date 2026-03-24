@@ -28,7 +28,7 @@ def l1_attack_budget(
     extra = [1] * (x.dim() - 1)          # for broadcasting over (C,T,F) etc.
 
     # Per-sample L1 norm used to express the budget as a percentage
-    l1_norm = x_orig.flatten(1).abs().sum(dim=1).clamp(min=1e-8)   # [B]
+    l1_norm = x_orig.flatten(1).abs().sum(dim=1).clamp(min=1e-8)    # [B]
     max_delta_l1 = (budget / 100.0) * l1_norm                       # [B]
     max_delta_l1_bc = max_delta_l1.reshape(B, *extra)
 
@@ -52,7 +52,7 @@ def l1_attack_budget(
         grad = torch.autograd.grad(loss, delta_t)[0].detach()
 
         with torch.no_grad():
-            # ── Adam update ────────────────────────────────────────────────
+            # Adam update
             m = beta1 * m + (1.0 - beta1) * grad
             v = beta2 * v + (1.0 - beta2) * grad.pow(2)
             m_hat = m / (1.0 - beta1 ** t)
@@ -63,13 +63,13 @@ def l1_attack_budget(
             lr_bc = (lr * l1_norm).reshape(B, *extra)
             delta = delta - lr_bc * m_hat / (v_hat.sqrt() + eps_adam)
 
-            # ── Project delta onto the L1 ball ────────────────────────────
+            # Project delta onto the L1 ball
             delta_l1 = delta.flatten(1).abs().sum(dim=1).clamp(min=1e-8)
             delta_l1_bc = delta_l1.reshape(B, *extra)
             scale = (max_delta_l1_bc / delta_l1_bc).clamp(max=1.0)
             delta = delta * scale
 
-            # ── Per-sample best-iterate ───────────────────────────────────
+            # Per-sample best-iterate
             current_score = (
                 (model(x_orig + delta) - (x_orig + delta))
                 .pow(2).flatten(1).mean(dim=1)
@@ -108,14 +108,14 @@ def l0_attack_topk(
     B = x_orig.shape[0]
     extra = [1] * (x.dim() - 1)
 
-    # ── Select top-k features once from the initial gradient ──────────────
+    # Select top-k features once from the initial gradient
     x_init = x_orig.clone().requires_grad_(True)
     loss_init = ((model(x_init) - x_init) ** 2).sum()
     grad_init = torch.autograd.grad(loss_init, x_init)[0].detach()
     # aggregate over batch and any non-feature dims; adjust slicing to your layout
     top_k_idx = grad_init.abs().sum(dim=(0, 1, 3)).argsort(descending=True)[:k]
 
-    # ── Per-sample best-iterate tracking ──────────────────────────────────
+    # Per-sample best-iterate tracking
     with torch.no_grad():
         best_score = (model(x_orig) - x_orig).pow(2).flatten(1).mean(dim=1)  # [B]
     best_delta = torch.zeros_like(x_orig)
@@ -141,7 +141,7 @@ def l0_attack_topk(
             grad_masked = torch.zeros_like(grad)
             grad_masked[:, :, top_k_idx, :] = grad[:, :, top_k_idx, :]
 
-            # ── Adam update ───────────────────────────────────────────────
+            # Adam update
             m = beta1 * m + (1.0 - beta1) * grad_masked
             v = beta2 * v + (1.0 - beta2) * grad_masked.pow(2)
             m_hat = m / (1.0 - beta1 ** t)
@@ -154,7 +154,7 @@ def l0_attack_topk(
             delta_full[:, :, top_k_idx, :] = delta[:, :, top_k_idx, :]
             delta = delta_full
 
-            # ── Per-sample best-iterate ───────────────────────────────────
+            # Per-sample best-iterate
             current_score = (
                 (model(x_orig + delta) - (x_orig + delta))
                 .pow(2).flatten(1).mean(dim=1)
