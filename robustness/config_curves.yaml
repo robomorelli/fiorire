@@ -69,12 +69,13 @@ defense:
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/model_2_vanilla/checkpoints/best-epoch=067-val_roc_auc=0.9451.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/vanilla/checkpoints/best-epoch=074-val_roc_auc=0.9640.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/reg_train/checkpoints/best-epoch=369-val_roc_auc=0.9702.ckpt"
-  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/FSS/vanilla/checkpoints/best-epoch=007-val_roc_auc=0.9999.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/FSS/vanilla/checkpoints/best-epoch=007-val_roc_auc=0.9999.ckpt"
+  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/FSS/reg_train/checkpoints/best-epoch=007-val_roc_auc=0.9999.ckpt"
   #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/MGM/vanilla/checkpoints/best-epoch=050-val_roc_auc=0.9847.ckpt"
   apply_defense: false                # if applying defense in test or not (overridden during execution)
   use_feature_weighting: false        # if apply feature weightning in defense
   alpha: 1e-2                         # intensity for each step size of pgd in latent space
-  num_iter: 1000                      # number of projection steps
+  num_iter: 25                        # number of projection steps
   # adversarial training
   regularization: false               # flag to use jacobian regularization
   controller: "ratio"                 # decide which EMA is used: "ratio" | "norm"
@@ -96,7 +97,7 @@ trainer:
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
   name_exp: FSS
-  run_name: test_vanilla_final
+  run_name: test_reg
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
@@ -109,7 +110,7 @@ metrics:
     n_samples: 500
     budget_high: 100.0
     n_iter_search: 20
-    n_iter_attack: 50
+    n_iter_attack: 25
     tol: 0.05
     boundary_tol: 1.0
     n_plot: 5

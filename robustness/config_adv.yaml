@@ -20,7 +20,7 @@ model:
   dilation: 1
 
 dataset:
-  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_CMG.csv"
+  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_FSS.csv"
   n_seq_chunk: 200                    # how many sequences for each chunk
   test_chunk_ratio: 0.2               # % test set
   val_ratio: 0.2                      # % validation set
@@ -43,7 +43,7 @@ opt:
   lr: 1e-3
   batch_size: 300
   lr_patience: 10                     # patience for the scheduler
-  es_patience: 100                     # patience for early stopping
+  es_patience: 30                     # patience for early stopping
   lr_factor: 0.8                      # factor for the scheduler
   lr_min: 1e-6                        # min learning to stop when reached
   monitor_metric: "val_roc_auc"       # metrica da monitorare
@@ -64,19 +64,26 @@ attack:
 
 defense:
   # path to load the checkpoint from
-  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/cmg_prova/reg_train_1/checkpoints/best-epoch=376-val_roc_auc=0.9004.ckpt"
-  apply_defense: false                # if applying defense in test or not
-  alpha: 1e-1                         # intensity for each step size of pgd
-  num_iter: 1                         # number of projection steps
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/vanilla/checkpoints/best-epoch=109-val_roc_auc=0.9436.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/reg_train/checkpoints/best-epoch=446-val_roc_auc=0.9405.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/CMG/model_2_vanilla/checkpoints/best-epoch=067-val_roc_auc=0.9451.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/vanilla/checkpoints/best-epoch=074-val_roc_auc=0.9640.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/AOC/reg_train/checkpoints/best-epoch=369-val_roc_auc=0.9702.ckpt"
+  checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/FSS/vanilla/checkpoints/best-epoch=007-val_roc_auc=0.9999.ckpt"
+  #checkpoint_path: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs/MGM/vanilla/checkpoints/best-epoch=050-val_roc_auc=0.9847.ckpt"
+  apply_defense: false                # if applying defense in test or not (overridden during execution)
+  use_feature_weighting: false        # if apply feature weightning in defense
+  alpha: 1e-2                         # intensity for each step size of pgd in latent space
+  num_iter: 1000                      # number of projection steps
   # adversarial training
-  regularization: true                # flag to use jacobian regularization
+  regularization: false               # flag to use jacobian regularization
   controller: "ratio"                 # decide which EMA is used: "ratio" | "norm"
+  save_lipschitz: 5                   # number of epochs after we save the norm on validation set
+  lambda_init: 1e-2                   # max lambda allowed (lambda for latent loss)
+  lambda_min: 1e-6                    # lambda minimo consentito
+  lambda_max: 1e-1                    # max lambda consentito
   target_norm: 1.0                    # parametro specifico per "norm"
   target_ratio: 0.2                   # parametro specifico per "ratio"
-  save_lipschitz: 5                   # number of epochs after we save the norm on validation set (before overfitting ideally)
-  lambda_init: 1e-1                   # max lambda allowed (lambda for latent loss)
-  lambda_min: 1e-4                    # lambda minimo consentito
-  lambda_max: 1                       # max lambda consentito
   lr_lambda: 0.01                     # velocità adattamento lambda
   ema_decay: 0.95                     # smoothing EMA norma
 
@@ -88,19 +95,24 @@ trainer:
   precision: "bf16-mixed"
   accumulate_grad_batches: 4
   out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
-  name_exp: CMG
+  name_exp: FSS
   run_name: reg_train
 
 metrics:
   types: ["mse/mae", "pr_auc", "roc_auc"]  # metrics to be computed in validation and test
   return_curves: true                      # to plot pr/roc curves
-  perturb_test: true                       # flag to decide to perturb (both adv e real) the test set or not
-  perturb_fraction: 0.5                    # % adversarial w.r.t. total (the rest are real perturbed)
-  pgd_epsilon: 0.01                        # epsilon to perturb data in test
-  real_noise_params:                       # params to build real perturbations
-    gaussian_std: 0.01
-    dropout_prob: 0.1
-    impulse_std: 0.1
+  perturb_test: true                       # flag to decide to perturb (bot adv e real) the test set or not
+  p95:  # 95-th percentile of clean scores used as threshold
+    def_off: 0.004
+    def_on: 0.05
+  perturbation_budget:
+    n_samples: 500
+    budget_high: 100.0
+    n_iter_search: 20
+    n_iter_attack: 50
+    tol: 0.05
+    boundary_tol: 1.0
+    n_plot: 5
 
 curves:
   enabled: true
