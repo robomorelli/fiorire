@@ -1,10 +1,10 @@
 model:
-  kernel_size: 7
-  base_filters: 32
+  kernel_size: 5
+  base_filters: 16
   num_layers: 2
-  compression_factor: 3
+  compression_factor: 8
   bottleneck_conv: 0
-  decoder_mode: "base_filters"
+  decoder_mode: "progressive"
   activation: "Relu"
   bottleneck_activation: null
   aux_channels: 1
@@ -20,7 +20,7 @@ model:
   dilation: 1
 
 dataset:
-  csv_path: "/davinci-1/home/lorenrossi/data_fiorire/AllScenarios_CMG.csv"
+  csv_path: "./davinci-1/home/morellir/artificial_intelligence/repos/fiorire/data/fiorire_2/AllScenarios_FSS.csv"
   n_seq_chunk: 200                    # how many sequences for each chunk
   test_chunk_ratio: 0.2               # % test set
   val_ratio: 0.2                      # % validation set
@@ -95,7 +95,7 @@ trainer:
   epochs: 1000
   precision: "bf16-mixed"
   accumulate_grad_batches: 4
-  out_dir: "/davinci-1/home/lorenrossi/log_fiorire/lightning_logs"
+  out_dir: "/davinci-1/home/morellir/artificial_intelligence/repos/fiorire/robustness/lightning_module"
   name_exp: FSS
   run_name: test_reg
 

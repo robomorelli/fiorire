@@ -406,7 +406,7 @@ if __name__ == "__main__":
         parser.add_argument("--entity", default='robmorelli',
                             help="W&B entity name")
         parser.add_argument("--wandb_key",
-                            default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
+                            default="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",
                             help="W&B API key")
         parser.add_argument("--debug_mode", default=0, type=int,
                             help="Run single trial for debugging (0/1)")
