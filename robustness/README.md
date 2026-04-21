@@ -219,7 +219,7 @@ def main(config_path, mode="train"):
 
 ### Robustness delta
 
-\[\Delta = \text{clean} - \text{attacked}\]
+$$\Delta = \text{clean} - \text{attacked}$$
 
 ---
 
@@ -233,7 +233,7 @@ Fraction of attacked anomalies below threshold.
 
 ### Loss
 
-\[L = L_{reconstruction} + \lambda L_{jacobian}\]
+$$L = L_{reconstruction} + \lambda L_{jacobian}$$
 
 ---
 
