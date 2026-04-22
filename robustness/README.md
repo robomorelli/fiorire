@@ -194,6 +194,7 @@ python -m robustness.scripts.run --config_path robustness/config.yaml
 ```
 
 Training can be done with a regularized loss or vanilla (only reconstruction loss):
+
 $$L = L_{\text{reconstruction}} + \lambda L_{\text{jacobian}}$$
 
 It supports:
@@ -365,6 +366,8 @@ lightning_logs/
         └── def_on/
             └── ...
 ```
+
+The `curves.npz` files can be used plot ROC or PR curves.
 
 ---
 
