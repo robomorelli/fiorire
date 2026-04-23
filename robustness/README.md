@@ -254,7 +254,7 @@ Multiple metrics are used for evaluation.
 * ROC AUC
 * PR AUC
 * Recall@FPR=0.05
-* Cohen’s d)
+* Cohen’s d
 * Mean score shift
 * Attack Success Rate
 * Perturbation Budget
@@ -366,8 +366,9 @@ lightning_logs/
         └── def_on/
             └── ...
 ```
+The subfolder `def_on` has the same structure of `def_off`.
 
-The `curves.npz` files can be used plot ROC or PR curves.
+The `curves.npz` files can be used plot ROC or PR curves with the script `auc_curves.py`.
 
 ---
 
