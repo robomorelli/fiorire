@@ -891,7 +891,7 @@ def get_sync_config():
 
     if num_nodes <= 1:
         print("Single node detected - disabling syncer.")
-        return SyncConfig(syncer=None)
+        return SyncConfig()
     else:
         print(f"Multiple nodes detected ({num_nodes}) - enabling default syncer.")
         return SyncConfig()  # Default sync config, enables syncing

@@ -345,9 +345,21 @@ def get_scaled_train_val_dataloader(cfg, df, seq_len=40, filter_anomalies=True, 
     # Add anomaly column if specified to searcher anomalous sequences
     columns = columns + [ano_col] if ano_col and ano_col in df.columns and ano_col not in columns else columns
 
-    print("shape before dropna:", df.shape)
-    df = df[columns].dropna()
-    print("shape after dropna:", df.shape)
+    df_sel = df[columns]
+    total_rows = len(df_sel)
+    nan_per_col = df_sel.isnull().sum()
+    rows_with_nan = df_sel.isnull().any(axis=1).sum()
+    print(f"shape before dropna: {df.shape}")
+    print(f"Righe totali: {total_rows} | Righe con almeno un NaN: {rows_with_nan}")
+    print(f"NaN per colonna (solo colonne con NaN):")
+    nan_cols = nan_per_col[nan_per_col > 0]
+    if len(nan_cols) == 0:
+        print("   Nessun NaN nelle colonne selezionate.")
+    else:
+        for col, cnt in nan_cols.items():
+            print(f"   {col}: {cnt} NaN ({100*cnt/total_rows:.2f}%)")
+    df = df_sel.dropna()
+    print(f"shape after dropna: {df.shape}")
     if dataset_subset is not None:
         print(f"🔧 Using only a subset of the dataset: first {dataset_subset} samples")
         df = df.iloc[:dataset_subset, :]

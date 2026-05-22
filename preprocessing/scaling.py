@@ -161,13 +161,13 @@ def get_scaler(cfg, df_fit=None, df_transform=None):
     if scaler_name == 'StandardScaler':
         scaler = StandardScaler()
     elif scaler_name == 'RobustScaler':
-        # Check if quantiles are provided
+        # Check if quantiles are provided (values in 0-100 range, e.g. RobustScaler-5-95)
         if len(parts) >= 3:
             q1 = float(parts[1])
             q2 = float(parts[2])
         else:
-            q1, q2 = 0.25, 0.75  # default
-        scaler = RobustScaler(quantile_range=(q1 * 100, q2 * 100))
+            q1, q2 = 25.0, 75.0  # default
+        scaler = RobustScaler(quantile_range=(q1, q2))
     else:
         raise ValueError(f"Scaler '{scaler_name}' not supported.")
 

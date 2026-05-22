@@ -1,139 +1,81 @@
-
-import os
 import torch
 import torch.nn as nn
-# from .early_stopping import *
-from json import dump
-import torch
-from tqdm import tqdm
+
 torch.manual_seed(0)
 
+
 class Encoder(nn.Module):
-    def __init__(self, seq_in, n_features, embedding_size, latent_dim, n_layers_1=2,
-                 n_layers_2=1, activation=None):
+    def __init__(self, n_features, hidden_dim, latent_dim, num_layers):
         super().__init__()
-
-        # self.seq_len = seq_in
-        self.n_features = n_features  # The number of expected features(= dimension size) in the input x
-        self.embedding_size = embedding_size  # the number of features in the embedded points of the inputs' number of features
-        self.n_layers_1 = n_layers_1
-        self.n_layers_2 = n_layers_2
-        self.hidden_size = (2 * embedding_size)  # The number of features in the hidden state h
-        self.latent_dim = latent_dim
-        self.activation = activation
-
-        self.LSTMenc = nn.LSTM(
-            input_size=n_features,
-            hidden_size=self.hidden_size,
-            num_layers=n_layers_1,
-            batch_first=True
-        )
-        self.LSTM1 = nn.LSTM(
-            input_size=self.hidden_size,
-            hidden_size=embedding_size,
-            num_layers=n_layers_2,
-            batch_first=True
-        )
-        self.enc = nn.Linear(embedding_size, self.latent_dim)
-
-        if self.activation is not None:
-            self.activation = activation
+        self.lstm = nn.LSTM(n_features, hidden_dim, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, latent_dim)
 
     def forward(self, x):
-        # Inputs: input, (h_0, c_0). -> If (h_0, c_0) is not provided, both h_0 and c_0 default to zero.
-        # x is the output and so the size is > (batch, seq_len, hidden_size)
-        # x, (_,_) = self.LSTM1(x)
-        x, (hidden_state, cell_state) = self.LSTMenc(x)
-        x, (hidden_state, cell_state) = self.LSTM1(x) ### to switch to x because it needs repeated sequence
-        # x[0,-1,:]==hidden_state[-1,0,:] with x ([32, 10, 64]) and h_state 1, 32, 64])
-        last_lstm_layer_hidden_state = hidden_state[-1, :, :] #take only the last layer
-        #we need hidden state only here because is like our encoding of the time series
-        enc = self.enc(last_lstm_layer_hidden_state)
-        if self.activation is not None:
-            self.activation(x)
-        return enc
+        _, (h, _) = self.lstm(x)
+        return self.fc(h[-1])   # (B, latent_dim)
 
-# (2) Decoder
+
 class Decoder(nn.Module):
-    def __init__(self, seq_out, embedding_size, output_size, latent_dim, n_layers_1=2,  n_layers_2=1):
+    def __init__(self, seq_len, n_features, latent_dim, num_layers):
         super().__init__()
-
-        self.seq_len = seq_out
-        self.embedding_size = embedding_size
-        self.hidden_size = (2 * embedding_size)
-        self.n_layers_1 = n_layers_1
-        self.n_layers_2 = n_layers_2
-        self.output_size = output_size
+        self.seq_len = seq_len
         self.latent_dim = latent_dim
+        self.num_layers = num_layers
+        self.n_features = n_features
 
-        self.LSTMdec = nn.LSTM(
-            input_size=latent_dim,
-            hidden_size=embedding_size,
-            num_layers=n_layers_2,
-            batch_first=True
-        )
+        # hidden_size = latent_dim: z IS the initial hidden state
+        self.lstm = nn.LSTM(n_features, latent_dim, num_layers, batch_first=True)
+        self.fc = nn.Linear(latent_dim, n_features)
 
-        self.LSTM1 = nn.LSTM(
-            input_size=embedding_size,
-            hidden_size=self.hidden_size,
-            num_layers=n_layers_1,
-            batch_first=True
-        )
-        self.fc = nn.Linear(self.hidden_size, output_size)
+    def forward(self, z, x=None):
+        # z: (B, latent_dim) — used directly as h_0
+        # x: (B, T, F)       — ground truth for teacher forcing, None at inference
+        h = z.unsqueeze(0).repeat(self.num_layers, 1, 1).contiguous()  # (num_layers, B, latent_dim)
+        c = torch.zeros_like(h)
 
-    def forward(self, x):
-        x = x.unsqueeze(1).repeat(1, self.seq_len, 1) # x[0,0,:]==x[0,1,:] ## we nedd to repeat to have an output of secquences (how is our target)
-        x, (hidden_state, cell_state) = self.LSTMdec(x)
-        x, (_, _) = self.LSTM1(x)
-        x = x.reshape((-1, self.seq_len, self.hidden_size))    #fc layer input (input_size, output_size) but if you have (batch, seq_len, input_size) it takes the same operation batch by bath and for
-        # each sequence
-        # we use the output to target a regression o a label
-        out = self.fc(x) #it needs ([32, n, 64]) because in the next operation needs to output a sequence of n
-                        #if you don't reshape with sequence lenght in dimension 1 we don'n have out.size = [batch,n , n_features)
-                        #also for this we need: x = x.unsqueeze(1).repeat(1, self.seq_len, 1) >>> lstm output >>> reshape
-        return out
+        preds = []
 
-class LSTM_AE(nn.Module):
-    def __init__(self, cfg, **kwargs):
+        # first prediction directly from h_0, no LSTM step (Malhotra et al.)
+        pred = self.fc(h[-1])           # (B, F)
+        preds.append(pred.unsqueeze(1))
+
+        for t in range(1, self.seq_len):
+            # teacher forcing: ground truth; inference: own prediction
+            inp = x[:, self.seq_len - t, :] if x is not None else pred   # (B, F)
+            _, (h, c) = self.lstm(inp.unsqueeze(1), (h, c))
+            pred = self.fc(h[-1])       # (B, F)
+            preds.append(pred.unsqueeze(1))
+
+        # preds in reverse order [x'[T-1], ..., x'[0]] — flip to original temporal order
+        return torch.cat(preds, dim=1).flip(1)      # (B, T, F)
+
+
+class LSTM_AE(nn.Module):  # noqa: N801
+    def __init__(self, cfg):
         super().__init__()
+        seq_len    = cfg.dataset.seq_in_length
+        n_features = cfg.dataset.n_features
+        hidden_dim = cfg.model.hidden_dim
+        latent_dim = cfg.model.latent_dim
+        num_layers = cfg.model.num_layers
 
-        self.seq_in_length = kwargs['seq_in_length']
-        self.n_features = kwargs['n_features']
-        self.embedding_dim = kwargs['embedding_dim']
-        self.latent_dim = kwargs['latent_dim']
-        self.n_layers_1 = kwargs['n_layers_1']
-        self.n_layers_2 = kwargs['n_layers_2']
-        self.seq_out_length = kwargs['seq_in_length']
-        self.output_size = kwargs['n_features']
-        self.activation = kwargs['activation']
-
-        self.encoder = Encoder(self.seq_in_length, self.n_features,
-                               self.embedding_dim, self.latent_dim, self.n_layers_1, self.n_layers_2, self.activation)
-        self.decoder = Decoder(self.seq_out_length, self.embedding_dim,
-                               self.output_size, self.latent_dim, self.n_layers_1, self.n_layers_2)
+        self.is_fitted = False
+        self.encoder = Encoder(n_features, hidden_dim, latent_dim, num_layers)
+        self.decoder = Decoder(seq_len, n_features, latent_dim, num_layers)
 
     def forward(self, x):
-        #torch.manual_seed(0)
         encoded = self.encoder(x)
-        decoded = self.decoder(encoded)
-        return x, encoded, decoded
+        decoded = self.decoder(encoded, x if self.training else None)
+        return decoded
 
     def encode(self, x):
         self.eval()
-        encoded = self.encoder(x)
-        return encoded
+        return self.encoder(x)
 
-    def decode(self, x):
+    def decode(self, z):
         self.eval()
-        decoded = self.decoder(x)
-        squeezed_decoded = decoded.squeeze()
-        return squeezed_decoded
+        return self.decoder(z).squeeze()
 
-    def load(self, PATH):
-        """
-        Loads the model's parameters from the path mentioned
-        :param PATH: Should contain pickle file
-        :return: None
-        """
+    def load(self, path):
         self.is_fitted = True
-        self.load_state_dict(torch.load(PATH))
+        self.load_state_dict(torch.load(path))

@@ -205,6 +205,9 @@ def main(args):
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d_%H-%M-%S")
 
+    repo_ray_results = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ray_results')
+    os.makedirs(repo_ray_results, exist_ok=True)
+
     # Load config
     cfg_path = os.path.join(config_path, args.config_file + '.yaml')
     ray_config, cfg = extract_config(cfg_path)
@@ -323,7 +326,7 @@ def main(args):
 
     sync_config = get_sync_config()
 
-    results_dir = os.path.join('./ray_results', f'{args.project_name}_{args.config_file}_{date_str}')
+    results_dir = os.path.join(repo_ray_results, f'{args.project_name}_{args.config_file}_{date_str}')
 
     print("\n" + "=" * 80)
     print("🚀 STARTING RAY TUNE")
@@ -340,7 +343,7 @@ def main(args):
             scheduler=scheduler,
             resources_per_trial=resources_per_trial,
             num_samples=int(args.num_samples),
-            local_dir=results_dir,
+            storage_path=results_dir,
             name=cfg.opt.exp_name,
             progress_reporter=progress_reporter,
             sync_config=sync_config,
@@ -389,7 +392,7 @@ if __name__ == "__main__":
                             help="Ray head node address (default: None for local cluster)")
         parser.add_argument("--password", default=None,
                             help="Ray cluster password")
-        parser.add_argument("--config_file", "-c", default='conv_ae2D_AOC',
+        parser.add_argument("--config_file", "-c", default='conv_ae2D_floris_psc',
                             help="Config file name")
         parser.add_argument("--trials_per_node", default=1, type=int,
                             help="trial per node")
@@ -401,14 +404,14 @@ if __name__ == "__main__":
                             help="Number of trials to run")
         parser.add_argument("--wandb", default=0, type=int,
                             help="Enable W&B logging (0/1)")
-        parser.add_argument("--project_name", default='conv_ae2D_bottl_conv',
+        parser.add_argument("--project_name", default='conv_ae2D_floris_psc',
                             help="W&B project name")
         parser.add_argument("--entity", default='robmorelli',
                             help="W&B entity name")
         parser.add_argument("--wandb_key",
                             default="56b6f7f0b13c4d89207e51c28ceb90c24201eab5",
                             help="W&B API key")
-        parser.add_argument("--debug_mode", default=1, type=int,
+        parser.add_argument("--debug_mode", default=0, type=int,
                             help="Run single trial for debugging (0/1)")
 
         parser.add_argument("--ray_memory_gb", default=10, type=int,

@@ -115,6 +115,14 @@ def load_and_preprocess_dataframe(cfg, data_path=None):
 
     print(f"   ✓ Loaded: {df.shape}")
 
+    # Drop exclude_columns immediately from the dataframe
+    exclude_columns = cfg.dataset.get("exclude_columns", []) or []
+    if exclude_columns:
+        cols_to_drop = [c for c in exclude_columns if c in df.columns]
+        if cols_to_drop:
+            df = df.drop(columns=cols_to_drop)
+            print(f"   🔧 Excluded columns (dropped): {cols_to_drop}")
+
     # 2. Normalize target to list
     cfg.dataset.target = (
         cfg.dataset.target
@@ -153,8 +161,20 @@ def load_and_preprocess_dataframe(cfg, data_path=None):
         columns = columns + [ano_col]
 
     # 5. Select columns and drop NaN
+    df_sel = df[columns]
+    total_rows = len(df_sel)
+    nan_per_col = df_sel.isnull().sum()
+    rows_with_nan = df_sel.isnull().any(axis=1).sum()
     print(f"   📊 Shape before dropna: {df.shape}")
-    df = df[columns].dropna()
+    print(f"   📊 Righe totali: {total_rows} | Righe con almeno un NaN: {rows_with_nan}")
+    print(f"   📊 NaN per colonna (solo colonne con NaN):")
+    nan_cols = nan_per_col[nan_per_col > 0]
+    if len(nan_cols) == 0:
+        print(f"      Nessun NaN nelle colonne selezionate.")
+    else:
+        for col, cnt in nan_cols.items():
+            print(f"      {col}: {cnt} NaN ({100*cnt/total_rows:.2f}%)")
+    df = df_sel.dropna()
     print(f"   ✓ Shape after dropna: {df.shape}")
 
     # 6. Subset dataset if requested

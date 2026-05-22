@@ -718,8 +718,13 @@ def test_anomaly_step(
     # ==============================
     # 5) NORMALIZATION
     # ==============================
-    normal_perm = normal_errors.permute(0, 2, 1)  # [N, L, C]
-    anomaly_perm = anomaly_errors.permute(0, 2, 1)
+    # CNN errors are [N, C, L] → permute to [N, L, C]; LSTM errors are already [N, L, C]
+    if model_type == "lstm":
+        normal_perm = normal_errors
+        anomaly_perm = anomaly_errors
+    else:
+        normal_perm = normal_errors.permute(0, 2, 1)
+        anomaly_perm = anomaly_errors.permute(0, 2, 1)
 
     C = normal_perm.shape[2]
 
@@ -1023,10 +1028,15 @@ def test_anomaly_step_kp(
     # ============================================
     # 5) NORMALIZATION
     # ============================================
-    C = normal_errors.shape[1]
+    # CNN errors are [N, C, L] → permute to [N, L, C]; LSTM errors are already [N, L, C]
+    if model_type == "lstm":
+        normal_perm  = normal_errors
+        anomaly_perm = anomaly_errors
+    else:
+        normal_perm  = normal_errors.permute(0, 2, 1)
+        anomaly_perm = anomaly_errors.permute(0, 2, 1)
 
-    normal_perm  = normal_errors.permute(0, 2, 1)
-    anomaly_perm = anomaly_errors.permute(0, 2, 1)
+    C = normal_perm.shape[2]
 
     flat_norm = normal_perm.reshape(-1, C).float()
     normalization_factor = torch.quantile(flat_norm, 0.5, dim=0)

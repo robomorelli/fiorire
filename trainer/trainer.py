@@ -44,8 +44,8 @@ class Trainer(tune.Trainable):
         self.effective_mode = None
 
         # ✅ 3. Get parameters for this trial
-        overlap = self.cfg.dataset.get('perc_overlap', 0)
-        val_overlap = self.cfg.dataset.get('val_overlap', 0)
+        overlap = float(self.cfg.dataset.get('perc_overlap', 0))
+        val_overlap = float(self.cfg.dataset.get('val_overlap', 0))
         seq_len = shared_config['seq_len']
         self.cfg.dataset.feats, feature_columns = shared_config['feature_columns'], shared_config['feature_columns']
         self.cfg.dataset.n_features = len(feature_columns)
@@ -203,6 +203,8 @@ class Trainer(tune.Trainable):
         self.optimizer, self.scheduler, self.criterion, self.early_stopping = \
             get_optimizazion_objects(self.cfg, self.model, self.opt_metric_dict)
 
+        print(f"📁 Trial logdir: {self.logdir}")
+
         # ✅ 16. Initialize tracking variables
         self.current_epoch = 0
         self.max_epochs = self.cfg.opt.get('epochs', 200)
@@ -333,7 +335,9 @@ class Trainer(tune.Trainable):
         raise NotImplementedError("test_step method is not implemented yet.")
 
     def save_checkpoint(self, checkpoint_dir):
-        checkpoint_path = f"{checkpoint_dir}/model.pt"
+        checkpoint_path = os.path.join(checkpoint_dir, "model.pt")
+        print(f"💾 logdir:            {self.logdir}")
+        print(f"💾 Saving checkpoint: {checkpoint_path}")
         torch.save({
             'epoch': self.current_epoch,
             'model_state_dict': self.model.state_dict(),
@@ -352,10 +356,10 @@ class Trainer(tune.Trainable):
             'metric_dataset_path': self.metric_dataset_path,
             "indices": self.val_results.get("indices", None),
         }, checkpoint_path)
-        return checkpoint_path
 
-    def load_checkpoint(self, checkpoint_path):
-        checkpoint = torch.load(checkpoint_path)
+    def load_checkpoint(self, checkpoint_dir):
+        model_path = os.path.join(checkpoint_dir, "model.pt")
+        checkpoint = torch.load(model_path)
         self.model.load_state_dict(checkpoint['model_state_dict'])
 
     def current_ip(self):
